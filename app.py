@@ -6,10 +6,15 @@ import random
 st.set_page_config(layout="wide")
 st.title("🪙 Idea Gold Scheduler")
 
-# SHIFT TEMPLATE INPUT
+# INIT
 if "shifts" not in st.session_state:
     st.session_state.shifts = []
+if "rotators" not in st.session_state:
+    st.session_state.rotators = []
+if "leaves" not in st.session_state:
+    st.session_state.leaves = []
 
+# SHIFT TEMPLATE
 with st.expander("⚙️ Shift Templates", expanded=True):
     col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 1, 1])
     label = col1.text_input("Label (e.g. ER1, Ward)")
@@ -20,8 +25,8 @@ with st.expander("⚙️ Shift Templates", expanded=True):
 
     if st.button("Add Shift", key="add_shift_btn"):
         base_label = label.strip()
-        if not base_label:
-            st.warning("⚠️ Please enter a non-empty shift label.")
+        if not base_label or base_label.isspace():
+            st.warning("⚠️ Please enter a valid shift label.")
         elif start >= end:
             st.warning("⚠️ Start time must be before end time.")
         else:
@@ -52,29 +57,25 @@ if use_demo:
 else:
     junior_raw = st.text_area("Juniors (one per line)")
     senior_raw = st.text_area("Seniors (one per line)")
-    junior_list = list({r.strip() for r in junior_raw.splitlines() if r.strip()})
-    senior_list = list({r.strip() for r in senior_raw.splitlines() if r.strip()})
+    junior_list = [line for i, line in enumerate(junior_raw.splitlines()) if line.strip() and line not in junior_raw.splitlines()[:i]]
+    senior_list = [line for i, line in enumerate(senior_raw.splitlines()) if line.strip() and line not in senior_raw.splitlines()[:i]]
 
 # NIGHT FLOAT ELIGIBILITY
 with st.expander("🛌 Night-Float Eligibility"):
     nf_juniors = st.multiselect("NF-Eligible Juniors", junior_list, default=junior_list)
     nf_seniors = st.multiselect("NF-Eligible Seniors", senior_list, default=senior_list)
 
-# DATES AND RULES
+# DATES & RULES
 start_date = st.date_input("Start Date", datetime.today())
 end_date = st.date_input("End Date", datetime.today() + timedelta(days=27))
+if start_date > end_date:
+    st.error("❌ End date must be after or equal to start date.")
 
-st.subheader("⏱️ Rules")
 min_gap = st.slider("Min Days Between Shifts", 0, 7, 2)
 nf_block_length = st.slider("Night-Float Block Length (days)", 1, 14, 7)
 nf_style = st.radio("NF Distribution Style", ["Block", "One-by-one"], horizontal=True)
 
-# ROTATORS & LEAVES
-if "rotators" not in st.session_state:
-    st.session_state["rotators"] = []
-if "leaves" not in st.session_state:
-    st.session_state["leaves"] = []
-
+# ROTATORS / LEAVES
 def _make_table(items, fields):
     if not items:
         st.write("*(None yet)*")
@@ -100,7 +101,7 @@ with st.expander("✈️ Leaves"):
             st.session_state.leaves.append((lv_name, lv_from, lv_to))
     _make_table(st.session_state.leaves, ["Name", "From", "To"])
 
-# AVAILABILITY CHECKER
+# AVAILABILITY
 leaves = st.session_state.leaves
 rotators = st.session_state.rotators
 
@@ -122,7 +123,7 @@ def pick_candidate(pool, day, history, used_today):
     valid = [p for p in pool if is_available(p, day, history) and p not in used_today]
     if not valid:
         return "Unavailable"
-    return sorted(valid, key=lambda x: history.get(x, datetime(2000,1,1)))[0]
+    return sorted(valid, key=lambda x: (history.get(x, datetime(2000,1,1)), x))[0]
 
 def build_schedule():
     days = pd.date_range(start_date, end_date)
@@ -135,6 +136,8 @@ def build_schedule():
     for shift in shift_defs:
         if shift["night_float"]:
             pool = nf_seniors if shift["role"] == "Senior" else nf_juniors
+            if not pool:
+                continue
             nf_assign[shift["label"]] = {}
             for i, d in enumerate(days):
                 if nf_style == "Block":
@@ -149,14 +152,18 @@ def build_schedule():
     for d in days:
         row = {"Date": d.date(), "Day": d.strftime("%A")}
         used_today = set()
+        nf_today = {nf_assign[s].get(d.date()) for s in nf_assign if nf_assign[s].get(d.date())}
+        used_today.update(nf_today)
+
         for shift in shift_defs:
             label = shift["label"]
             role = shift["role"]
             is_nf = shift["night_float"]
-            pool = nf_seniors if role == "Senior" else nf_juniors if is_nf else senior_list if role == "Senior" else junior_list
+
             if is_nf:
                 name = nf_assign.get(label, {}).get(d.date(), "Unavailable")
             else:
+                pool = senior_list if role == "Senior" else junior_list
                 name = pick_candidate(pool, d, history, used_today)
                 if name != "Unavailable":
                     history[name] = d
@@ -175,23 +182,37 @@ def build_schedule():
     df_rot = df_summary[df_summary["Name"].isin([r[0] for r in rotators])]
     return df, df_summary, df_rot
 
+# GENERATE
 if st.button("🚀 Generate Schedule", key="generate_btn"):
+    if not st.session_state.shifts:
+        st.error("❌ Please define at least one shift.")
+        st.stop()
+    if not junior_list or not senior_list:
+        st.error("❌ Please enter both junior and senior participants.")
+        st.stop()
+    if start_date > end_date:
+        st.error("❌ End date must be after or equal to start date.")
+        st.stop()
+
     df, summary, rot = build_schedule()
-    st.success("✅ Schedule generated!")
-    st.dataframe(df, use_container_width=True)
-
-    st.subheader("📊 Summary by Role")
-    st.dataframe(summary)
-
-    st.subheader("🌙 Night-Float Summary")
-    nf_only = summary[summary["Night Float"] > 0][["Name", "Night Float"]]
-    st.dataframe(nf_only)
-
-    st.subheader("🔄 Rotator Summary")
-    if not rot.empty:
-        st.dataframe(rot)
+    if df.empty:
+        st.warning("⚠️ No assignments could be generated.")
     else:
-        st.write("No rotators assigned shifts.")
+        st.success("✅ Schedule generated!")
+        st.dataframe(df, use_container_width=True)
 
-    csv = df.to_csv(index=False).encode("utf-8")
-    st.download_button("📥 Download CSV", csv, "schedule.csv", "text/csv")
+        st.subheader("📊 Summary by Role")
+        st.dataframe(summary)
+
+        st.subheader("🌙 Night-Float Summary")
+        nf_only = summary[summary["Night Float"] > 0][["Name", "Night Float"]]
+        st.dataframe(nf_only)
+
+        st.subheader("🔄 Rotator Summary")
+        if not rot.empty:
+            st.dataframe(rot)
+        else:
+            st.write("No rotators assigned shifts.")
+
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button("📥 Download CSV", csv, "schedule.csv", "text/csv")
