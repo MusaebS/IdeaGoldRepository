@@ -52,7 +52,7 @@ if st.session_state.shifts:
     st.dataframe(pd.DataFrame(st.session_state.shifts))
 
 # --- Participants ---
-st.header("👥 Participants")
+st.header("🧑‍⚕️ Participants")
 demo = st.checkbox("Use Demo Names", True)
 
 if demo:
@@ -93,6 +93,7 @@ if start_date > end_date:
 min_gap = st.slider("Minimum Days Between Shifts", 0, 7, 2)
 nf_block_length = st.slider("Night Float Block Length (days)", 1, 14, 5)
 st.session_state["nf_block_length"] = nf_block_length
+
 # --- Rotators & Leaves ---
 with st.expander("🔄 Rotators"):
     rot_name = st.selectbox("Name", [""] + all_people, key="rot_name")
