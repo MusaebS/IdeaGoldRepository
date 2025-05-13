@@ -52,7 +52,7 @@ if st.session_state.shifts:
     st.dataframe(pd.DataFrame(st.session_state.shifts))
 
 # --- Participants ---
-st.header("🧑‍⚕️ Participants")
+st.header("👥 Participants")
 demo = st.checkbox("Use Demo Names", True)
 
 if demo:
