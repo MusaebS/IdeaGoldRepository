@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
+import random
 
 st.set_page_config(layout="wide")
 st.title("🪙 Idea Gold Scheduler")
@@ -46,16 +47,13 @@ st.header("📝 Participants")
 use_demo = st.checkbox("Use Demo Names", value=True)
 
 if use_demo:
-    junior_list = ["Ashley", "Amanda", "Linda", "Nicole"]
-    senior_list = ["John", "Robert", "Thomas", "Andrew"]
+    junior_list = ["Ashley", "Amanda", "Linda", "Nicole", "Emily", "Mary", "Jessica", "Sarah", "Laura", "Sophia"]
+    senior_list = ["John", "Robert", "Thomas", "Andrew", "Daniel", "William", "James", "David", "Michael", "Joseph"]
 else:
     junior_raw = st.text_area("Juniors (one per line)")
     senior_raw = st.text_area("Seniors (one per line)")
     junior_list = list({r.strip() for r in junior_raw.splitlines() if r.strip()})
     senior_list = list({r.strip() for r in senior_raw.splitlines() if r.strip()})
-
-if not junior_list or not senior_list:
-    st.warning("⚠️ Please enter at least one junior and one senior.")
 
 # NIGHT FLOAT ELIGIBILITY
 with st.expander("🛌 Night-Float Eligibility"):
@@ -65,9 +63,6 @@ with st.expander("🛌 Night-Float Eligibility"):
 # DATES AND RULES
 start_date = st.date_input("Start Date", datetime.today())
 end_date = st.date_input("End Date", datetime.today() + timedelta(days=27))
-
-if start_date > end_date:
-    st.error("❌ End date must be after or equal to start date.")
 
 st.subheader("⏱️ Rules")
 min_gap = st.slider("Min Days Between Shifts", 0, 7, 2)
@@ -105,34 +100,98 @@ with st.expander("✈️ Leaves"):
             st.session_state.leaves.append((lv_name, lv_from, lv_to))
     _make_table(st.session_state.leaves, ["Name", "From", "To"])
 
-# GENERATE BUTTON
+# AVAILABILITY CHECKER
+leaves = st.session_state.leaves
+rotators = st.session_state.rotators
+
+def is_available(name, day, history, apply_gap=True):
+    for (n, lo, hi) in leaves:
+        if n == name and lo <= day.date() <= hi:
+            return False
+    for (n, lo, hi) in rotators:
+        if n == name and lo <= day.date() <= hi:
+            return True
+    if any(n == name for (n, _, _) in rotators):
+        return False
+    last = history.get(name)
+    if apply_gap and last and (day - last).days < min_gap:
+        return False
+    return True
+
+def pick_candidate(pool, day, history, used_today):
+    valid = [p for p in pool if is_available(p, day, history) and p not in used_today]
+    if not valid:
+        return "Unavailable"
+    return sorted(valid, key=lambda x: history.get(x, datetime(2000,1,1)))[0]
+
+def build_schedule():
+    days = pd.date_range(start_date, end_date)
+    shift_defs = st.session_state.shifts
+    history = {}
+    assignments = []
+    stats = {name: {"total":0, "weekend":0, "nf":0} for name in junior_list + senior_list}
+
+    nf_assign = {}
+    for shift in shift_defs:
+        if shift["night_float"]:
+            pool = nf_seniors if shift["role"] == "Senior" else nf_juniors
+            nf_assign[shift["label"]] = {}
+            for i, d in enumerate(days):
+                if nf_style == "Block":
+                    idx = (i // nf_block_length) % len(pool)
+                else:
+                    idx = i % len(pool)
+                name = pool[idx]
+                if is_available(name, d, history, apply_gap=False):
+                    nf_assign[shift["label"]][d.date()] = name
+                    stats[name]["nf"] += 1
+
+    for d in days:
+        row = {"Date": d.date(), "Day": d.strftime("%A")}
+        used_today = set()
+        for shift in shift_defs:
+            label = shift["label"]
+            role = shift["role"]
+            is_nf = shift["night_float"]
+            pool = nf_seniors if role == "Senior" else nf_juniors if is_nf else senior_list if role == "Senior" else junior_list
+            if is_nf:
+                name = nf_assign.get(label, {}).get(d.date(), "Unavailable")
+            else:
+                name = pick_candidate(pool, d, history, used_today)
+                if name != "Unavailable":
+                    history[name] = d
+            row[label] = name
+            if name != "Unavailable":
+                used_today.add(name)
+                stats[name]["total"] += 1
+                if row["Day"] in ["Friday", "Saturday", "Sunday"]:
+                    stats[name]["weekend"] += 1
+        assignments.append(row)
+
+    df = pd.DataFrame(assignments)
+    df_summary = pd.DataFrame([
+        {"Name": k, "Total Shifts": v["total"], "Weekend Shifts": v["weekend"], "Night Float": v["nf"]} for k,v in stats.items()
+    ])
+    df_rot = df_summary[df_summary["Name"].isin([r[0] for r in rotators])]
+    return df, df_summary, df_rot
+
 if st.button("🚀 Generate Schedule", key="generate_btn"):
+    df, summary, rot = build_schedule()
     st.success("✅ Schedule generated!")
-
-    df = pd.DataFrame({
-        "Name": junior_list + senior_list,
-        "Total Shifts": [5]*len(junior_list + senior_list),
-        "Weekend Shifts": [2]*len(junior_list + senior_list),
-        "Night Float": [1 if name in nf_juniors + nf_seniors else 0 for name in junior_list + senior_list],
-        "Role": ["Junior"]*len(junior_list) + ["Senior"]*len(senior_list),
-    })
-
-    rot_names = [r[0] for r in st.session_state.rotators]
-    df_rot = df[df["Name"].isin(rot_names)]
+    st.dataframe(df, use_container_width=True)
 
     st.subheader("📊 Summary by Role")
-    st.dataframe(df)
+    st.dataframe(summary)
 
     st.subheader("🌙 Night-Float Summary")
-    nf_df = df[df["Night Float"] > 0]
-    st.dataframe(nf_df[["Name", "Night Float"]])
+    nf_only = summary[summary["Night Float"] > 0][["Name", "Night Float"]]
+    st.dataframe(nf_only)
 
     st.subheader("🔄 Rotator Summary")
-    if not df_rot.empty:
-        st.dataframe(df_rot)
+    if not rot.empty:
+        st.dataframe(rot)
     else:
         st.write("No rotators assigned shifts.")
 
-    # Download
     csv = df.to_csv(index=False).encode("utf-8")
-    st.download_button("📥 Download CSV", csv, "schedule_summary.csv", "text/csv")
+    st.download_button("📥 Download CSV", csv, "schedule.csv", "text/csv")
