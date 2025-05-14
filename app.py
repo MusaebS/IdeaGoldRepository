@@ -69,34 +69,40 @@ with st.expander("🌙 Night Float Eligibility"):
     nf_juniors = st.multiselect("NF Juniors", juniors, juniors)
     nf_seniors = st.multiselect("NF Seniors", seniors, seniors)
 
-# --- Leaves & Rotators ---
-with st.expander("✈️ Leaves & Rotators"):
-    lv_name = st.selectbox("Leave Name", [""]+juniors+seniors)
-    lv_from, lv_to = st.date_input("Leave Dates", [datetime.today(), datetime.today()])
-    if st.button("Add Leave") and lv_name:
-        st.session_state.leaves.append((lv_name, lv_from, lv_to))
-
-    rot_name = st.selectbox("Rotator Name", [""]+juniors+seniors)
-    rot_from, rot_to = st.date_input("Rotator Dates", [datetime.today(), datetime.today()])
-    if st.button("Add Rotator") and rot_name:
-        st.session_state.rotators.append((rot_name, rot_from, rot_to))
-
-# --- Scheduling Logic ---
+# --- Scheduling Logic with NF Isolation ---
 def build_schedule():
     dates = pd.date_range(start_date, end_date)
     schedule, stats = [], {}
+
+    nf_assigned_dates = set()
 
     # Initialize stats
     for name in juniors+seniors:
         stats[name] = {"assigned": 0, "last_assigned": None}
 
+    # Assign NF separately
+    for shift in [s for s in st.session_state.shifts if s["night_float"]]:
+        nf_pool = nf_juniors if shift["role"] == "Junior" else nf_seniors
+        d_idx = 0
+        while d_idx < len(dates):
+            person = nf_pool[d_idx % len(nf_pool)]
+            for offset in range(nf_block_length):
+                if d_idx + offset >= len(dates):
+                    break
+                date = dates[d_idx + offset]
+                schedule.append({"Date": date.strftime("%Y-%m-%d"), "Day": date.strftime("%A"), shift["label"]: person})
+                nf_assigned_dates.add((date.date(), person))
+                stats[person]["assigned"] += 1
+                stats[person]["last_assigned"] = date
+            d_idx += nf_block_length
+
+    # Regular shifts excluding NF-assigned persons
     for date in dates:
         daily_schedule = {"Date": date.strftime("%Y-%m-%d"), "Day": date.strftime("%A")}
-        for shift in st.session_state.shifts:
-            pool = nf_juniors if shift["night_float"] and shift["role"] == "Junior" else \
-                   nf_seniors if shift["night_float"] and shift["role"] == "Senior" else \
-                   juniors if shift["role"] == "Junior" else seniors
-            candidates = [p for p in pool if not any(lv[0] == p and lv[1] <= date.date() <= lv[2] for lv in st.session_state.leaves)]
+        nf_today = {p for d, p in nf_assigned_dates if d == date.date()}
+        for shift in [s for s in st.session_state.shifts if not s["night_float"]]:
+            pool = juniors if shift["role"] == "Junior" else seniors
+            candidates = [p for p in pool if p not in nf_today and not any(lv[0] == p and lv[1] <= date.date() <= lv[2] for lv in st.session_state.leaves)]
             random.shuffle(candidates)
             assigned = "Unavailable"
             for c in candidates:
@@ -108,6 +114,7 @@ def build_schedule():
                     break
             daily_schedule[shift["label"]] = assigned
         schedule.append(daily_schedule)
+
     return pd.DataFrame(schedule)
 
 # --- Generate Schedule ---
