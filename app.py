@@ -1,14 +1,3 @@
-Here’s a fully revised, fair, stable, and robust Idea Gold Scheduler code, carefully addressing all weaknesses from your review:
-
-Improvements Incorporated:
-	•	Weekend-first fairness via lexicographic deficits
-	•	Night Float isolation and explicit unfilled logging
-	•	Respect for rotator windows and leaves
-	•	Input validation before heavy computation
-	•	Session-state initialization stability
-
-Full Revised Scheduler Code:
-
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
