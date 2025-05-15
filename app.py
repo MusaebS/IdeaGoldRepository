@@ -268,10 +268,14 @@ def build_schedule():
         schedule.append(row)
 
     df = pd.DataFrame(schedule)
-    summary = pd.DataFrame([{**{"Name": p}, **{
-        f"{lbl}_assigned": stats[p][lbl]['total'],
-        f"{lbl}_expected": round(expected[p][lbl]['total'], 1)
-    } for lbl in shift_labels] for p in pool])
+    summary = pd.DataFrame([
+    {
+        **{"Name": p},
+        **{f"{lbl}_assigned": stats[p][lbl]['total'] for lbl in shift_labels},
+        **{f"{lbl}_expected": round(expected[p][lbl]['total'], 1) for lbl in shift_labels},
+    }
+    for p in pool
+])
     df_unfilled = pd.DataFrame(unfilled, columns=["Date", "Shift"])
 
     return df, summary, df_unfilled
