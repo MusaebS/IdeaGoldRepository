@@ -7,6 +7,29 @@ from datetime import datetime, timedelta, date
 st.set_page_config(page_title="Idea Gold Scheduler", layout="wide")
 st.title("🪙 Idea Gold Scheduler – Stable & Robust")
 
+import math
+
+def allocate_integer_quotas(float_quotas: dict, total_slots: int) -> dict:
+    """
+    Largest‐remainder method: 
+      - floor everyone’s float quota
+      - distribute remaining slots to highest remainders
+    """
+    # 1) Floor everybody
+    base = {p: math.floor(q) for p, q in float_quotas.items()}
+    used = sum(base.values())
+    # 2) Compute remainders
+    remainder = {p: float_quotas[p] - base[p] for p in float_quotas}
+    # 3) How many slots left?
+    to_assign = total_slots - used
+    if to_assign <= 0:
+        return base
+    # 4) Give one extra to those with largest remainders (tie by name)
+    extras = sorted(remainder.items(), key=lambda x: (-x[1], x[0]))[:to_assign]
+    for p, _ in extras:
+        base[p] += 1
+    return base
+
 # --- Session State Defaults & Reset ---
 defaults = {
     "shifts": [],
