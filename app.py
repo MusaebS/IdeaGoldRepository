@@ -2,33 +2,28 @@ import streamlit as st
 import pandas as pd
 import random
 from datetime import datetime, timedelta, date
-
-# --- Streamlit Setup ---
-st.set_page_config(page_title="Idea Gold Scheduler", layout="wide")
-st.title("🪙 Idea Gold Scheduler – Stable & Robust")
-
 import math
 
 def allocate_integer_quotas(float_quotas: dict, total_slots: int) -> dict:
     """
-    Largest‐remainder method: 
-      - floor everyone’s float quota
-      - distribute remaining slots to highest remainders
+    Largest‐remainder method:
+      - Floor each float quota
+      - Distribute leftover slots to highest remainders
     """
-    # 1) Floor everybody
     base = {p: math.floor(q) for p, q in float_quotas.items()}
     used = sum(base.values())
-    # 2) Compute remainders
     remainder = {p: float_quotas[p] - base[p] for p in float_quotas}
-    # 3) How many slots left?
     to_assign = total_slots - used
     if to_assign <= 0:
         return base
-    # 4) Give one extra to those with largest remainders (tie by name)
     extras = sorted(remainder.items(), key=lambda x: (-x[1], x[0]))[:to_assign]
     for p, _ in extras:
         base[p] += 1
     return base
+
+# --- Streamlit Setup ---
+st.set_page_config(page_title="Idea Gold Scheduler", layout="wide")
+st.title("🪙 Idea Gold Scheduler – Stable & Robust")
 
 # --- Session State Defaults & Reset ---
 defaults = {
@@ -226,13 +221,18 @@ def build_schedule():
             for lbl in shift_labels
         } for p in pool
     }
+    # ─── Integer quotas via Hare–Niemeyer ───
+    targets = {}
+    for lbl in shift_labels:
+        fq = {p: expected[p][lbl]['total'] for p in pool}
+        targets[lbl] = allocate_integer_quotas(fq, slot_counts[lbl])
 
+    # Now reset your stats and last-assigned trackers
     stats = {
-        p: {
-            lbl: {"total": 0, "weekend": 0} for lbl in shift_labels
-        } for p in pool
+        p: { lbl: {"total": 0, "weekend": 0} for lbl in shift_labels }
+        for p in pool
     }
-    last_assigned = {p: None for p in pool}
+    last_assigned = { p: None for p in pool }
 
     nf_assignments = {}
     unfilled = []
@@ -276,12 +276,19 @@ def build_schedule():
                 unfilled.append((d.date(), lbl))
                 continue
 
-            def score(p):
-                w_def = expected[p][lbl]['weekend'] - stats[p][lbl]['weekend']
-                t_def = expected[p][lbl]['total'] - stats[p][lbl]['total']
-                return (w_def, t_def)
+             # First, pick anyone still below their integer target:
+             under = [p for p in candidates if stats[p][lbl]['total'] < targets[lbl][p]]
+             if under:
+             # deterministically choose the alphabetically first
+                 best = sorted(under)[0]
+             else:
+                 # everyone’s met their target—fallback to weekend-vs-total deficit
+                 def deficit(p):
+                     w = expected[p][lbl]['weekend'] - stats[p][lbl]['weekend']
+                     t = expected[p][lbl]['total']   - stats[p][lbl]['total']
+                     return (w, t)
+                 best = max(sorted(candidates), key=deficit)
 
-            best = max(sorted(candidates), key=score)
             row[lbl] = best
             stats[best][lbl]['total'] += 1
             if is_weekend(d, s):
