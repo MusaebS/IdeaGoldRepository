@@ -72,6 +72,24 @@ with st.expander("👥 Participants"):
     st.session_state.juniors = juniors
     st.session_state.seniors = seniors
 
+# --- Night Float Eligibility ---
+with st.expander("🌙 Night Float Eligibility", expanded=False):
+    nf_j = st.multiselect(
+        "NF-Eligible Juniors",
+        options=st.session_state.juniors,
+        default=st.session_state.nf_juniors,
+        key="nf_juniors_select"
+    )
+    nf_s = st.multiselect(
+        "NF-Eligible Seniors",
+        options=st.session_state.seniors,
+        default=st.session_state.nf_seniors,
+        key="nf_seniors_select"
+    )
+    # save back into session_state
+    st.session_state.nf_juniors = nf_j
+    st.session_state.nf_seniors = nf_s
+    
 # --- Extra Oncalls ---
 with st.expander("⚖️ Extra Oncalls"):
     for name in juniors + seniors:
