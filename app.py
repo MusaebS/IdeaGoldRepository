@@ -115,7 +115,7 @@ with st.expander("⚙️ Shift Templates"):
             st.session_state.shifts = [
                 s for s in st.session_state.shifts if s["label"] != delete_shift
             ]
-            st.experimental_rerun()
+            st.session_state["del_shift_select"] = ""   # clear picker
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Participants
@@ -218,7 +218,8 @@ with st.expander("✈️ Leaves"):
         if st.button("🗑️ Delete Leave") and delete_leave:
             idx = leave_labels.index(delete_leave)
             st.session_state.leaves.pop(idx)
-            st.experimental_rerun()
+            st.session_state["del_leave_select"] = ""   # clear picker
+
 
 
 with st.expander("🔄 Rotators"):
@@ -249,7 +250,7 @@ with st.expander("🔄 Rotators"):
         if st.button("🗑️ Delete Rotator") and delete_rot:
             idx = rot_labels.index(delete_rot)
             st.session_state.rotators.pop(idx)
-            st.experimental_rerun()
+            st.session_state["del_rot_select"] = ""     # clear picker
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Helper predicates
