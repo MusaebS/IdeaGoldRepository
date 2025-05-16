@@ -111,13 +111,13 @@ with st.expander("⚙️ Shift Templates"):
             [""] + [s["label"] for s in st.session_state.shifts],
             key="del_shift_select",
         )
-        if st.button("🗑️ Delete Rotator") and delete_rot:
-            idx = rot_labels.index(delete_rot)
-            st.session_state.rotators.pop(idx)
-
-            # Forget the select-box state entirely, then rerun
-            st.session_state.pop("del_rot_select", None)
+        if st.button("🗑️ Delete Shift") and delete_shift:
+            st.session_state.shifts = [
+                s for s in st.session_state.shifts if s["label"] != delete_shift
+            ]
+            st.session_state.pop("del_shift_select", None)  # forget picker state
             st.experimental_rerun()
+
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Participants
@@ -217,13 +217,12 @@ with st.expander("✈️ Leaves"):
         delete_leave = st.selectbox(
             "Select a leave to delete", [""] + leave_labels, key="del_leave_select"
         )
-        if st.button("🗑️ Delete Rotator") and delete_rot:
-            idx = rot_labels.index(delete_rot)
-            st.session_state.rotators.pop(idx)
-
-            # Forget the select-box state entirely, then rerun
-            st.session_state.pop("del_rot_select", None)
+        if st.button("🗑️ Delete Leave") and delete_leave:
+            idx = leave_labels.index(delete_leave)
+            st.session_state.leaves.pop(idx)
+            st.session_state.pop("del_leave_select", None)
             st.experimental_rerun()
+
 
 
 
@@ -255,10 +254,9 @@ with st.expander("🔄 Rotators"):
         if st.button("🗑️ Delete Rotator") and delete_rot:
             idx = rot_labels.index(delete_rot)
             st.session_state.rotators.pop(idx)
-
-            # Forget the select-box state entirely, then rerun
             st.session_state.pop("del_rot_select", None)
             st.experimental_rerun()
+
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Helper predicates
