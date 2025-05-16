@@ -4,15 +4,11 @@ import random
 from datetime import datetime, timedelta, date
 import math
 
-"""
-Idea Gold Scheduler – Stable & Fair (2025‑05‑16)
-• Implements Hare–Niemeyer quotas for both **total** and **weekend** slots per shift.
-• Weekend deficits are resolved before total‑deficit logic, eliminating bias toward weekday-heavy assignments.
-• Summary table reports assigned vs expected *total* **and** *weekend* counts.
-• Download buttons fixed (correct dataframe names).
-
-This file fully replaces any earlier partial code – copy/paste as a single `app.py`.
-"""
+# ────────────────────────────────────────────────────────────────────
+# Page configuration – MUST precede every other Streamlit call
+# ────────────────────────────────────────────────────────────────────
+st.set_page_config(page_title="Idea Gold Scheduler", layout="wide")
+st.title("🪙 Idea Gold Scheduler – Stable & Fair v2025-05-16")
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Helper: integer‑quota allocator (Hare–Niemeyer)
