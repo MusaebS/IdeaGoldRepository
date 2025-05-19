@@ -78,46 +78,34 @@ if st.button("🔁 Reset All Data", key="btn_reset"):
 # ────────────────────────────────────────────────────────────────────────────────
 
 with st.expander("⚙️ Shift Templates"):
-    col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
-    shift_label   = col1.text_input("Shift Label (e.g. ER1)")
-    role          = col2.selectbox("Role", ["Junior", "Senior"])
-    night_float   = col3.checkbox("Night Float")
-    thur_weekend  = col4.checkbox("Thursday Night = Weekend")
+    c1, c2, c3, c4 = st.columns([3, 2, 1, 1])
+    label_in = c1.text_input("Shift Label (e.g. ER1)")
+    role_in = c2.selectbox("Role", ["Junior", "Senior"])
+    nf_in = c3.checkbox("Night Float")
+    thu_wknd_in = c4.checkbox("Thursday Night = Weekend")
 
     if st.button("Add Shift", key="btn_add_shift"):
-        if not shift_label.strip():
+        if not label_in.strip():
             st.error("Shift label cannot be empty.")
         else:
-            base = shift_label.strip()
+            base = label_in.strip()
             existing = {s["label"] for s in st.session_state.shifts}
-            idx, unique = 1, base
+            idx = 1
+            unique = base
             while unique in existing:
                 idx += 1
                 unique = f"{base} #{idx}"
             st.session_state.shifts.append(
                 {
                     "label": unique,
-                    "role": role,
-                    "night_float": night_float,
-                    "thur_weekend": thur_weekend,
+                    "role": role_in,
+                    "night_float": nf_in,
+                    "thur_weekend": thu_wknd_in,
                 }
             )
 
-    # Show list & delete picker
     if st.session_state.shifts:
         st.table(pd.DataFrame(st.session_state.shifts))
-        delete_shift = st.selectbox(
-            "Select a shift to delete",
-            [""] + [s["label"] for s in st.session_state.shifts],
-            key="del_shift_select",
-        )
-        if st.button("🗑️ Delete Shift") and delete_shift:
-            st.session_state.shifts = [
-                s for s in st.session_state.shifts if s["label"] != delete_shift
-            ]
-            st.session_state.pop("del_shift_select", None)  # forget picker state
-            st.experimental_rerun()
-
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Participants
@@ -193,70 +181,24 @@ st.session_state.nf_block_length = st.slider(
 # ────────────────────────────────────────────────────────────────────────────────
 
 with st.expander("✈️ Leaves"):
-    leave_name = st.selectbox("Leave Name", [""] + juniors + seniors)
-    leave_from, leave_to = st.date_input(
-        "Leave Period",
-        [st.session_state.start_date, st.session_state.start_date],
-        key="leave_period",
+    lv_name = st.selectbox("Leave Name", [""] + juniors + seniors)
+    lv_from, lv_to = st.date_input(
+        "Leave Period", [st.session_state.start_date, st.session_state.start_date]
     )
-    if st.button("Add Leave", key="btn_add_leave") and leave_name and leave_from <= leave_to:
-        entry = (leave_name, leave_from, leave_to)
+    if st.button("Add Leave", key="btn_add_leave") and lv_name and lv_from <= lv_to:
+        entry = (lv_name, lv_from, lv_to)
         if entry not in st.session_state.leaves:
             st.session_state.leaves.append(entry)
-
-    # Show list & delete picker
-    if st.session_state.leaves:
-        leaves_df = pd.DataFrame(
-            st.session_state.leaves, columns=["Name", "From", "To"]
-        )
-        st.table(leaves_df)
-        leave_labels = [
-            f"{n}  {f.strftime('%Y-%m-%d')} → {t.strftime('%Y-%m-%d')}"
-            for n, f, t in st.session_state.leaves
-        ]
-        delete_leave = st.selectbox(
-            "Select a leave to delete", [""] + leave_labels, key="del_leave_select"
-        )
-        if st.button("🗑️ Delete Leave") and delete_leave:
-            idx = leave_labels.index(delete_leave)
-            st.session_state.leaves.pop(idx)
-            st.session_state.pop("del_leave_select", None)
-            st.experimental_rerun()
-
-
-
 
 with st.expander("🔄 Rotators"):
     rot_name = st.selectbox("Rotator Name", [""] + juniors + seniors)
     rot_from, rot_to = st.date_input(
-        "Rotator Period",
-        [st.session_state.start_date, st.session_state.start_date],
-        key="rot_period",
+        "Rotator Period", [st.session_state.start_date, st.session_state.start_date]
     )
     if st.button("Add Rotator", key="btn_add_rotator") and rot_name and rot_from <= rot_to:
         entry = (rot_name, rot_from, rot_to)
         if entry not in st.session_state.rotators:
             st.session_state.rotators.append(entry)
-
-    # Show list & delete picker
-    if st.session_state.rotators:
-        rot_df = pd.DataFrame(
-            st.session_state.rotators, columns=["Name", "From", "To"]
-        )
-        st.table(rot_df)
-        rot_labels = [
-            f"{n}  {f.strftime('%Y-%m-%d')} → {t.strftime('%Y-%m-%d')}"
-            for n, f, t in st.session_state.rotators
-        ]
-        delete_rot = st.selectbox(
-            "Select a rotator period to delete", [""] + rot_labels, key="del_rot_select"
-        )
-        if st.button("🗑️ Delete Rotator") and delete_rot:
-            idx = rot_labels.index(delete_rot)
-            st.session_state.rotators.pop(idx)
-            st.session_state.pop("del_rot_select", None)
-            st.experimental_rerun()
-
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Helper predicates
