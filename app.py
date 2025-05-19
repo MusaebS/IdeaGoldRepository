@@ -343,6 +343,73 @@ def balance_weekends(schedule_rows, stats, target_weekend, shift_cfg_map, min_ga
                 if changed:
                     break    # restart while-loop to recompute over/under
 
+
+# ────────────────────────────────────────────────────────────────────
+# Cross-bucket normaliser
+# Balances each participant’s *combined* integer quota across all
+# non-night-float labels of the same role (Junior vs Senior).
+# Keeps every bucket’s total intact; moves 1 slot at a time.
+# ────────────────────────────────────────────────────────────────────
+def normalise_role_quotas(target_total, slot_totals, shifts_cfg,
+                          juniors, seniors):
+    """Mutates `target_total` in place.
+
+    target_total : {label: {person: int}}
+    slot_totals  : {label: int}
+    shifts_cfg   : list of shift template dicts (night_float flags etc.)
+    juniors/seniors : lists of names in each role
+    """
+    role_map = {"Junior": juniors, "Senior": seniors}
+
+    # Build label groups per role
+    role_labels = {
+        role: [cfg["label"] for cfg in shifts_cfg
+               if not cfg["night_float"] and cfg["role"] == role]
+        for role in role_map
+    }
+
+    for role, people in role_map.items():
+        labels = role_labels[role]
+        if not labels:
+            continue
+
+        # Combined slots for this role
+        total_slots = sum(slot_totals[lbl] for lbl in labels)
+        ideal = round(total_slots / len(people))          # target each should have
+
+        # Build per-person surplus / deficit maps
+        def combined(p):
+            return sum(target_total[lbl].get(p, 0) for lbl in labels)
+
+        surplus = {p: combined(p) - ideal for p in people
+                   if combined(p) - ideal > 0}
+        deficit = {p: ideal - combined(p) for p in people
+                   if ideal - combined(p) > 0}
+
+        # Greedy move: take 1 slot from surplus person’s *richest* label,
+        # give to deficit person in *poorest* label (any label works).
+        while surplus and deficit:
+            p_over = max(surplus, key=surplus.get)
+            p_under = max(deficit, key=deficit.get)
+
+            # Find a label where p_over has >0 quota to give
+            give_lbl = next((lbl for lbl in labels
+                             if target_total[lbl].get(p_over, 0) > 0), None)
+            if give_lbl is None:
+                surplus.pop(p_over)
+                continue
+
+            # Transfer 1 slot
+            target_total[give_lbl][p_over]  -= 1
+            target_total[give_lbl][p_under] = target_total[give_lbl].get(p_under, 0) + 1
+
+            surplus[p_over]  -= 1
+            deficit[p_under] -= 1
+            if surplus[p_over] == 0:
+                surplus.pop(p_over)
+            if deficit[p_under] == 0:
+                deficit.pop(p_under)
+
 # ────────────────────────────────────────────────────────────────────────────────
 # Core schedule builder (fairness‑first)
 # ────────────────────────────────────────────────────────────────────────────────
@@ -449,6 +516,11 @@ def build_schedule():
             {p: expected_weekend[p][lbl] for p in role_pool},
             slot_weekends[lbl],
         )
+         # ----- NEW: cross-bucket normalisation (per role) -----
+        normalise_role_quotas(target_total, slot_totals, shifts_cfg,
+                          juniors, seniors)
+
+        
 
     # 5️⃣  STATS SETUP
     stats = {
