@@ -78,34 +78,46 @@ if st.button("🔁 Reset All Data", key="btn_reset"):
 # ────────────────────────────────────────────────────────────────────────────────
 
 with st.expander("⚙️ Shift Templates"):
-    c1, c2, c3, c4 = st.columns([3, 2, 1, 1])
-    label_in = c1.text_input("Shift Label (e.g. ER1)")
-    role_in = c2.selectbox("Role", ["Junior", "Senior"])
-    nf_in = c3.checkbox("Night Float")
-    thu_wknd_in = c4.checkbox("Thursday Night = Weekend")
+    col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
+    shift_label   = col1.text_input("Shift Label (e.g. ER1)")
+    role          = col2.selectbox("Role", ["Junior", "Senior"])
+    night_float   = col3.checkbox("Night Float")
+    thur_weekend  = col4.checkbox("Thursday Night = Weekend")
 
     if st.button("Add Shift", key="btn_add_shift"):
-        if not label_in.strip():
+        if not shift_label.strip():
             st.error("Shift label cannot be empty.")
         else:
-            base = label_in.strip()
+            base = shift_label.strip()
             existing = {s["label"] for s in st.session_state.shifts}
-            idx = 1
-            unique = base
+            idx, unique = 1, base
             while unique in existing:
                 idx += 1
                 unique = f"{base} #{idx}"
             st.session_state.shifts.append(
                 {
                     "label": unique,
-                    "role": role_in,
-                    "night_float": nf_in,
-                    "thur_weekend": thu_wknd_in,
+                    "role": role,
+                    "night_float": night_float,
+                    "thur_weekend": thur_weekend,
                 }
             )
 
+    # Show list & delete picker
     if st.session_state.shifts:
         st.table(pd.DataFrame(st.session_state.shifts))
+        delete_shift = st.selectbox(
+            "Select a shift to delete",
+            [""] + [s["label"] for s in st.session_state.shifts],
+            key="del_shift_select",
+        )
+        if st.button("🗑️ Delete Shift") and delete_shift:
+            st.session_state.shifts = [
+                s for s in st.session_state.shifts if s["label"] != delete_shift
+            ]
+            st.session_state.pop("del_shift_select", None)  # forget picker state
+            st.experimental_rerun()
+
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Participants
@@ -181,24 +193,70 @@ st.session_state.nf_block_length = st.slider(
 # ────────────────────────────────────────────────────────────────────────────────
 
 with st.expander("✈️ Leaves"):
-    lv_name = st.selectbox("Leave Name", [""] + juniors + seniors)
-    lv_from, lv_to = st.date_input(
-        "Leave Period", [st.session_state.start_date, st.session_state.start_date]
+    leave_name = st.selectbox("Leave Name", [""] + juniors + seniors)
+    leave_from, leave_to = st.date_input(
+        "Leave Period",
+        [st.session_state.start_date, st.session_state.start_date],
+        key="leave_period",
     )
-    if st.button("Add Leave", key="btn_add_leave") and lv_name and lv_from <= lv_to:
-        entry = (lv_name, lv_from, lv_to)
+    if st.button("Add Leave", key="btn_add_leave") and leave_name and leave_from <= leave_to:
+        entry = (leave_name, leave_from, leave_to)
         if entry not in st.session_state.leaves:
             st.session_state.leaves.append(entry)
+
+    # Show list & delete picker
+    if st.session_state.leaves:
+        leaves_df = pd.DataFrame(
+            st.session_state.leaves, columns=["Name", "From", "To"]
+        )
+        st.table(leaves_df)
+        leave_labels = [
+            f"{n}  {f.strftime('%Y-%m-%d')} → {t.strftime('%Y-%m-%d')}"
+            for n, f, t in st.session_state.leaves
+        ]
+        delete_leave = st.selectbox(
+            "Select a leave to delete", [""] + leave_labels, key="del_leave_select"
+        )
+        if st.button("🗑️ Delete Leave") and delete_leave:
+            idx = leave_labels.index(delete_leave)
+            st.session_state.leaves.pop(idx)
+            st.session_state.pop("del_leave_select", None)
+            st.experimental_rerun()
+
+
+
 
 with st.expander("🔄 Rotators"):
     rot_name = st.selectbox("Rotator Name", [""] + juniors + seniors)
     rot_from, rot_to = st.date_input(
-        "Rotator Period", [st.session_state.start_date, st.session_state.start_date]
+        "Rotator Period",
+        [st.session_state.start_date, st.session_state.start_date],
+        key="rot_period",
     )
     if st.button("Add Rotator", key="btn_add_rotator") and rot_name and rot_from <= rot_to:
         entry = (rot_name, rot_from, rot_to)
         if entry not in st.session_state.rotators:
             st.session_state.rotators.append(entry)
+
+    # Show list & delete picker
+    if st.session_state.rotators:
+        rot_df = pd.DataFrame(
+            st.session_state.rotators, columns=["Name", "From", "To"]
+        )
+        st.table(rot_df)
+        rot_labels = [
+            f"{n}  {f.strftime('%Y-%m-%d')} → {t.strftime('%Y-%m-%d')}"
+            for n, f, t in st.session_state.rotators
+        ]
+        delete_rot = st.selectbox(
+            "Select a rotator period to delete", [""] + rot_labels, key="del_rot_select"
+        )
+        if st.button("🗑️ Delete Rotator") and delete_rot:
+            idx = rot_labels.index(delete_rot)
+            st.session_state.rotators.pop(idx)
+            st.session_state.pop("del_rot_select", None)
+            st.experimental_rerun()
+
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Helper predicates
@@ -223,28 +281,45 @@ def is_active_rotator(p: str, dt: date) -> bool:
 # ────────────────────────────────────────────────────────────────────────────────
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Core schedule builder (fairness-first)  ⬇️  REPLACE WHOLE FUNCTION
+# Core schedule builder (fairness-first, NF isolated)
 # ────────────────────────────────────────────────────────────────────────────────
 def build_schedule():
     shifts_cfg = st.session_state.shifts
     start, end = st.session_state.start_date, st.session_state.end_date
-    days = pd.date_range(start, end)
+    days       = pd.date_range(start, end)
 
     juniors, seniors = st.session_state.juniors, st.session_state.seniors
-    pool = juniors + seniors
+    pool              = juniors + seniors                       # for summary only
 
-    # 1️⃣ WEIGHTS  (active days × leave bonus × extra on-calls)
+    # ------------------------------------------------------------------
+    # 0️⃣  Identify staff who ever appear in a night-float template
+    # ------------------------------------------------------------------
+    nf_staff = set()
+    for cfg in shifts_cfg:
+        if cfg["night_float"]:
+            nf_pool = (
+                st.session_state.nf_juniors if cfg["role"] == "Junior"
+                else st.session_state.nf_seniors
+            )
+            nf_staff.update(nf_pool)
+
+    regular_pool = [p for p in pool if p not in nf_staff]
+    if not regular_pool:
+        st.error("Everyone is on Night-Float – no one left for day shifts!")
+        return None, None, None
+
+    # 1️⃣  WEIGHTS  (active days × leave bonus × extra on-calls)
     span = (end - start).days + 1
-    leave_days = {p: 0 for p in pool}
-    for p in pool:
+    leave_days = {p: 0 for p in regular_pool}
+    for p in regular_pool:
         for nm, lf, lt in st.session_state.leaves:
             if nm == p:
                 overlap = (min(lt, end) - max(lf, start)).days + 1
                 leave_days[p] += max(0, overlap)
 
-    active_days = {p: 0 for p in pool}
+    active_days = {p: 0 for p in regular_pool}
     for d in days:
-        for p in pool:
+        for p in regular_pool:
             if not on_leave(p, d.date()) and is_active_rotator(p, d.date()):
                 active_days[p] += 1
 
@@ -252,11 +327,11 @@ def build_schedule():
         p: active_days[p]
         * (1 + leave_days[p] / span)
         * (1 + st.session_state.extra_oncalls.get(p, 0))
-        for p in pool
+        for p in regular_pool
     }
     total_weight = sum(weight.values()) or 1
 
-    # 2️⃣ SLOT COUNTS PER SHIFT LABEL
+    # 2️⃣  SLOT COUNTS PER SHIFT LABEL
     shift_labels   = [s["label"] for s in shifts_cfg if not s["night_float"]]
     slot_totals    = {lbl: 0 for lbl in shift_labels}
     slot_weekends  = {lbl: 0 for lbl in shift_labels}
@@ -270,33 +345,34 @@ def build_schedule():
             if is_weekend(d.date(), s):
                 slot_weekends[lbl] += 1
 
-    # 3️⃣ EXPECTED FRACTIONAL QUOTAS
+    # 3️⃣  EXPECTED FRACTIONAL QUOTAS
     expected_total = {
         p: {lbl: slot_totals[lbl]   * weight[p] / total_weight for lbl in shift_labels}
-        for p in pool
+        for p in regular_pool
     }
     expected_weekend = {
         p: {lbl: slot_weekends[lbl] * weight[p] / total_weight for lbl in shift_labels}
-        for p in pool
+        for p in regular_pool
     }
 
-    # 4️⃣ INTEGER TARGETS VIA HARE–NIEMEYER
+    # 4️⃣  INTEGER TARGETS VIA HARE–NIEMEYER
     target_total, target_weekend = {}, {}
     for lbl in shift_labels:
         target_total[lbl]   = allocate_integer_quotas(
-            {p: expected_total[p][lbl]   for p in pool}, slot_totals[lbl]
+            {p: expected_total[p][lbl]   for p in regular_pool}, slot_totals[lbl]
         )
         target_weekend[lbl] = allocate_integer_quotas(
-            {p: expected_weekend[p][lbl] for p in pool}, slot_weekends[lbl]
+            {p: expected_weekend[p][lbl] for p in regular_pool}, slot_weekends[lbl]
         )
 
-    # 5️⃣ STATS & LAST-ASSIGNED
+    # 5️⃣  STATS & LAST-ASSIGNED
     stats = {
-        p: {lbl: {"total": 0, "weekend": 0} for lbl in shift_labels} for p in pool
+        p: {lbl: {"total": 0, "weekend": 0} for lbl in shift_labels}
+        for p in regular_pool
     }
-    last_assigned = {p: None for p in pool}
+    last_assigned = {p: None for p in regular_pool}
 
-    # 6️⃣ PRE-ASSIGN NIGHT-FLOAT BLOCKS
+    # 6️⃣  PRE-ASSIGN NIGHT-FLOAT BLOCKS
     nf_assignments, unfilled = {}, []
     for cfg in [c for c in shifts_cfg if c["night_float"]]:
         nf_pool = (
@@ -308,22 +384,22 @@ def build_schedule():
             if not nf_pool:
                 unfilled.append((d.date(), cfg["label"]))
                 continue
-            idx = (i // st.session_state.nf_block_length) % len(nf_pool)
+            idx    = (i // st.session_state.nf_block_length) % len(nf_pool)
             person = nf_pool[idx]
             if on_leave(person, d.date()) or not is_active_rotator(person, d.date()):
                 unfilled.append((d.date(), cfg["label"]))
             else:
                 nf_assignments[cfg["label"]][d.date()] = person
 
-    # 7️⃣ DAY-BY-DAY ASSIGNMENT LOOP
+    # 7️⃣  DAY-BY-DAY ASSIGNMENT LOOP
     schedule_rows = []
 
     for d in days:
-        row = {"Date": d.date(), "Day": d.strftime("%A")}
-
+        row      = {"Date": d.date(), "Day": d.strftime("%A")}
         nf_today = {
             pers
-            for lbl, tbl in nf_assignments.items() if d.date() in tbl
+            for lbl, tbl in nf_assignments.items()
+            if d.date() in tbl
             for pers in [tbl[d.date()]]
         }
 
@@ -335,8 +411,10 @@ def build_schedule():
                 row[lbl] = nf_assignments.get(lbl, {}).get(d.date(), "Unfilled")
                 continue
 
-            # ————————————————— Candidate filter with optional debug —————————————————
             role_pool = juniors if cfg["role"] == "Junior" else seniors
+            role_pool = [p for p in role_pool if p not in nf_staff]  # strip NF people
+
+            # ——— candidate filters ———
             filters = {
                 "NF_today": lambda p: p not in nf_today,
                 "On_leave": lambda p: not on_leave(p, d.date()),
@@ -345,59 +423,60 @@ def build_schedule():
                                    or (d.date() - last_assigned[p]).days >= st.session_state.min_gap,
             }
             eligible = role_pool.copy()
-            for rule, fn in filters.items():
+            for fn in filters.values():
                 eligible = [p for p in eligible if fn(p)]
-
-            if st.session_state.get("debug_filters", False):
-                st.write(f"🔍 {d.date()} {lbl} → eligible:", eligible)
 
             if not eligible:
                 row[lbl] = "Unfilled"
                 unfilled.append((d.date(), lbl))
                 continue
 
-            # Priority: meet WEEKEND integer quotas first, then TOTAL
-            wknd = is_weekend(d.date(), cfg)
+            # Priority: meet weekend integer quotas first
+            wknd  = is_weekend(d.date(), cfg)
+            under = []
             if wknd and slot_weekends[lbl] > 0:
                 under = [p for p in eligible if stats[p][lbl]["weekend"] < target_weekend[lbl][p]]
-            else:
+            if not under:
                 under = [p for p in eligible if stats[p][lbl]["total"] < target_total[lbl][p]]
 
             if under:
-                pick = sorted(under)[0]                      # deterministic tie-break
+                random.shuffle(under)
+                pick = under[0]
             else:
+                random.shuffle(eligible)          # randomise tie-break
                 def deficit(p):
                     return (
                         target_weekend[lbl][p] - stats[p][lbl]["weekend"],
-                        target_total[lbl][p]  - stats[p][lbl]["total"],
+                        target_total[lbl][p]   - stats[p][lbl]["total"],
                     )
-                pick = max(sorted(eligible), key=deficit)     # most behind gets slot
+                pick = max(eligible, key=deficit)
 
             row[lbl] = pick
-            stats[pick][lbl]["total"] += 1
+            stats[pick][lbl]["total"]   += 1
             if wknd:
                 stats[pick][lbl]["weekend"] += 1
             last_assigned[pick] = d.date()
 
         schedule_rows.append(row)
 
-    # 8️⃣ BUILD OUTPUT DATAFRAMES
+    # 8️⃣  BUILD OUTPUT DATAFRAMES
     df_schedule = pd.DataFrame(schedule_rows)
 
     summary_rows = []
-    for p in pool:
+    for p in pool:                                   # include NF staff with zeros
         entry = {"Name": p}
         for lbl in shift_labels:
-            entry[f"{lbl}_assigned_total"]   = stats[p][lbl]["total"]
-            entry[f"{lbl}_expected_total"]   = target_total[lbl][p]
-            entry[f"{lbl}_assigned_weekend"] = stats[p][lbl]["weekend"]
-            entry[f"{lbl}_expected_weekend"] = target_weekend[lbl][p]
+            entry[f"{lbl}_assigned_total"]   = stats.get(p, {}).get(lbl, {}).get("total", 0)
+            entry[f"{lbl}_expected_total"]   = target_total.get(lbl, {}).get(p, 0)
+            entry[f"{lbl}_assigned_weekend"] = stats.get(p, {}).get(lbl, {}).get("weekend", 0)
+            entry[f"{lbl}_expected_weekend"] = target_weekend.get(lbl, {}).get(p, 0)
         summary_rows.append(entry)
 
     df_summary  = pd.DataFrame(summary_rows)
     df_unfilled = pd.DataFrame(unfilled, columns=["Date", "Shift"])
 
     return df_schedule, df_summary, df_unfilled
+
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Generate button & outputs
@@ -416,3 +495,4 @@ if st.button("🚀 Generate Schedule", disabled=False):
     st.download_button("Download Summary CSV", summ.to_csv(index=False), "summary.csv")
     if not unf.empty:
         st.download_button("Download Unfilled CSV", unf.to_csv(index=False), "unfilled.csv")
+
