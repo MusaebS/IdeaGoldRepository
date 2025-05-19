@@ -281,7 +281,7 @@ def is_active_rotator(p: str, dt: date) -> bool:
 # ────────────────────────────────────────────────────────────────────────────────
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Core schedule builder (fairness-first, NF isolated)
+# Core schedule builder (fairness-first, role-aware, NF isolated)
 # ────────────────────────────────────────────────────────────────────────────────
 def build_schedule():
     shifts_cfg = st.session_state.shifts
@@ -289,11 +289,9 @@ def build_schedule():
     days       = pd.date_range(start, end)
 
     juniors, seniors = st.session_state.juniors, st.session_state.seniors
-    pool              = juniors + seniors                       # for summary only
+    pool              = juniors + seniors                      # for summary only
 
-    # ------------------------------------------------------------------
-    # 0️⃣  Identify staff who ever appear in a night-float template
-    # ------------------------------------------------------------------
+    # 0️⃣  Staff who ever cover a night-float shift
     nf_staff = set()
     for cfg in shifts_cfg:
         if cfg["night_float"]:
@@ -329,13 +327,12 @@ def build_schedule():
         * (1 + st.session_state.extra_oncalls.get(p, 0))
         for p in regular_pool
     }
-    total_weight = sum(weight.values()) or 1
+    total_weight = sum(weight.values()) or 1  # not used after role split but kept
 
-    # 2️⃣  SLOT COUNTS PER SHIFT LABEL
+    # 2️⃣  SLOT COUNTS (total & weekend)
     shift_labels   = [s["label"] for s in shifts_cfg if not s["night_float"]]
     slot_totals    = {lbl: 0 for lbl in shift_labels}
     slot_weekends  = {lbl: 0 for lbl in shift_labels}
-
     for d in days:
         for s in shifts_cfg:
             if s["night_float"]:
@@ -345,27 +342,48 @@ def build_schedule():
             if is_weekend(d.date(), s):
                 slot_weekends[lbl] += 1
 
-    # 3️⃣  EXPECTED FRACTIONAL QUOTAS
-    expected_total = {
-        p: {lbl: slot_totals[lbl]   * weight[p] / total_weight for lbl in shift_labels}
-        for p in regular_pool
-    }
-    expected_weekend = {
-        p: {lbl: slot_weekends[lbl] * weight[p] / total_weight for lbl in shift_labels}
-        for p in regular_pool
-    }
+    # 3️⃣  EXPECTED FRACTIONAL QUOTAS  (role-aware)
+    expected_total   = {p: {} for p in regular_pool}
+    expected_weekend = {p: {} for p in regular_pool}
 
-    # 4️⃣  INTEGER TARGETS VIA HARE–NIEMEYER
+    for cfg in shifts_cfg:
+        if cfg["night_float"]:
+            continue
+        lbl        = cfg["label"]
+        role_pool  = juniors if cfg["role"] == "Junior" else seniors
+        role_pool  = [p for p in role_pool if p in regular_pool]
+
+        role_weight   = sum(weight[p] for p in role_pool) or 1
+        total_slots   = slot_totals[lbl]
+        weekend_slots = slot_weekends[lbl]
+
+        for p in regular_pool:
+            if p in role_pool:
+                expected_total[p][lbl]   = total_slots   * weight[p] / role_weight
+                expected_weekend[p][lbl] = weekend_slots * weight[p] / role_weight
+            else:
+                expected_total[p][lbl]   = 0.0
+                expected_weekend[p][lbl] = 0.0
+
+    # 4️⃣  INTEGER TARGETS VIA HARE–NIEMEYER  (role-aware)
     target_total, target_weekend = {}, {}
-    for lbl in shift_labels:
-        target_total[lbl]   = allocate_integer_quotas(
-            {p: expected_total[p][lbl]   for p in regular_pool}, slot_totals[lbl]
+    for cfg in shifts_cfg:
+        if cfg["night_float"]:
+            continue
+        lbl        = cfg["label"]
+        role_pool  = juniors if cfg["role"] == "Junior" else seniors
+        role_pool  = [p for p in role_pool if p in regular_pool]
+
+        target_total[lbl] = allocate_integer_quotas(
+            {p: expected_total[p][lbl]   for p in role_pool},
+            slot_totals[lbl],
         )
         target_weekend[lbl] = allocate_integer_quotas(
-            {p: expected_weekend[p][lbl] for p in regular_pool}, slot_weekends[lbl]
+            {p: expected_weekend[p][lbl] for p in role_pool},
+            slot_weekends[lbl],
         )
 
-    # 5️⃣  STATS & LAST-ASSIGNED
+    # 5️⃣  STATS SETUP
     stats = {
         p: {lbl: {"total": 0, "weekend": 0} for lbl in shift_labels}
         for p in regular_pool
@@ -397,24 +415,22 @@ def build_schedule():
     for d in days:
         row      = {"Date": d.date(), "Day": d.strftime("%A")}
         nf_today = {
-            pers
-            for lbl, tbl in nf_assignments.items()
-            if d.date() in tbl
-            for pers in [tbl[d.date()]]
+            pers for lbl, tbl in nf_assignments.items()
+            if d.date() in tbl for pers in [tbl[d.date()]]
         }
 
         for cfg in shifts_cfg:
             lbl = cfg["label"]
 
-            # Handle NF slots (already assigned above)
+            # Night-float cell already assigned
             if cfg["night_float"]:
                 row[lbl] = nf_assignments.get(lbl, {}).get(d.date(), "Unfilled")
                 continue
 
             role_pool = juniors if cfg["role"] == "Junior" else seniors
-            role_pool = [p for p in role_pool if p not in nf_staff]  # strip NF people
+            role_pool = [p for p in role_pool if p in regular_pool]
 
-            # ——— candidate filters ———
+            # ----- candidate filters -----
             filters = {
                 "NF_today": lambda p: p not in nf_today,
                 "On_leave": lambda p: not on_leave(p, d.date()),
@@ -426,12 +442,17 @@ def build_schedule():
             for fn in filters.values():
                 eligible = [p for p in eligible if fn(p)]
 
+            # Hard cap: no more than target_total + 1
+            eligible = [
+                p for p in eligible
+                if stats[p][lbl]["total"] < target_total[lbl].get(p, 0) + 1
+            ]
+
             if not eligible:
                 row[lbl] = "Unfilled"
                 unfilled.append((d.date(), lbl))
                 continue
 
-            # Priority: meet weekend integer quotas first
             wknd  = is_weekend(d.date(), cfg)
             under = []
             if wknd and slot_weekends[lbl] > 0:
@@ -443,7 +464,7 @@ def build_schedule():
                 random.shuffle(under)
                 pick = under[0]
             else:
-                random.shuffle(eligible)          # randomise tie-break
+                random.shuffle(eligible)
                 def deficit(p):
                     return (
                         target_weekend[lbl][p] - stats[p][lbl]["weekend"],
@@ -459,11 +480,11 @@ def build_schedule():
 
         schedule_rows.append(row)
 
-    # 8️⃣  BUILD OUTPUT DATAFRAMES
+    # 8️⃣  OUTPUT DATAFRAMES
     df_schedule = pd.DataFrame(schedule_rows)
 
     summary_rows = []
-    for p in pool:                                   # include NF staff with zeros
+    for p in pool:                               # include NF staff with zeros
         entry = {"Name": p}
         for lbl in shift_labels:
             entry[f"{lbl}_assigned_total"]   = stats.get(p, {}).get(lbl, {}).get("total", 0)
