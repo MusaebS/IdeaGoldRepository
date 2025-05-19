@@ -276,6 +276,73 @@ def is_active_rotator(p: str, dt: date) -> bool:
             return start <= dt <= end
     return True
 
+
+# ────────────────────────────────────────────────────────────────────
+# Post-process: swap a weekday with a weekend to fix weekend deficits
+# Works label-by-label until every weekend quota is met (or no legal swap).
+# ────────────────────────────────────────────────────────────────────
+def balance_weekends(schedule_rows, stats, target_weekend, shift_cfg_map, min_gap, shift_labels):
+    """
+    schedule_rows : list[dict]   rows produced in the day-by-day loop
+    stats          : stats[p][lbl][weekend/total]  (mutated in place)
+    target_weekend : target counts from Hare–Niemeyer
+    shift_cfg_map  : {label : cfg_dict}  so we can test Thursday-as-weekend
+    min_gap        : int       days between same-person assignments
+    shift_labels   : list[str] labels that are NOT night-float
+    """
+    def is_weekend_row(date_, label):
+        cfg = shift_cfg_map[label]
+        return date_.weekday() in (4, 5) or (date_.weekday() == 3 and cfg.get("thur_weekend", False))
+
+    changed = True
+    while changed:
+        changed = False
+        for lbl in shift_labels:
+            # lists of over / under people for this label
+            over  = [p for p in stats if stats[p][lbl]["weekend"] > target_weekend[lbl].get(p, 0)]
+            under = [p for p in stats if stats[p][lbl]["weekend"] < target_weekend[lbl].get(p, 0)]
+            if not over or not under:
+                continue
+
+            # pre-index rows by label assignment for quick look-up
+            wk_rows = [(idx, r) for idx, r in enumerate(schedule_rows)
+                       if is_weekend_row(r["Date"], lbl)]
+            wd_rows = [(idx, r) for idx, r in enumerate(schedule_rows)
+                       if not is_weekend_row(r["Date"], lbl)]
+
+            for p_over in over:
+                # a weekend row where p_over holds the slot
+                w_idx, w_row = next(((i, r) for i, r in wk_rows if r[lbl] == p_over), (None, None))
+                if w_row is None:
+                    continue
+                for p_under in under:
+                    # a weekday row where p_under holds the slot
+                    d_idx, d_row = next(((i, r) for i, r in wd_rows if r[lbl] == p_under), (None, None))
+                    if d_row is None:
+                        continue
+
+                    # min-gap check for both people after the swap
+                    w_date, d_date = w_row["Date"], d_row["Date"]
+
+                    def violates(person, new_date):
+                        return any(
+                            abs((new_date - r["Date"]).days) < min_gap and r[lbl] == person
+                            for r in schedule_rows
+                        )
+
+                    if violates(p_over, d_date) or violates(p_under, w_date):
+                        continue  # not legal, try next pair
+
+                    # --- perform the swap ---
+                    schedule_rows[w_idx][lbl] = p_under
+                    schedule_rows[d_idx][lbl] = p_over
+                    stats[p_over ][lbl]["weekend"] -= 1
+                    stats[p_under][lbl]["weekend"] += 1
+                    changed = True
+                    break
+                if changed:
+                    break    # restart while-loop to recompute over/under
+
 # ────────────────────────────────────────────────────────────────────────────────
 # Core schedule builder (fairness‑first)
 # ────────────────────────────────────────────────────────────────────────────────
@@ -488,7 +555,19 @@ def build_schedule():
                 stats[pick][lbl]["weekend"] += 1
             last_assigned[pick] = d.date()
 
+        # record today's assignments
         schedule_rows.append(row)
+
+    # ---------------- post-process: perfect weekend balance ----------------
+    balance_weekends(
+        schedule_rows,
+        stats,
+        target_weekend,
+        {cfg["label"]: cfg for cfg in shifts_cfg if not cfg["night_float"]},
+        st.session_state.min_gap,
+        shift_labels,
+    )
+
 
     # 8️⃣  OUTPUT DATAFRAMES
     df_schedule = pd.DataFrame(schedule_rows)
