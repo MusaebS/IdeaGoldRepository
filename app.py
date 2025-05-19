@@ -442,16 +442,26 @@ def build_schedule():
             for fn in filters.values():
                 eligible = [p for p in eligible if fn(p)]
 
-            # Hard cap: no more than target_total + 1
+                        # Hard cap: no more than target_total + 1
             eligible = [
                 p for p in eligible
                 if stats[p][lbl]["total"] < target_total[lbl].get(p, 0) + 1
             ]
 
+            # Weekend-only filter: drop anyone who has ALREADY met
+            # their weekend integer quota for this label.
+            wknd = is_weekend(d.date(), cfg)
+            if wknd and slot_weekends[lbl] > 0:
+                eligible = [
+                    p for p in eligible
+                    if stats[p][lbl]["weekend"] < target_weekend[lbl][p]
+                ]
+
             if not eligible:
                 row[lbl] = "Unfilled"
                 unfilled.append((d.date(), lbl))
                 continue
+
 
             wknd  = is_weekend(d.date(), cfg)
             under = []
