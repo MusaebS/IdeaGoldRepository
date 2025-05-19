@@ -598,6 +598,32 @@ if st.button("🚀 Generate Schedule", disabled=False):
     st.dataframe(df)
     st.subheader("📊 Assignment Summary")
     st.dataframe(summ)
+        # ----------  fairness alert  ----------
+    TOLERANCE = 1   # change this value if you want stricter / looser
+
+    def find_unfair(df, tol=1):
+        cols = [c for c in df.columns if c.endswith("_assigned_total")]
+        rows = []
+        for _, row in df.iterrows():
+            name = row["Name"]
+            for col in cols:
+                label = col.replace("_assigned_total", "")
+                diff_total   = row[f"{label}_assigned_total"]   - row[f"{label}_expected_total"]
+                diff_weekend = row[f"{label}_assigned_weekend"] - row[f"{label}_expected_weekend"]
+                if abs(diff_total) > tol or abs(diff_weekend) > tol:
+                    rows.append({
+                        "Name": name,
+                        "Label": label,
+                        "Δ Total":   diff_total,
+                        "Δ Weekend": diff_weekend,
+                    })
+        return pd.DataFrame(rows)
+
+    unfair_df = find_unfair(summary, TOLERANCE)
+    if not unfair_df.empty:
+        st.error(f"⚖️  Fairness alert – some participants deviate more than ±{TOLERANCE}")
+        st.dataframe(unfair_df)
+
     if not unf.empty:
         st.warning("⚠️ Unfilled Slots Detected")
         st.dataframe(unf)
