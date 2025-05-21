@@ -622,9 +622,9 @@ def build_schedule():
             wknd  = is_weekend(d.date(), cfg)
             under = []
             if wknd and slot_weekends[lbl] > 0:
-                under = [p for p in eligible if stats[p][lbl]["weekend"] < target_weekend[lbl][p]]
+                under = [p for p in eligible if stats[p][lbl]["weekend"] < target_weekend[lbl].get(p, 0)]
             if not under:
-                under = [p for p in eligible if stats[p][lbl]["total"] < target_total[lbl][p]]
+                under = [p for p in eligible if stats[p][lbl]["total"] < target_total[lbl].get(p, 0)]
 
             if under:
                 random.shuffle(under)
