@@ -353,6 +353,28 @@ def balance_weekends(schedule_rows, stats, target_weekend, shift_cfg_map, min_ga
                 if changed:
                     break    # restart while-loop to recompute over/under
 
+# ────────────────────────────────────────────────────────────────────
+# Fairness-report helper
+# Returns a tidy dataframe of all deviations outside the chosen tolerance
+# ────────────────────────────────────────────────────────────────────
+def build_fairness_report(summary_df: pd.DataFrame, tol: int = 0):
+    """Return rows where |assigned – expected| > tol (either total or weekend)"""
+    deviation_rows = []
+    # every column that ends with _assigned_total is a label anchor
+    for col in [c for c in summary_df.columns if c.endswith("_assigned_total")]:
+        label = col[:-len("_assigned_total")]
+        for _, row in summary_df.iterrows():
+            diff_tot = row[f"{label}_assigned_total"]   - row[f"{label}_expected_total"]
+            diff_wkd = row[f"{label}_assigned_weekend"] - row[f"{label}_expected_weekend"]
+            if abs(diff_tot) > tol or abs(diff_wkd) > tol:
+                deviation_rows.append(
+                    {"Name": row["Name"],
+                     "Label": label,
+                     "Δ Total":   diff_tot,
+                     "Δ Weekend": diff_wkd}
+                )
+    return pd.DataFrame(deviation_rows)
+
 # ────────────────────────────────────────────────────────────────────────────────
 # Core schedule builder (fairness‑first)
 # ────────────────────────────────────────────────────────────────────────────────
@@ -606,6 +628,22 @@ if st.button("🚀 Generate Schedule", disabled=False):
     st.dataframe(df)
     st.subheader("📊 Assignment Summary")
     st.dataframe(summ)
+        # ----------  Fairness report  ----------
+    FAIR_TOL = 0        # 0 = show every deviation, 1 = ignore ±1
+    report_df = build_fairness_report(summ, FAIR_TOL)
+
+    if not report_df.empty:
+        st.warning("⚖️  Fairness report – residents above/below quota")
+        st.dataframe(report_df, hide_index=True)
+        st.download_button(
+            "Download fairness report CSV",
+            report_df.to_csv(index=False),
+            "fairness_report.csv",
+            key="btn_dl_fairness"
+        )
+    else:
+        st.info("✨ Everyone is exactly on target (no fairness deviations).")
+
     if not unf.empty:
         st.warning("⚠️ Unfilled Slots Detected")
         st.dataframe(unf)
