@@ -391,8 +391,8 @@ def normalise_overall_quota(target_total: dict, tol: int = 1):
     differs from the overall mean by at most ±tol.
     """
     persons = list({p for q in target_total.values() for p in q})
-    totals  = {p: sum(q.get(p, 0) for q in target_total.values())
-               for p in persons}
+    totals = {p: sum(q.get(p, 0) for q in target_total.values())
+              for p in persons}
     ideal   = round(sum(totals.values()) / len(persons))
 
     def most_over_under():
@@ -402,21 +402,22 @@ def normalise_overall_quota(target_total: dict, tol: int = 1):
 
     while True:
         over, under = most_over_under()
-        if (abs(totals[over]  - ideal) <= tol and
+        if (abs(totals[over] - ideal) <= tol and
             abs(totals[under] - ideal) <= tol):
-            break        # all within tolerance
+            break  # all within tolerance
 
         moved = False
         for lbl, qdict in target_total.items():
             if qdict.get(over, 0) > qdict.get(under, 0):
-                qdict[over]  -= 1
+                qdict[over] -= 1
                 qdict[under] += 1
-                totals[over]  -= 1
+                totals[over] -= 1
                 totals[under] += 1
                 moved = True
                 break
-        if not moved:        # no legal swap found → stop
-            break
+        if not moved:
+            break  # No further adjustments possible
+
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Core schedule builder (fairness‑first)
@@ -522,13 +523,7 @@ def build_schedule():
             {p: expected_weekend[p][lbl] for p in role_pool},
             slot_weekends[lbl],
         )
-                # ----- NEW: cross-bucket quota normaliser -----
-        normalise_overall_quota(
-            target_total,
-            tol=1,  # allow ±1 overall drift
-        )
-
-
+    normalise_overall_quota(target_total, tol=1)
 
     # 5️⃣  STATS SETUP
     stats = {
