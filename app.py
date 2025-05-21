@@ -382,6 +382,41 @@ def build_median_report(summary_df: pd.DataFrame, tol: int = 0):
                 })
     return pd.DataFrame(rows)
 
+# ────────────────────────────────────────────────────────────────────
+# Cross-bucket quota normaliser  (keeps everyone within ±tol overall)
+# ────────────────────────────────────────────────────────────────────
+def normalise_overall_quota(target_total: dict, tol: int = 1):
+    """
+    Adjust target_total IN-PLACE so each resident’s *sum over labels*
+    differs from the overall mean by at most ±tol.
+    """
+    persons = list({p for q in target_total.values() for p in q})
+    totals  = {p: sum(q.get(p, 0) for q in target_total.values())
+               for p in persons}
+    ideal   = round(sum(totals.values()) / len(persons))
+
+    def most_over_under():
+        over  = max(persons, key=lambda x: totals[x] - ideal)
+        under = min(persons, key=lambda x: totals[x] - ideal)
+        return over, under
+
+    while True:
+        over, under = most_over_under()
+        if (abs(totals[over]  - ideal) <= tol and
+            abs(totals[under] - ideal) <= tol):
+            break        # all within tolerance
+
+        moved = False
+        for lbl, qdict in target_total.items():
+            if qdict.get(over, 0) > qdict.get(under, 0):
+                qdict[over]  -= 1
+                qdict[under] += 1
+                totals[over]  -= 1
+                totals[under] += 1
+                moved = True
+                break
+        if not moved:        # no legal swap found → stop
+            break
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Core schedule builder (fairness‑first)
@@ -487,6 +522,8 @@ def build_schedule():
             {p: expected_weekend[p][lbl] for p in role_pool},
             slot_weekends[lbl],
         )
+        # ----- NEW: cross-bucket normalisation -----
+    normalise_overall_quota(target_total, tol=1)   # allow ±1 overall
 
     # 5️⃣  STATS SETUP
     stats = {
