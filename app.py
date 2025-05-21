@@ -354,45 +354,6 @@ def balance_weekends(schedule_rows, stats, target_weekend, shift_cfg_map, min_ga
                     break    # restart while-loop to recompute over/under
 
 # ────────────────────────────────────────────────────────────────────
-# Cross-bucket quota normaliser  (keeps everyone within ±tol overall)
-# ────────────────────────────────────────────────────────────────────
-def normalise_overall_quota(target_total: dict, tol: int = 1):
-    """
-    Adjust target_total IN-PLACE so each resident’s *sum over labels*
-    differs from the overall mean by at most ±tol.
-    """
-    persons = list({p for q in target_total.values() for p in q})
-    totals = {p: sum(q.get(p, 0) for q in target_total.values())
-              for p in persons}
-    ideal   = round(sum(totals.values()) / len(persons))
-
-    def most_over_under():
-        over  = max(persons, key=lambda x: totals[x] - ideal)
-        under = min(persons, key=lambda x: totals[x] - ideal)
-        return over, under
-
-    while True:
-        over, under = most_over_under()
-        if (abs(totals[over] - ideal) <= tol and
-            abs(totals[under] - ideal) <= tol):
-            break  # all within tolerance
-
-        moved = False
-        for lbl, qdict in target_total.items():
-            # only rebalance if BOTH people actually have an entry
-            if over in qdict and under in qdict and qdict[over] > qdict[under]:
-                qdict[over]    -= 1
-                qdict[under]   += 1
-                totals[over]   -= 1
-                totals[under]  += 1
-                moved = True
-                break
-
-        if not moved:
-            break  # no further adjustments possible
-
-
-# ────────────────────────────────────────────────────────────────────
 # Fairness-vs-Median helper
 # ────────────────────────────────────────────────────────────────────
 def build_median_report(summary_df: pd.DataFrame, tol: int = 0):
@@ -420,7 +381,6 @@ def build_median_report(summary_df: pd.DataFrame, tol: int = 0):
                     "Δ Weekend vs median": int(d_wkd),
                 })
     return pd.DataFrame(rows)
-
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -527,17 +487,6 @@ def build_schedule():
             {p: expected_weekend[p][lbl] for p in role_pool},
             slot_weekends[lbl],
         )
-    # ----- NEW: exclude anyone who wasn’t active the whole span (rotators/part-timers) -----
-    span = (end - start).days + 1
-    full_participants = {p for p, dcount in active_days.items() if dcount == span}
-    for qdict in target_total.values():
-        for p in list(qdict):
-            if p not in full_participants:
-                qdict.pop(p)
-
-    # ----- now do the cross-bucket normalisation (±1 overall) -----
-    normalise_overall_quota(target_total, tol=1)
-
 
     # 5️⃣  STATS SETUP
     stats = {
@@ -622,9 +571,9 @@ def build_schedule():
             wknd  = is_weekend(d.date(), cfg)
             under = []
             if wknd and slot_weekends[lbl] > 0:
-                under = [p for p in eligible if stats[p][lbl]["weekend"] < target_weekend[lbl].get(p, 0)]
+                under = [p for p in eligible if stats[p][lbl]["weekend"] < target_weekend[lbl][p]]
             if not under:
-                under = [p for p in eligible if stats[p][lbl]["total"] < target_total[lbl].get(p, 0)]
+                under = [p for p in eligible if stats[p][lbl]["total"] < target_total[lbl][p]]
 
             if under:
                 random.shuffle(under)
@@ -710,5 +659,6 @@ if st.button("🚀 Generate Schedule", disabled=False):
     st.download_button("Download Summary CSV", summ.to_csv(index=False), "summary.csv")
     if not unf.empty:
         st.download_button("Download Unfilled CSV", unf.to_csv(index=False), "unfilled.csv")
+
 
 
