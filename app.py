@@ -354,26 +354,34 @@ def balance_weekends(schedule_rows, stats, target_weekend, shift_cfg_map, min_ga
                     break    # restart while-loop to recompute over/under
 
 # ────────────────────────────────────────────────────────────────────
-# Fairness-report helper
-# Returns a tidy dataframe of all deviations outside the chosen tolerance
+# Fairness-vs-Median helper
 # ────────────────────────────────────────────────────────────────────
-def build_fairness_report(summary_df: pd.DataFrame, tol: int = 0):
-    """Return rows where |assigned – expected| > tol (either total or weekend)"""
-    deviation_rows = []
-    # every column that ends with _assigned_total is a label anchor
+def build_median_report(summary_df: pd.DataFrame, tol: int = 0):
+    """
+    Return rows where a resident's assigned_total or assigned_weekend
+    differs from the *median assigned* for that label by more than `tol`.
+    """
+    rows = []
+    # detect each shift label once
     for col in [c for c in summary_df.columns if c.endswith("_assigned_total")]:
-        label = col[:-len("_assigned_total")]
-        for _, row in summary_df.iterrows():
-            diff_tot = row[f"{label}_assigned_total"]   - row[f"{label}_expected_total"]
-            diff_wkd = row[f"{label}_assigned_weekend"] - row[f"{label}_expected_weekend"]
-            if abs(diff_tot) > tol or abs(diff_wkd) > tol:
-                deviation_rows.append(
-                    {"Name": row["Name"],
-                     "Label": label,
-                     "Δ Total":   diff_tot,
-                     "Δ Weekend": diff_wkd}
-                )
-    return pd.DataFrame(deviation_rows)
+        label = col.replace("_assigned_total", "")
+
+        # compute medians of actual workload
+        med_total   = summary_df[f"{label}_assigned_total"].median()
+        med_weekend = summary_df[f"{label}_assigned_weekend"].median()
+
+        for _, r in summary_df.iterrows():
+            d_tot = r[f"{label}_assigned_total"]   - med_total
+            d_wkd = r[f"{label}_assigned_weekend"] - med_weekend
+            if abs(d_tot) > tol or abs(d_wkd) > tol:
+                rows.append({
+                    "Name": r["Name"],
+                    "Label": label,
+                    "Δ Total vs median":   int(d_tot),
+                    "Δ Weekend vs median": int(d_wkd),
+                })
+    return pd.DataFrame(rows)
+
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Core schedule builder (fairness‑first)
@@ -628,21 +636,21 @@ if st.button("🚀 Generate Schedule", disabled=False):
     st.dataframe(df)
     st.subheader("📊 Assignment Summary")
     st.dataframe(summ)
-        # ----------  Fairness report  ----------
-    FAIR_TOL = 0        # 0 = show every deviation, 1 = ignore ±1
-    report_df = build_fairness_report(summ, FAIR_TOL)
+    # ---------- fairness vs MEDIAN ----------
+    FAIR_TOL = 0    # 0 = show every deviation, 1 = ignore ±1
+    median_df = build_median_report(summ, FAIR_TOL)
 
-    if not report_df.empty:
-        st.warning("⚖️  Fairness report – residents above/below quota")
-        st.dataframe(report_df, hide_index=True)
+    if not median_df.empty:
+        st.warning("⚖️  Median fairness – residents above / below peer median")
+        st.dataframe(median_df, hide_index=True)
         st.download_button(
-            "Download fairness report CSV",
-            report_df.to_csv(index=False),
-            "fairness_report.csv",
-            key="btn_dl_fairness"
+            "Download median fairness CSV",
+            median_df.to_csv(index=False),
+            "median_fairness.csv",
+            key="btn_dl_median",
         )
     else:
-        st.info("✨ Everyone is exactly on target (no fairness deviations).")
+        st.info(f"✨ Everyone is within ±{FAIR_TOL} of the median for every label.")
 
     if not unf.empty:
         st.warning("⚠️ Unfilled Slots Detected")
