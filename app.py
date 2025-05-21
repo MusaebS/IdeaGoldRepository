@@ -354,35 +354,6 @@ def balance_weekends(schedule_rows, stats, target_weekend, shift_cfg_map, min_ga
                     break    # restart while-loop to recompute over/under
 
 # ────────────────────────────────────────────────────────────────────
-# Fairness-vs-Median helper
-# ────────────────────────────────────────────────────────────────────
-def build_median_report(summary_df: pd.DataFrame, tol: int = 0):
-    """
-    Return rows where a resident's assigned_total or assigned_weekend
-    differs from the *median assigned* for that label by more than `tol`.
-    """
-    rows = []
-    # detect each shift label once
-    for col in [c for c in summary_df.columns if c.endswith("_assigned_total")]:
-        label = col.replace("_assigned_total", "")
-
-        # compute medians of actual workload
-        med_total   = summary_df[f"{label}_assigned_total"].median()
-        med_weekend = summary_df[f"{label}_assigned_weekend"].median()
-
-        for _, r in summary_df.iterrows():
-            d_tot = r[f"{label}_assigned_total"]   - med_total
-            d_wkd = r[f"{label}_assigned_weekend"] - med_weekend
-            if abs(d_tot) > tol or abs(d_wkd) > tol:
-                rows.append({
-                    "Name": r["Name"],
-                    "Label": label,
-                    "Δ Total vs median":   int(d_tot),
-                    "Δ Weekend vs median": int(d_wkd),
-                })
-    return pd.DataFrame(rows)
-
-# ────────────────────────────────────────────────────────────────────
 # Cross-bucket quota normaliser  (keeps everyone within ±tol overall)
 # ────────────────────────────────────────────────────────────────────
 def normalise_overall_quota(target_total: dict, tol: int = 1):
@@ -417,6 +388,36 @@ def normalise_overall_quota(target_total: dict, tol: int = 1):
                 break
         if not moved:
             break  # No further adjustments possible
+
+# ────────────────────────────────────────────────────────────────────
+# Fairness-vs-Median helper
+# ────────────────────────────────────────────────────────────────────
+def build_median_report(summary_df: pd.DataFrame, tol: int = 0):
+    """
+    Return rows where a resident's assigned_total or assigned_weekend
+    differs from the *median assigned* for that label by more than `tol`.
+    """
+    rows = []
+    # detect each shift label once
+    for col in [c for c in summary_df.columns if c.endswith("_assigned_total")]:
+        label = col.replace("_assigned_total", "")
+
+        # compute medians of actual workload
+        med_total   = summary_df[f"{label}_assigned_total"].median()
+        med_weekend = summary_df[f"{label}_assigned_weekend"].median()
+
+        for _, r in summary_df.iterrows():
+            d_tot = r[f"{label}_assigned_total"]   - med_total
+            d_wkd = r[f"{label}_assigned_weekend"] - med_weekend
+            if abs(d_tot) > tol or abs(d_wkd) > tol:
+                rows.append({
+                    "Name": r["Name"],
+                    "Label": label,
+                    "Δ Total vs median":   int(d_tot),
+                    "Δ Weekend vs median": int(d_wkd),
+                })
+    return pd.DataFrame(rows)
+
 
 
 # ────────────────────────────────────────────────────────────────────────────────
