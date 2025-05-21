@@ -379,15 +379,18 @@ def normalise_overall_quota(target_total: dict, tol: int = 1):
 
         moved = False
         for lbl, qdict in target_total.items():
-            if qdict.get(over, 0) > qdict.get(under, 0):
-                qdict[over] -= 1
-                qdict[under] += 1
-                totals[over] -= 1
-                totals[under] += 1
+            # only rebalance if BOTH people actually have an entry
+            if over in qdict and under in qdict and qdict[over] > qdict[under]:
+                qdict[over]    -= 1
+                qdict[under]   += 1
+                totals[over]   -= 1
+                totals[under]  += 1
                 moved = True
                 break
+
         if not moved:
-            break  # No further adjustments possible
+            break  # no further adjustments possible
+
 
 # ────────────────────────────────────────────────────────────────────
 # Fairness-vs-Median helper
