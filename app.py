@@ -399,9 +399,7 @@ def build_schedule():
                 active_days[p] += 1
 
     weight = {
-        p: active_days[p]
-        * (1 + leave_days[p] / span)
-        * (1 + st.session_state.extra_oncalls.get(p, 0))
+        p: span * (1 + st.session_state.extra_oncalls.get(p, 0))
         for p in regular_pool
     }
     total_weight = sum(weight.values()) or 1  # not used after role split but kept
