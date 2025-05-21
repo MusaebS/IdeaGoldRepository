@@ -527,7 +527,17 @@ def build_schedule():
             {p: expected_weekend[p][lbl] for p in role_pool},
             slot_weekends[lbl],
         )
+    # ----- NEW: exclude anyone who wasn’t active the whole span (rotators/part-timers) -----
+    span = (end - start).days + 1
+    full_participants = {p for p, dcount in active_days.items() if dcount == span}
+    for qdict in target_total.values():
+        for p in list(qdict):
+            if p not in full_participants:
+                qdict.pop(p)
+
+    # ----- now do the cross-bucket normalisation (±1 overall) -----
     normalise_overall_quota(target_total, tol=1)
+
 
     # 5️⃣  STATS SETUP
     stats = {
