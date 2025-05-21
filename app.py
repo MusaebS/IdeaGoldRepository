@@ -522,15 +522,12 @@ def build_schedule():
             {p: expected_weekend[p][lbl] for p in role_pool},
             slot_weekends[lbl],
         )
-                # ----- NEW: cross-bucket normalisation -----
-        normalize_overall_quota(
+                # ----- NEW: cross-bucket quota normaliser -----
+        normalise_overall_quota(
             target_total,
-            slot_totals,
-            shifts_cfg,
-            juniors,
-            seniors,
-            tol=1,  # allow ±1 overall drift across all shifts
+            tol=1,  # allow ±1 overall drift
         )
+
 
 
     # 5️⃣  STATS SETUP
