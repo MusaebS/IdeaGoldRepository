@@ -325,10 +325,20 @@ def balance_weekends(schedule_rows, stats, target_weekend, shift_cfg_map, min_ga
                     w_date, d_date = w_row["Date"], d_row["Date"]
 
                     def violates(person, new_date):
-                        return any(
-                            abs((new_date - r["Date"]).days) < min_gap and r[lbl] == person
-                            for r in schedule_rows
+                        """True if swapping would break any rule for *person*"""
+                        return (
+                            # violates min-gap for this label
+                            any(
+                                abs((new_date - r["Date"]).days) < min_gap
+                                and r[lbl] == person
+                                for r in schedule_rows
+                            )
+                            # on leave that day
+                            or on_leave(person, new_date)
+                            # outside rotator window that day
+                            or not is_active_rotator(person, new_date)
                         )
+
 
                     if violates(p_over, d_date) or violates(p_under, w_date):
                         continue  # not legal, try next pair
