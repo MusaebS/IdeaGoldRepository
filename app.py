@@ -289,14 +289,21 @@ def normalize_overall_quota(target_total, full_participants, tol=1):
         under = min(persons, key=lambda x: totals[x] - ideal)
         return over, under
 
+    # Limit normalization to prevent unjustified reduction
+    min_allowed = {p: ideal - tol for p in persons}
+
     while True:
         over, under = most_over_under()
         if abs(totals[over] - ideal) <= tol and abs(totals[under] - ideal) <= tol:
-            break  # all within tolerance
+            break  # within tolerance
 
         moved = False
         for lbl, qdict in target_total.items():
-            if over in qdict and under in qdict and qdict[over] > qdict[under]:
+            if (
+                over in qdict and under in qdict 
+                and qdict[over] > qdict[under]
+                and qdict[under] < min_allowed[under]  # prevent excessive reduction
+            ):
                 qdict[over] -= 1
                 qdict[under] += 1
                 totals[over] -= 1
@@ -304,7 +311,8 @@ def normalize_overall_quota(target_total, full_participants, tol=1):
                 moved = True
                 break
         if not moved:
-            break  # no further adjustments possible
+            break
+
 
 # ────────────────────────────────────────────────────────────────────
 # Post-process: swap a weekday with a weekend to fix weekend deficits
