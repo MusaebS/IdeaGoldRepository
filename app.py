@@ -499,44 +499,50 @@ def build_schedule():
                 expected_total[p][lbl]   = 0.0
                 expected_weekend[p][lbl] = 0.0
 
-    # 4️⃣  INTEGER TARGETS VIA HARE–NIEMEYER  (role-aware)
+# 4️⃣ INTEGER TARGETS VIA HARE–NIEMEYER (role-aware)
     target_total, target_weekend = {}, {}
     for cfg in shifts_cfg:
         if cfg["night_float"]:
             continue
-        lbl        = cfg["label"]
-        role_pool  = juniors if cfg["role"] == "Junior" else seniors
-        role_pool  = [p for p in role_pool if p in regular_pool]
-
+        lbl = cfg["label"]
+        role_pool = juniors if cfg["role"] == "Junior" else seniors
+        role_pool = [p for p in role_pool if p in regular_pool]
+    
         target_total[lbl] = allocate_integer_quotas(
-            {p: expected_total[p][lbl]   for p in role_pool},
-            slot_totals[lbl],
+            {p: expected_total[p][lbl] for p in role_pool}, slot_totals[lbl]
         )
         target_weekend[lbl] = allocate_integer_quotas(
-            {p: expected_weekend[p][lbl] for p in role_pool},
-            slot_weekends[lbl],
+            {p: expected_weekend[p][lbl] for p in role_pool}, slot_weekends[lbl]
         )
-        # Explicitly differentiate rotators from participants on leave:
-    span = (end - start).days + 1
-
-    rotators_set = {p for p, days in active_days.items() if days < span and any(nm == p for nm, _, _ in st.session_state.rotators)}
-    leave_set = {p for p, days in active_days.items() if days < span and any(nm == p for nm, _, _ in st.session_state.leaves)}
-
-    full_participants = {p for p, days in active_days.items() if days == span or p in leave_set}
-
-    # Only adjust quotas down for ROTATORS:
-    for lbl, qdict in target_total.items():
-        for p in list(qdict):
-            if p in rotators_set:
-                availability_ratio = active_days[p] / span
-                    qdict[p] = round(qdict[p] * availability_ratio)
-               # Participants on leave intentionally NOT adjusted, requiring compensation
-
-    # Normalize quotas across shifts (cross-bucket normalization):
-    normalise_overall_quota(target_total, full_participants, tol=1)
-
-
     
+    # Explicitly differentiate rotators from leave takers:
+    span = (end - start).days + 1
+    
+    rotator_set = {
+        p for p in regular_pool
+        if active_days[p] < span and any(nm == p for nm, _, _ in st.session_state.rotators)
+    }
+    leave_set = {
+        p for p in regular_pool
+        if active_days[p] < span and any(nm == p for nm, _, _ in st.session_state.leaves)
+    }
+    
+    full_participants = {
+        p for p in regular_pool if active_days[p] == span or p in leave_set
+    }
+    
+    # Adjust quotas DOWN ONLY FOR ROTATORS
+    for lbl, qdict in target_total.items():
+        for p in rotator_set:
+            if p in qdict:
+                availability_ratio = active_days[p] / span
+                qdict[p] = round(qdict[p] * availability_ratio)
+    
+    # Normalize quotas across shifts (cross-bucket normalization):
+    normalize_overall_quota(target_total, full_participants, tol=1)
+    
+    
+        
     # 5️⃣  STATS SETUP
     stats = {
         p: {lbl: {"total": 0, "weekend": 0} for lbl in shift_labels}
