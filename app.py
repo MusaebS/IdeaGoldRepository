@@ -276,6 +276,35 @@ def is_active_rotator(p: str, dt: date) -> bool:
             return start <= dt <= end
     return True
 
+#----------------------------------------------------------
+# cross-bucket quota normalization helper
+#----------------------------------------------------------
+def normalize_overall_quota(target_total, full_participants, tol=1):
+    persons = list(full_participants)
+    totals = {p: sum(target_total[lbl].get(p, 0) for lbl in target_total) for p in persons}
+    ideal = round(sum(totals.values()) / len(persons))
+
+    def most_over_under():
+        over = max(persons, key=lambda x: totals[x] - ideal)
+        under = min(persons, key=lambda x: totals[x] - ideal)
+        return over, under
+
+    while True:
+        over, under = most_over_under()
+        if abs(totals[over] - ideal) <= tol and abs(totals[under] - ideal) <= tol:
+            break  # all within tolerance
+
+        moved = False
+        for lbl, qdict in target_total.items():
+            if over in qdict and under in qdict and qdict[over] > qdict[under]:
+                qdict[over] -= 1
+                qdict[under] += 1
+                totals[over] -= 1
+                totals[under] += 1
+                moved = True
+                break
+        if not moved:
+            break  # no further adjustments possible
 
 # ────────────────────────────────────────────────────────────────────
 # Post-process: swap a weekday with a weekend to fix weekend deficits
@@ -487,7 +516,26 @@ def build_schedule():
             {p: expected_weekend[p][lbl] for p in role_pool},
             slot_weekends[lbl],
         )
+    # Explicitly differentiate rotators from participants on leave:
+    span = (end - start).days + 1
+    
+    rotators = {p for p, days in active_days.items() if days < span and any(nm == p for nm, _, _ in st.session_state.rotators)}
+    on_leave = {p for p, days in active_days.items() if days < span and any(nm == p for nm, _, _ in st.session_state.leaves)}
+    
+    full_participants = {p for p, days in active_days.items() if days == span or p in on_leave}
+    
+    # Only adjust quotas down for ROTATORS:
+    for lbl, qdict in target_total.items():
+        for p in qdict:
+            if p in rotators:
+                availability_ratio = active_days[p] / span
+                qdict[p] = round(qdict[p] * availability_ratio)
+            # participants on leave intentionally NOT adjusted, requiring compensation
 
+    # Normalize quotas across shifts (cross-bucket normalization):
+    normalize_overall_quota(target_total, full_participants, tol=1)
+
+    
     # 5️⃣  STATS SETUP
     stats = {
         p: {lbl: {"total": 0, "weekend": 0} for lbl in shift_labels}
