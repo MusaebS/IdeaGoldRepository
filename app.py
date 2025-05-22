@@ -516,24 +516,25 @@ def build_schedule():
             {p: expected_weekend[p][lbl] for p in role_pool},
             slot_weekends[lbl],
         )
-    # Explicitly differentiate rotators from participants on leave:
+        # Explicitly differentiate rotators from participants on leave:
     span = (end - start).days + 1
-    
-    rotators = {p for p, days in active_days.items() if days < span and any(nm == p for nm, _, _ in st.session_state.rotators)}
-    on_leave = {p for p, days in active_days.items() if days < span and any(nm == p for nm, _, _ in st.session_state.leaves)}
-    
-    full_participants = {p for p, days in active_days.items() if days == span or p in on_leave}
-    
+
+    rotators_set = {p for p, days in active_days.items() if days < span and any(nm == p for nm, _, _ in st.session_state.rotators)}
+    leave_set = {p for p, days in active_days.items() if days < span and any(nm == p for nm, _, _ in st.session_state.leaves)}
+
+    full_participants = {p for p, days in active_days.items() if days == span or p in leave_set}
+
     # Only adjust quotas down for ROTATORS:
     for lbl, qdict in target_total.items():
-        for p in qdict:
-            if p in rotators:
+        for p in list(qdict):
+            if p in rotators_set:
                 availability_ratio = active_days[p] / span
-                qdict[p] = round(qdict[p] * availability_ratio)
-            # participants on leave intentionally NOT adjusted, requiring compensation
+                    qdict[p] = round(qdict[p] * availability_ratio)
+               # Participants on leave intentionally NOT adjusted, requiring compensation
 
     # Normalize quotas across shifts (cross-bucket normalization):
-    normalize_overall_quota(target_total, full_participants, tol=1)
+    normalise_overall_quota(target_total, full_participants, tol=1)
+
 
     
     # 5️⃣  STATS SETUP
