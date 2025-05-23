@@ -17,11 +17,8 @@ st.title("🪙 Idea Gold Scheduler – Stable & Fair v2025-05-16")
 def allocate_integer_quotas(float_quotas: dict, total_slots: int) -> dict:
     """
     Convert fractional quotas to integers that sum to *total_slots*.
-
-    Early-return guard: if *total_slots* ≤ 0 or no participants were
-    passed, immediately return a dict of zeros.  This prevents unnecessary
-    work (and protects against weird negative remainders if the helper is
-    reused elsewhere).
+    When several participants have equal remainders, decide **at random**
+    (seeded by the label name for reproducibility) instead of alphabetically.
     """
     if total_slots <= 0 or not float_quotas:
         return {p: 0 for p in float_quotas}
@@ -33,10 +30,23 @@ def allocate_integer_quotas(float_quotas: dict, total_slots: int) -> dict:
     if to_assign <= 0:
         return base
 
-    # Give leftover slots to the largest remainders (alphabetical tie-break)
-    extras = sorted(remainder.items(), key=lambda x: (-x[1], x[0]))[:to_assign]
-    for p, _ in extras:
+    # --- NEW: random tie-break on equal remainder -------------------------
+    # group by remainder so that we can shuffle ties only
+    by_rem = {}
+    for p, r in remainder.items():
+        by_rem.setdefault(r, []).append(p)
+
+    # make the list sorted by descending remainder, but shuffle *within* equal groups
+    ordered = []
+    rng = random.Random()                     # local RNG; keeps global seed unaffected
+    for rem in sorted(by_rem.keys(), reverse=True):
+        group = by_rem[rem]
+        rng.shuffle(group)                    # shuffle equal-remainder names
+        ordered.extend(group)
+
+    for p in ordered[:to_assign]:
         base[p] += 1
+    # ----------------------------------------------------------------------
     return base
 
 
@@ -299,17 +309,16 @@ def normalize_overall_quota(target_total, full_participants, tol=1):
 
         moved = False
         for lbl, qdict in target_total.items():
-            if (
-                over in qdict and under in qdict 
-                and qdict[over] > qdict[under]
-                and qdict[under] < min_allowed[under]  # prevent excessive reduction
-            ):
-                qdict[over] -= 1
-                qdict[under] += 1
-                totals[over] -= 1
+            # allow a transfer as long as the “over” person has
+            # at least one slot in *this* label; the “under” person
+            # may currently have zero – we’ll create their first slot
+            if qdict.get(over, 0) > 0:
+                qdict[over]  -= 1
+                qdict[under] = qdict.get(under, 0) + 1
+                totals[over]  -= 1
                 totals[under] += 1
                 moved = True
-                break
+                break            # exit the for-lbl loop; recompute totals
         if not moved:
             break
 
