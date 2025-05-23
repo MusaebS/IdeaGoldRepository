@@ -438,6 +438,10 @@ def build_median_report(summary_df: pd.DataFrame, tol: int = 0):
 # ────────────────────────────────────────────────────────────────────────────────
 def build_schedule():
     shifts_cfg = st.session_state.shifts
+        # NEW – tells us whether a label is “Junior” or “Senior”
+    label_role = {cfg["label"]: cfg["role"]            # e.g. {"ER-1": "Junior", "ER-2": "Senior"}
+                  for cfg in shifts_cfg
+                  if not cfg["night_float"]}
     start, end = st.session_state.start_date, st.session_state.end_date
     days       = pd.date_range(start, end)
 
@@ -687,12 +691,22 @@ def build_schedule():
             if r[lbl] != "Unfilled":
                 continue                              # already filled
             # who is still under their integer target in *this* label?
+            required_role = label_role[lbl]                 # "Junior" or "Senior"
+            
             candidates = [
                 p for p in regular_pool
-                if stats[p][lbl]["total"] <= target_total[lbl].get(p, 0)
-                and on_leave(p, r["Date"]) is False
+                # ---- NEW: role must match the label ----
+                if (p in juniors if required_role == "Junior" else p in seniors)
+                # ----------------------------------------
+                and (
+                    stats[p][lbl]["total"] <  target_total[lbl].get(p, 0) or      # under label quota
+                    sum(stats[p][l]["total"] for l in shift_labels) <              # or globally lagging
+                    sum(target_total[l].get(p, 0) for l in shift_labels)
+                )
+                and not on_leave(p, r["Date"])
                 and is_active_rotator(p, r["Date"])
             ]
+
             if not candidates:                        # genuinely nobody left
                 continue
             pick = random.choice(candidates)
