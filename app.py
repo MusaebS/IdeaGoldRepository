@@ -17,8 +17,11 @@ st.title("🪙 Idea Gold Scheduler – Stable & Fair v2025-05-16")
 def allocate_integer_quotas(float_quotas: dict, total_slots: int) -> dict:
     """
     Convert fractional quotas to integers that sum to *total_slots*.
-    When several participants have equal remainders, decide **at random**
-    (seeded by the label name for reproducibility) instead of alphabetically.
+
+    Early-return guard: if *total_slots* ≤ 0 or no participants were
+    passed, immediately return a dict of zeros.  This prevents unnecessary
+    work (and protects against weird negative remainders if the helper is
+    reused elsewhere).
     """
     if total_slots <= 0 or not float_quotas:
         return {p: 0 for p in float_quotas}
@@ -30,23 +33,10 @@ def allocate_integer_quotas(float_quotas: dict, total_slots: int) -> dict:
     if to_assign <= 0:
         return base
 
-    # --- NEW: random tie-break on equal remainder -------------------------
-    # group by remainder so that we can shuffle ties only
-    by_rem = {}
-    for p, r in remainder.items():
-        by_rem.setdefault(r, []).append(p)
-
-    # make the list sorted by descending remainder, but shuffle *within* equal groups
-    ordered = []
-    rng = random.Random()                     # local RNG; keeps global seed unaffected
-    for rem in sorted(by_rem.keys(), reverse=True):
-        group = by_rem[rem]
-        rng.shuffle(group)                    # shuffle equal-remainder names
-        ordered.extend(group)
-
-    for p in ordered[:to_assign]:
+    # Give leftover slots to the largest remainders (alphabetical tie-break)
+    extras = sorted(remainder.items(), key=lambda x: (-x[1], x[0]))[:to_assign]
+    for p, _ in extras:
         base[p] += 1
-    # ----------------------------------------------------------------------
     return base
 
 
@@ -309,16 +299,17 @@ def normalize_overall_quota(target_total, full_participants, tol=1):
 
         moved = False
         for lbl, qdict in target_total.items():
-            # allow a transfer as long as the “over” person has
-            # at least one slot in *this* label; the “under” person
-            # may currently have zero – we’ll create their first slot
-            if qdict.get(over, 0) > 0:
-                qdict[over]  -= 1
-                qdict[under] = qdict.get(under, 0) + 1
-                totals[over]  -= 1
+            if (
+                over in qdict and under in qdict 
+                and qdict[over] > qdict[under]
+                and qdict[under] < min_allowed[under]  # prevent excessive reduction
+            ):
+                qdict[over] -= 1
+                qdict[under] += 1
+                totals[over] -= 1
                 totals[under] += 1
                 moved = True
-                break            # exit the for-lbl loop; recompute totals
+                break
         if not moved:
             break
 
@@ -438,10 +429,6 @@ def build_median_report(summary_df: pd.DataFrame, tol: int = 0):
 # ────────────────────────────────────────────────────────────────────────────────
 def build_schedule():
     shifts_cfg = st.session_state.shifts
-        # NEW – tells us whether a label is “Junior” or “Senior”
-    label_role = {cfg["label"]: cfg["role"]            # e.g. {"ER-1": "Junior", "ER-2": "Senior"}
-                  for cfg in shifts_cfg
-                  if not cfg["night_float"]}
     start, end = st.session_state.start_date, st.session_state.end_date
     days       = pd.date_range(start, end)
 
@@ -537,43 +524,31 @@ def build_schedule():
         )
     
     # Explicitly differentiate rotators from leave takers:
-    # ----- 4B.  ADJUST FOR ROTATORS, THEN NORMALISE GLOBALLY -----
     span = (end - start).days + 1
     
-    rotator_set = {                      # fewer than full days *and* a declared rotator
+    rotator_set = {
         p for p in regular_pool
         if active_days[p] < span and any(nm == p for nm, _, _ in st.session_state.rotators)
     }
-    leave_set = {                        # fewer than full days *and* a declared leave
+    leave_set = {
         p for p in regular_pool
         if active_days[p] < span and any(nm == p for nm, _, _ in st.session_state.leaves)
     }
     
-    full_participants = {                # everyone who should be kept within ±tol overall
-        p for p in regular_pool
-        if active_days[p] == span or p in leave_set
+    full_participants = {
+        p for p in regular_pool if active_days[p] == span or p in leave_set
     }
     
-    # shrink *only* rotators’ quotas, label by label
+    # Adjust quotas DOWN ONLY FOR ROTATORS
     for lbl, qdict in target_total.items():
         for p in rotator_set:
             if p in qdict:
-                ratio = active_days[p] / span
-                qdict[p] = round(qdict[p] * ratio)
+                availability_ratio = active_days[p] / span
+                qdict[p] = round(qdict[p] * availability_ratio)
     
-    # keep overall totals within ±1 of the mean across *full_participants*
+    # Normalize quotas across shifts (cross-bucket normalization):
     normalize_overall_quota(target_total, full_participants, tol=1)
     
-    # --- 4C  top-up so quotas == real slot counts -------------------
-for lbl, qdict in target_total.items():
-    slack = slot_totals[lbl] - sum(qdict.values())       # how many we’re short
-    while slack > 0:
-        # pick whoever currently has the **smallest** quota for this label …
-        p = min(qdict, key=qdict.get)
-        qdict[p] += 1
-        slack    -= 1
-# ----------------------------------------------------------------
-
     
         
     # 5️⃣  STATS SETUP
@@ -669,19 +644,10 @@ for lbl, qdict in target_total.items():
             else:
                 random.shuffle(eligible)
                 def deficit(p):
-                    # label-local gaps (weekend first, then total) …
-                    local = (
+                    return (
                         target_weekend[lbl][p] - stats[p][lbl]["weekend"],
                         target_total[lbl][p]   - stats[p][lbl]["total"],
                     )
-                    # …followed by the *global* gap across all labels
-                    global_gap = sum(
-                        max(0, target_total[l].get(p, 0) - stats[p][l]["total"])
-                        for l in shift_labels
-                    )
-
-                    return local + (global_gap,)
-
                 pick = max(eligible, key=deficit)
 
             row[lbl] = pick
@@ -692,45 +658,6 @@ for lbl, qdict in target_total.items():
 
         # record today's assignments
         schedule_rows.append(row)
-                # 7C ────────────────────────────────────────────────────────────────
-        # SECOND-PASS: fill any rows that are still "Unfilled"
-        #              keeps the cross-bucket balance intact
-        # -------------------------------------------------------------------
-    for r in schedule_rows:
-        for lbl in shift_labels:
-            if r[lbl] != "Unfilled":
-                continue                              # already filled
-            # who is still under their integer target in *this* label?
-            required_role = label_role[lbl]                 # "Junior" or "Senior"
-            
-            def role_ok(person):
-                return (required_role == "Junior" and person in juniors) or \
-                       (required_role == "Senior" and person in seniors)
-    
-            below_quota = [
-                p for p in regular_pool
-                if role_ok(p)
-                and stats[p][lbl]["total"] < target_total[lbl].get(p, 0)
-                and not on_leave(p, r["Date"])
-                and is_active_rotator(p, r["Date"])
-            ]
-    
-            # Fallback: if nobody is still below-quota, allow *any* legal person
-            candidates = below_quota or [
-                p for p in regular_pool
-                if role_ok(p)
-                and not on_leave(p, r["Date"])
-                and is_active_rotator(p, r["Date"])
-            ]
-
-            if not candidates:                        # genuinely nobody left
-                continue
-            pick = random.choice(candidates)
-            r[lbl] = pick
-            stats[pick][lbl]["total"] += 1
-            if is_weekend(r["Date"], [c for c in shifts_cfg if c["label"] == lbl][0]):
-                stats[pick][lbl]["weekend"] += 1
-        
 
     # ---------------- post-process: perfect weekend balance ----------------
     balance_weekends(
@@ -795,6 +722,7 @@ if st.button("🚀 Generate Schedule", disabled=False):
     st.download_button("Download Summary CSV", summ.to_csv(index=False), "summary.csv")
     if not unf.empty:
         st.download_button("Download Unfilled CSV", unf.to_csv(index=False), "unfilled.csv")
+
 
 
 
