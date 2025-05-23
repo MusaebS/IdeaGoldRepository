@@ -662,8 +662,10 @@ def build_schedule():
                     )
                     # …followed by the *global* gap across all labels
                     global_gap = sum(
-                        max(0, target_total[l][p] - stats[p][l]["total"]) for l in shift_labels
+                        max(0, target_total[l].get(p, 0) - stats[p][l]["total"])
+                        for l in shift_labels
                     )
+
                     return local + (global_gap,)
 
                 pick = max(eligible, key=deficit)
