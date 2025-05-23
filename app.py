@@ -680,24 +680,24 @@ def build_schedule():
         # SECOND-PASS: fill any rows that are still "Unfilled"
         #              keeps the cross-bucket balance intact
         # -------------------------------------------------------------------
-        for r in schedule_rows:
-            for lbl in shift_labels:
-                if r[lbl] != "Unfilled":
-                    continue                              # already filled
-                # who is still under their integer target in *this* label?
-                candidates = [
-                    p for p in regular_pool
-                    if stats[p][lbl]["total"] < target_total[lbl].get(p, 0)
-                    and not on_leave(p, r["Date"])
-                    and is_active_rotator(p, r["Date"])
-                ]
-                if not candidates:                        # genuinely nobody left
-                    continue
-                pick = random.choice(candidates)
-                r[lbl] = pick
-                stats[pick][lbl]["total"] += 1
-                if is_weekend(r["Date"], [c for c in shifts_cfg if c["label"] == lbl][0]):
-                    stats[pick][lbl]["weekend"] += 1
+    for r in schedule_rows:
+        for lbl in shift_labels:
+            if r[lbl] != "Unfilled":
+                continue                              # already filled
+            # who is still under their integer target in *this* label?
+            candidates = [
+                p for p in regular_pool
+                if stats[p][lbl]["total"] <= target_total[lbl].get(p, 0)
+                and on_leave(p, r["Date"]) is False
+                and is_active_rotator(p, r["Date"])
+            ]
+            if not candidates:                        # genuinely nobody left
+                continue
+            pick = random.choice(candidates)
+            r[lbl] = pick
+            stats[pick][lbl]["total"] += 1
+            if is_weekend(r["Date"], [c for c in shifts_cfg if c["label"] == lbl][0]):
+                stats[pick][lbl]["weekend"] += 1
         
 
     # ---------------- post-process: perfect weekend balance ----------------
