@@ -564,6 +564,16 @@ def build_schedule():
     # keep overall totals within ±1 of the mean across *full_participants*
     normalize_overall_quota(target_total, full_participants, tol=1)
     
+    # --- 4C  top-up so quotas == real slot counts -------------------
+for lbl, qdict in target_total.items():
+    slack = slot_totals[lbl] - sum(qdict.values())       # how many we’re short
+    while slack > 0:
+        # pick whoever currently has the **smallest** quota for this label …
+        p = min(qdict, key=qdict.get)
+        qdict[p] += 1
+        slack    -= 1
+# ----------------------------------------------------------------
+
     
         
     # 5️⃣  STATS SETUP
@@ -693,16 +703,22 @@ def build_schedule():
             # who is still under their integer target in *this* label?
             required_role = label_role[lbl]                 # "Junior" or "Senior"
             
-            candidates = [
+            def role_ok(person):
+                return (required_role == "Junior" and person in juniors) or \
+                       (required_role == "Senior" and person in seniors)
+    
+            below_quota = [
                 p for p in regular_pool
-                # ---- NEW: role must match the label ----
-                if (p in juniors if required_role == "Junior" else p in seniors)
-                # ----------------------------------------
-                and (
-                    stats[p][lbl]["total"] <  target_total[lbl].get(p, 0) or      # under label quota
-                    sum(stats[p][l]["total"] for l in shift_labels) <              # or globally lagging
-                    sum(target_total[l].get(p, 0) for l in shift_labels)
-                )
+                if role_ok(p)
+                and stats[p][lbl]["total"] < target_total[lbl].get(p, 0)
+                and not on_leave(p, r["Date"])
+                and is_active_rotator(p, r["Date"])
+            ]
+    
+            # Fallback: if nobody is still below-quota, allow *any* legal person
+            candidates = below_quota or [
+                p for p in regular_pool
+                if role_ok(p)
                 and not on_leave(p, r["Date"])
                 and is_active_rotator(p, r["Date"])
             ]
