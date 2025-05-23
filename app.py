@@ -533,29 +533,31 @@ def build_schedule():
         )
     
     # Explicitly differentiate rotators from leave takers:
+    # ----- 4B.  ADJUST FOR ROTATORS, THEN NORMALISE GLOBALLY -----
     span = (end - start).days + 1
     
-    rotator_set = {
+    rotator_set = {                      # fewer than full days *and* a declared rotator
         p for p in regular_pool
         if active_days[p] < span and any(nm == p for nm, _, _ in st.session_state.rotators)
     }
-    leave_set = {
+    leave_set = {                        # fewer than full days *and* a declared leave
         p for p in regular_pool
         if active_days[p] < span and any(nm == p for nm, _, _ in st.session_state.leaves)
     }
     
-    full_participants = {
-        p for p in regular_pool if active_days[p] == span or p in leave_set
+    full_participants = {                # everyone who should be kept within ±tol overall
+        p for p in regular_pool
+        if active_days[p] == span or p in leave_set
     }
     
-    # Adjust quotas DOWN ONLY FOR ROTATORS
+    # shrink *only* rotators’ quotas, label by label
     for lbl, qdict in target_total.items():
         for p in rotator_set:
             if p in qdict:
-                availability_ratio = active_days[p] / span
-                qdict[p] = round(qdict[p] * availability_ratio)
+                ratio = active_days[p] / span
+                qdict[p] = round(qdict[p] * ratio)
     
-    # Normalize quotas across shifts (cross-bucket normalization):
+    # keep overall totals within ±1 of the mean across *full_participants*
     normalize_overall_quota(target_total, full_participants, tol=1)
     
     
@@ -653,10 +655,17 @@ def build_schedule():
             else:
                 random.shuffle(eligible)
                 def deficit(p):
-                    return (
+                    # label-local gaps (weekend first, then total) …
+                    local = (
                         target_weekend[lbl][p] - stats[p][lbl]["weekend"],
                         target_total[lbl][p]   - stats[p][lbl]["total"],
                     )
+                    # …followed by the *global* gap across all labels
+                    global_gap = sum(
+                        max(0, target_total[l][p] - stats[p][l]["total"]) for l in shift_labels
+                    )
+                    return local + (global_gap,)
+
                 pick = max(eligible, key=deficit)
 
             row[lbl] = pick
@@ -667,6 +676,29 @@ def build_schedule():
 
         # record today's assignments
         schedule_rows.append(row)
+                # 7C ────────────────────────────────────────────────────────────────
+        # SECOND-PASS: fill any rows that are still "Unfilled"
+        #              keeps the cross-bucket balance intact
+        # -------------------------------------------------------------------
+        for r in schedule_rows:
+            for lbl in shift_labels:
+                if r[lbl] != "Unfilled":
+                    continue                              # already filled
+                # who is still under their integer target in *this* label?
+                candidates = [
+                    p for p in regular_pool
+                    if stats[p][lbl]["total"] < target_total[lbl].get(p, 0)
+                    and not on_leave(p, r["Date"])
+                    and is_active_rotator(p, r["Date"])
+                ]
+                if not candidates:                        # genuinely nobody left
+                    continue
+                pick = random.choice(candidates)
+                r[lbl] = pick
+                stats[pick][lbl]["total"] += 1
+                if is_weekend(r["Date"], [c for c in shifts_cfg if c["label"] == lbl][0]):
+                    stats[pick][lbl]["weekend"] += 1
+        
 
     # ---------------- post-process: perfect weekend balance ----------------
     balance_weekends(
