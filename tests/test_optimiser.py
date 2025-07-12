@@ -9,6 +9,7 @@ except Exception:
 
 from model.data_models import ShiftTemplate, InputData
 from model.optimiser import build_schedule, respects_min_gap
+from model.nf_blocks import respects_nf_blocks
 
 
 def test_simple_schedule():
@@ -121,3 +122,20 @@ def test_respects_min_gap_function():
         {"Date": date(2023, 1, 3), "S1": "A"},
     ])
     assert respects_min_gap(df, 2)
+
+
+def test_respects_nf_blocks_function():
+    shifts = [ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False)]
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 1), "NF": "A"},
+        {"Date": date(2023, 1, 2), "NF": "A"},
+        {"Date": date(2023, 1, 3), "NF": "A"},
+    ])
+    assert respects_nf_blocks(df, 3, shifts)
+
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 1), "NF": "A"},
+        {"Date": date(2023, 1, 2), "NF": "A"},
+        {"Date": date(2023, 1, 3), "NF": "B"},
+    ])
+    assert not respects_nf_blocks(df, 3, shifts)

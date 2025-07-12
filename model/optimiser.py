@@ -98,6 +98,7 @@ except Exception:  # pragma: no cover - simple fallback if ortools missing
     )
 
 from .data_models import InputData, ShiftTemplate
+from .nf_blocks import respects_nf_blocks
 
 
 class SchedulerSolver:
@@ -212,6 +213,8 @@ def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
     df = solver.solve(time_limit_sec=limit)
     if not respects_min_gap(df, data.min_gap):
         raise RuntimeError("Schedule violates min_gap constraint")
+    if not respects_nf_blocks(df, data.nf_block_length, data.shifts):
+        raise RuntimeError("Schedule violates nf_block_length constraint")
     return df
 
 
