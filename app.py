@@ -3,6 +3,7 @@ import pandas as pd
 import random
 from datetime import datetime, timedelta, date
 import json
+import subprocess
 from scheduler import build_schedule, build_median_report
 
 # ------------------------------------------------------------------
@@ -81,6 +82,11 @@ if st.button("🔁 Reset All Data", key="btn_reset"):
         "nf_juniors",
         "nf_seniors",
         "seed",
+        "df_sched",
+        "df_summary",
+        "df_unfilled",
+        "median_df",
+        "generated",
     ):
         st.session_state.pop(k, None)
     st.experimental_rerun()
@@ -304,6 +310,7 @@ if st.button("🚀 Generate Schedule", disabled=False):
     st.session_state.compact_summ = compact_summ
     FAIR_TOL = 0  # 0 = show every deviation, 1 = ignore ±1
     st.session_state.median_df = build_median_report(wide_summ, FAIR_TOL)
+
     st.session_state.generated = True
     st.success("✅ Schedule generated!")
 
@@ -312,6 +319,7 @@ if st.session_state.get("generated"):
     wide_summ = st.session_state.df_summary
     unf = st.session_state.df_unfilled
     compact_summ = st.session_state.compact_summ
+
     median_df = st.session_state.median_df
     st.dataframe(df)
     st.subheader("📊 Compact Summary")
@@ -321,6 +329,7 @@ if st.session_state.get("generated"):
     # ---------- fairness vs MEDIAN ----------
     FAIR_TOL = 0    # 0 = show every deviation, 1 = ignore ±1
     median_df = st.session_state.median_df
+ 
 
     if not median_df.empty:
         st.warning("⚖️  Median fairness – residents above / below peer median")
@@ -353,6 +362,23 @@ if st.session_state.get("generated"):
     )
     if not unf.empty:
         st.download_button("Download Unfilled CSV", unf.to_csv(index=False), "unfilled.csv")
+
+    # --------------------------------------
+    # Heavy testing button
+    # --------------------------------------
+    if st.button("🧪 Run Heavy Tests", key="btn_heavy_tests"):
+        with st.spinner("Running tests..."):
+            proc = subprocess.run(["pytest", "-q"], capture_output=True, text=True)
+        st.session_state.test_log = proc.stdout + proc.stderr
+
+    if "test_log" in st.session_state:
+        st.text_area("Test Output", st.session_state.test_log, height=300, key="txt_test_output")
+        st.download_button(
+            "Download Test Log",
+            st.session_state.test_log,
+            "test_log.txt",
+            key="btn_dl_test_log",
+        )
 
 
 
