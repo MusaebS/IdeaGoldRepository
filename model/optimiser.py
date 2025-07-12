@@ -52,17 +52,18 @@ except Exception:  # pragma: no cover - simple fallback if ortools missing
             self.parameters.max_time_in_seconds = 0
 
         def Solve(self, model):
-            # Dummy assignment: select first option for each constraint
+            # Dummy assignment: mark every shift as unfilled
             if hasattr(model, 'vars'):
                 people = model.people
                 days = model.days
                 shifts = model.shifts
+                unfilled_idx = len(people) - 1
                 for d_idx in range(len(days)):
                     for s_idx in range(len(shifts)):
                         for p_idx in range(len(people)):
                             v = model.vars[(p_idx, d_idx, s_idx)]
                             v.value = 0
-                        model.vars[(0, d_idx, s_idx)].value = 1
+                        model.vars[(unfilled_idx, d_idx, s_idx)].value = 1
             return self.OPTIMAL
 
         def Value(self, var):
