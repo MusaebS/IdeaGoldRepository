@@ -207,13 +207,23 @@ def fill_unassigned_shifts(
     seniors,
     regular_pool,
     shift_labels,
-    last_assigned,
     target_total,
     target_weekend,
-
 ):
-    """Attempt to assign any unfilled shifts to under-scheduled staff."""
-    point_deficit = {p: expected_points_total.get(p, 0) - points_assigned.get(p, 0) for p in regular_pool}
+    """Assign remaining unfilled slots to the most under‑scheduled staff."""
+
+    def has_conflict(person: str, dt: date) -> bool:
+        for row in schedule_rows:
+            if any(row[l] == person for l in shift_labels):
+                if abs((dt - row["Date"]).days) < st.session_state.min_gap:
+                    return True
+        return False
+
+    point_deficit = {
+        p: expected_points_total.get(p, 0) - points_assigned.get(p, 0)
+        for p in regular_pool
+    }
+
     new_unfilled = []
 
     for dt, lbl in unfilled:
@@ -223,26 +233,30 @@ def fill_unassigned_shifts(
         row = schedule_rows[row_idx]
         if row.get(lbl) != "Unfilled":
             continue
+
         cfg = shift_cfg_map[lbl]
         role_pool = juniors if cfg["role"] == "Junior" else seniors
         role_pool = [p for p in role_pool if p in regular_pool]
 
-        def already_assigned(person):
-            return any(row[l] == person for l in shift_labels if l != lbl)
-
-        def eligible(p):
+        def eligible(p: str) -> bool:
             if p not in role_pool:
                 return False
-            if already_assigned(p):
+            if any(row[l] == p for l in shift_labels):
                 return False
             if on_leave(p, dt) or not is_active_rotator(p, dt):
                 return False
-            if last_assigned[p] is not None and (dt - last_assigned[p]).days < st.session_state.min_gap:
+            if has_conflict(p, dt):
                 return False
             return True
 
-        total_deficit = {p: target_total.get(lbl, {}).get(p, 0) - stats[p][lbl]["total"] for p in role_pool}
-        wkd_deficit = {p: target_weekend.get(lbl, {}).get(p, 0) - stats[p][lbl]["weekend"] for p in role_pool}
+        total_deficit = {
+            p: target_total.get(lbl, {}).get(p, 0) - stats[p][lbl]["total"]
+            for p in role_pool
+        }
+        wkd_deficit = {
+            p: target_weekend.get(lbl, {}).get(p, 0) - stats[p][lbl]["weekend"]
+            for p in role_pool
+        }
 
 
         candidates = [p for p in role_pool if eligible(p)]
@@ -250,7 +264,8 @@ def fill_unassigned_shifts(
             new_unfilled.append((dt, lbl))
             continue
 
-        def priority(p):
+        def priority(p: str):
+
             return (
                 wkd_deficit.get(p, 0) if is_weekend(dt, cfg) else 0,
                 total_deficit.get(p, 0),
@@ -264,87 +279,14 @@ def fill_unassigned_shifts(
         if is_weekend(dt, cfg):
             stats[pick][lbl]["weekend"] += 1
         points_assigned[pick] += get_shift_points(dt, cfg)
+
         last_assigned[pick] = dt
+
         point_deficit[pick] = expected_points_total.get(pick, 0) - points_assigned.get(pick, 0)
 
     return new_unfilled
 
 
-def rebalance_points(
-    schedule_rows,
-    stats,
-    shift_cfg_map,
-    points_assigned,
-    expected_points_total,
-    juniors,
-    seniors,
-    regular_pool,
-    shift_labels,
-    last_assigned,
-    min_gap,
-):
-    """Swap shifts from over-scheduled to under-scheduled staff based on points."""
-
-    all_labels = [lbl for lbl in schedule_rows[0] if lbl not in ("Date", "Day")]
-
-    def point_diff(p):
-        return points_assigned.get(p, 0) - expected_points_total.get(p, 0)
-
-    changed = True
-    while changed:
-        changed = False
-        over = [p for p in regular_pool if point_diff(p) > 0.5]
-        under = [p for p in regular_pool if point_diff(p) < -0.5]
-        if not over or not under:
-            break
-
-        for idx, row in enumerate(schedule_rows):
-            dt = row["Date"]
-            for lbl in shift_labels:
-                person = row.get(lbl)
-                if person not in over:
-                    continue
-                cfg = shift_cfg_map[lbl]
-                role_pool = juniors if cfg["role"] == "Junior" else seniors
-
-                def violates(p):
-                    return (
-                        p not in role_pool
-                        or any(row[l] == p for l in all_labels if l != lbl)
-                        or on_leave(p, dt)
-                        or not is_active_rotator(p, dt)
-                        or (
-                            last_assigned[p] is not None
-                            and (dt - last_assigned[p]).days < min_gap
-                        )
-                    )
-
-                for target in under:
-                    if violates(target):
-                        continue
-
-                    row[lbl] = target
-                    stats[person][lbl]["total"] -= 1
-                    stats[target][lbl]["total"] += 1
-                    if is_weekend(dt, cfg):
-                        stats[person][lbl]["weekend"] -= 1
-                        stats[target][lbl]["weekend"] += 1
-
-                    pts = get_shift_points(dt, cfg)
-                    points_assigned[person] -= pts
-                    points_assigned[target] += pts
-                    last_assigned[target] = dt
-
-                    changed = True
-                    break
-                if changed:
-                    break
-            if changed:
-                break
-
-    for p in last_assigned:
-        dates = [r["Date"] for r in schedule_rows if any(r[l] == p for l in all_labels)]
-        last_assigned[p] = max(dates) if dates else None
 
 
 
@@ -628,7 +570,7 @@ def build_schedule(group_by: str | None = None):
             seniors,
             regular_pool,
             shift_labels,
-            last_assigned,
+
             target_total,
             target_weekend,
         )
@@ -636,21 +578,7 @@ def build_schedule(group_by: str | None = None):
             break
         prev = len(unfilled)
 
-    rebalance_points(
-        schedule_rows,
-        stats,
-        {cfg["label"]: cfg for cfg in shifts_cfg if not cfg["night_float"]},
 
-        points_assigned,
-        expected_points_total,
-        juniors,
-        seniors,
-        regular_pool,
-        shift_labels,
-        last_assigned,
-        st.session_state.min_gap,
-
-    )
 
     df_schedule = pd.DataFrame(schedule_rows)
 

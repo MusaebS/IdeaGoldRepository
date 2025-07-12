@@ -156,7 +156,7 @@ def test_fill_unassigned_shifts_prioritizes_deficit():
     seniors = []
     regular_pool = ["A", "B"]
     shift_labels = ["Shift1"]
-    last_assigned = {"A": None, "B": None}
+
     target_total = {"Shift1": {"A": 0, "B": 1}}
     target_weekend = {"Shift1": {"A": 0, "B": 1}}
 
@@ -171,7 +171,7 @@ def test_fill_unassigned_shifts_prioritizes_deficit():
         seniors,
         regular_pool,
         shift_labels,
-        last_assigned,
+
         target_total,
         target_weekend,
     )
@@ -180,47 +180,4 @@ def test_fill_unassigned_shifts_prioritizes_deficit():
     assert schedule_rows[0]["Shift1"] == "B"
 
 
-def test_rebalance_points_swaps():
-    cfg = {
-        "label": "Shift1",
-        "role": "Junior",
-        "night_float": False,
-        "thur_weekend": False,
-        "points": 1.0,
-    }
-
-    schedule_rows = [
-        {"Date": date(2023, 1, 1), "Day": "Sunday", "Shift1": "A"},
-        {"Date": date(2023, 1, 2), "Day": "Monday", "Shift1": "A"},
-    ]
-
-    stats = {
-        "A": {"Shift1": {"total": 2, "weekend": 0}},
-        "B": {"Shift1": {"total": 0, "weekend": 0}},
-    }
-
-    points_assigned = {"A": 2, "B": 0}
-    expected_points_total = {"A": 1, "B": 1}
-    juniors = ["A", "B"]
-    seniors = []
-    regular_pool = ["A", "B"]
-    shift_labels = ["Shift1"]
-    last_assigned = {"A": date(2023, 1, 2), "B": None}
-
-    scheduler.rebalance_points(
-        schedule_rows,
-        stats,
-        {"Shift1": cfg},
-        points_assigned,
-        expected_points_total,
-        juniors,
-        seniors,
-        regular_pool,
-        shift_labels,
-        last_assigned,
-        0,
-    )
-
-    assigned = [row["Shift1"] for row in schedule_rows]
-    assert assigned.count("B") == 1
 
