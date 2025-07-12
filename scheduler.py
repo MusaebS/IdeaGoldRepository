@@ -210,6 +210,7 @@ def fill_unassigned_shifts(
     last_assigned,
     target_total,
     target_weekend,
+
 ):
     """Attempt to assign any unfilled shifts to under-scheduled staff."""
     point_deficit = {p: expected_points_total.get(p, 0) - points_assigned.get(p, 0) for p in regular_pool}
@@ -243,6 +244,7 @@ def fill_unassigned_shifts(
         total_deficit = {p: target_total.get(lbl, {}).get(p, 0) - stats[p][lbl]["total"] for p in role_pool}
         wkd_deficit = {p: target_weekend.get(lbl, {}).get(p, 0) - stats[p][lbl]["weekend"] for p in role_pool}
 
+
         candidates = [p for p in role_pool if eligible(p)]
         if not candidates:
             new_unfilled.append((dt, lbl))
@@ -256,6 +258,7 @@ def fill_unassigned_shifts(
             )
 
         pick = max(candidates, key=priority)
+
         row[lbl] = pick
         stats[pick][lbl]["total"] += 1
         if is_weekend(dt, cfg):
@@ -342,6 +345,7 @@ def rebalance_points(
     for p in last_assigned:
         dates = [r["Date"] for r in schedule_rows if any(r[l] == p for l in all_labels)]
         last_assigned[p] = max(dates) if dates else None
+
 
 
 
@@ -636,6 +640,7 @@ def build_schedule(group_by: str | None = None):
         schedule_rows,
         stats,
         {cfg["label"]: cfg for cfg in shifts_cfg if not cfg["night_float"]},
+
         points_assigned,
         expected_points_total,
         juniors,
@@ -644,6 +649,7 @@ def build_schedule(group_by: str | None = None):
         shift_labels,
         last_assigned,
         st.session_state.min_gap,
+
     )
 
     df_schedule = pd.DataFrame(schedule_rows)

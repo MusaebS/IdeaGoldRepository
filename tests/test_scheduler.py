@@ -133,6 +133,7 @@ def test_weekend_filter_fallback():
     assert df._data[0]["Shift1"] == "B"
 
 
+
 def test_fill_unassigned_shifts_prioritizes_deficit():
     cfg = {
         "label": "Shift1",
@@ -222,3 +223,4 @@ def test_rebalance_points_swaps():
 
     assigned = [row["Shift1"] for row in schedule_rows]
     assert assigned.count("B") == 1
+
