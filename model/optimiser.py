@@ -211,3 +211,4 @@ def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
         limit = 60
     return solver.solve(time_limit_sec=limit)
 
+
