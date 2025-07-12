@@ -208,6 +208,9 @@ def fill_unassigned_shifts(
     regular_pool,
     shift_labels,
     last_assigned,
+    target_total,
+    target_weekend,
+
 ):
     """Attempt to assign any unfilled shifts to under-scheduled staff."""
     point_deficit = {p: expected_points_total.get(p, 0) - points_assigned.get(p, 0) for p in regular_pool}
@@ -238,12 +241,24 @@ def fill_unassigned_shifts(
                 return False
             return True
 
+        total_deficit = {p: target_total.get(lbl, {}).get(p, 0) - stats[p][lbl]["total"] for p in role_pool}
+        wkd_deficit = {p: target_weekend.get(lbl, {}).get(p, 0) - stats[p][lbl]["weekend"] for p in role_pool}
+
+
         candidates = [p for p in role_pool if eligible(p)]
         if not candidates:
             new_unfilled.append((dt, lbl))
             continue
 
-        pick = max(candidates, key=lambda p: point_deficit.get(p, 0))
+        def priority(p):
+            return (
+                wkd_deficit.get(p, 0) if is_weekend(dt, cfg) else 0,
+                total_deficit.get(p, 0),
+                point_deficit.get(p, 0),
+            )
+
+        pick = max(candidates, key=priority)
+
         row[lbl] = pick
         stats[pick][lbl]["total"] += 1
         if is_weekend(dt, cfg):
@@ -531,6 +546,9 @@ def build_schedule(group_by: str | None = None):
         regular_pool,
         shift_labels,
         last_assigned,
+        target_total,
+        target_weekend,
+
     )
 
     df_schedule = pd.DataFrame(schedule_rows)
