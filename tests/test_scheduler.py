@@ -5,8 +5,51 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 # create minimal streamlit stub
-st = types.SimpleNamespace(session_state={}, error=lambda *a, **k: None)
+class SessionState(dict):
+    __getattr__ = dict.get
+    __setattr__ = dict.__setitem__
+
+st = types.SimpleNamespace(session_state=SessionState(), error=lambda *a, **k: None)
 sys.modules['streamlit'] = st
+
+# minimal pandas stub for tests
+class SimpleDataFrame:
+    def __init__(self, data=None, columns=None):
+        self._data = list(data) if data is not None else []
+        self.columns = columns or []
+
+    def __len__(self):
+        return len(self._data)
+
+    @property
+    def empty(self):
+        return len(self._data) == 0
+
+    def to_dict(self, orient="records"):
+        if orient != "records":
+            raise NotImplementedError
+        return list(self._data)
+
+
+class SimplePandasModule(types.SimpleNamespace):
+    def DataFrame(self, data=None, columns=None):
+        return SimpleDataFrame(data, columns)
+
+    def date_range(self, start, end):
+        from datetime import datetime, timedelta
+        if isinstance(start, datetime):
+            start_dt = start
+        else:
+            start_dt = datetime.combine(start, datetime.min.time())
+        if isinstance(end, datetime):
+            end_dt = end
+        else:
+            end_dt = datetime.combine(end, datetime.min.time())
+        days = (end_dt - start_dt).days + 1
+        return [start_dt + timedelta(days=i) for i in range(days)]
+
+
+sys.modules['pandas'] = SimplePandasModule()
 
 from datetime import date
 import scheduler
@@ -46,6 +89,8 @@ def test_allocate_integer_quotas_basic():
 
 def test_build_schedule_simple():
     setup_state_simple()
-    df, summary, unf = scheduler.build_schedule()
+    df, wide, unf, compact = scheduler.build_schedule()
     assert len(df) == 2
     assert unf.empty
+    assert not wide.empty
+    assert not compact.empty
