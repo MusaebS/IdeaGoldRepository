@@ -94,3 +94,75 @@ def test_build_schedule_simple():
     assert unf.empty
     assert not wide.empty
     assert not compact.empty
+
+
+def test_build_expectation_report():
+    data = [
+        {
+            "Name": "A",
+            "Shift1_assigned_total": 2,
+            "Shift1_expected_total": 1,
+            "Shift1_assigned_weekend": 1,
+            "Shift1_expected_weekend": 0,
+            "Assigned Points": 3,
+            "Expected Points": 1,
+        },
+        {
+            "Name": "B",
+            "Shift1_assigned_total": 0,
+            "Shift1_expected_total": 1,
+            "Shift1_assigned_weekend": 0,
+            "Shift1_expected_weekend": 1,
+            "Assigned Points": 0,
+            "Expected Points": 2,
+        },
+    ]
+    df = scheduler.pd.DataFrame(data)
+    report = scheduler.build_expectation_report(df)
+    assert len(report) == 4
+
+
+def test_fill_unassigned_shifts_prioritizes_deficit():
+    cfg = {
+        "label": "Shift1",
+        "role": "Junior",
+        "night_float": False,
+        "thur_weekend": False,
+        "points": 1.0,
+    }
+
+    schedule_rows = [{"Date": date(2023, 1, 1), "Day": "Sunday", "Shift1": "Unfilled"}]
+    stats = {
+        "A": {"Shift1": {"total": 0, "weekend": 0}},
+        "B": {"Shift1": {"total": 0, "weekend": 0}},
+    }
+    unfilled = [(date(2023, 1, 1), "Shift1")]
+
+    points_assigned = {"A": 0, "B": 0}
+    expected_points_total = {"A": 0, "B": 0}
+    juniors = ["A", "B"]
+    seniors = []
+    regular_pool = ["A", "B"]
+    shift_labels = ["Shift1"]
+    last_assigned = {"A": None, "B": None}
+    target_total = {"Shift1": {"A": 0, "B": 1}}
+    target_weekend = {"Shift1": {"A": 0, "B": 1}}
+
+    new_unfilled = scheduler.fill_unassigned_shifts(
+        schedule_rows,
+        stats,
+        unfilled,
+        {"Shift1": cfg},
+        points_assigned,
+        expected_points_total,
+        juniors,
+        seniors,
+        regular_pool,
+        shift_labels,
+        last_assigned,
+        target_total,
+        target_weekend,
+    )
+
+    assert new_unfilled == []
+    assert schedule_rows[0]["Shift1"] == "B"
