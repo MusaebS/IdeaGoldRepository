@@ -1,4 +1,5 @@
 from datetime import timedelta
+import os
 from typing import Dict, Tuple
 
 try:
@@ -129,12 +130,43 @@ class SchedulerSolver:
                         f"x_{p_idx}_{d_idx}_{s_idx}")
 
     def add_constraints(self) -> None:
-        for d_idx in range(len(self.days)):
-            for s_idx in range(len(self.shifts)):
+        for d_idx, day in enumerate(self.days):
+            for s_idx, shift in enumerate(self.shifts):
+                # exactly one assignment per slot
                 self.model.Add(
                     sum(self.vars[(p_idx, d_idx, s_idx)]
                         for p_idx in range(len(self.people))) == 1
                 )
+                for p_idx, person in enumerate(self.people[:-1]):  # exclude Unfilled
+                    # role eligibility
+                    if shift.role == "Junior" and person not in self.data.juniors:
+                        self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
+                    if shift.role == "Senior" and person not in self.data.seniors:
+                        self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
+                    # night float eligibility
+                    if shift.night_float:
+                        if shift.role == "Junior" and person not in self.data.nf_juniors:
+                            self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
+                        if shift.role == "Senior" and person not in self.data.nf_seniors:
+                            self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
+                    # leaves
+                    for res, start, end in self.data.leaves:
+                        if res == person and start <= day <= end:
+                            self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
+
+        # min_gap spacing
+        gap = self.data.min_gap
+        if gap > 0:
+            for p_idx, _ in enumerate(self.people[:-1]):  # exclude Unfilled
+                for d1_idx, day1 in enumerate(self.days):
+                    for d2_idx in range(d1_idx + 1, len(self.days)):
+                        if (self.days[d2_idx] - day1).days < gap:
+                            for s1_idx in range(len(self.shifts)):
+                                for s2_idx in range(len(self.shifts)):
+                                    self.model.Add(
+                                        self.vars[(p_idx, d1_idx, s1_idx)] +
+                                        self.vars[(p_idx, d2_idx, s2_idx)] <= 1
+                                    )
 
     def build_objective(self) -> None:
         # Simplified: just minimise unfilled slots
@@ -167,7 +199,16 @@ class SchedulerSolver:
         return pd.DataFrame(rows)
 
 
-def build_schedule(data: InputData, time_limit_sec: int | None = 60) -> pd.DataFrame:
+def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
+    """Build schedule with optional environment based time limit."""
     solver = SchedulerSolver(data)
-    return solver.solve(time_limit_sec=time_limit_sec)
+    env = env or os.environ.get("ENV", "prod").lower()
+    if env == "dev":
+        limit = 10
+    elif env == "test":
+        limit = 1
+    else:
+        limit = 60
+    return solver.solve(time_limit_sec=limit)
+
 

@@ -84,3 +84,22 @@ def test_schedule_with_strict_cpmodel(monkeypatch):
 
     df = opt.build_schedule(data)
     assert len(df) == 1
+
+
+def test_role_and_gap_constraints():
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 2),
+        shifts=[ShiftTemplate(label="S1", role="Senior", night_float=True, thu_weekend=False)],
+        juniors=["A"],
+        seniors=["B"],
+        nf_juniors=["A"],
+        nf_seniors=[],  # B cannot cover night float
+        leaves=[],
+        rotators=[],
+        min_gap=2,
+    )
+
+    df = build_schedule(data)
+    # Only unfilled is eligible due to NF restriction; also min_gap prevents A working both days
+    assert set(df["S1"]) == {"Unfilled"}
