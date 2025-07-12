@@ -19,6 +19,15 @@ def sample_shifts():
 
 def sample_names():
     """Return lists of 30 junior and 15 senior names."""
-    juniors = [f"Junior {i}" for i in range(1, 31)]
-    seniors = [f"Senior {i}" for i in range(1, 16)]
+    juniors = [
+        "Alice", "Ben", "Carla", "Derek", "Eva", "Frank", "Grace",
+        "Hector", "Isla", "Jack", "Kira", "Liam", "Mia", "Noah", "Olivia",
+        "Paul", "Quinn", "Rosa", "Sam", "Tara", "Umar", "Violet", "Wes",
+        "Xena", "Yara", "Zane", "Aaron", "Bella", "Caleb", "Dana",
+    ]
+    seniors = [
+        "Erin", "Felix", "Gina", "Harold", "Ivy", "Jonah", "Karen",
+        "Leo", "Monica", "Nathan", "Opal", "Perry", "Ruth", "Simon", "Tanya",
+    ]
+
     return juniors, seniors
