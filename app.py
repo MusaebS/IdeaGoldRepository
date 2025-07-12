@@ -35,6 +35,13 @@ with st.expander("Shift Templates", expanded=True):
         )
     if st.session_state.shifts:
         st.table(pd.DataFrame([s.__dict__ for s in st.session_state.shifts]))
+        del_opts = list(range(len(st.session_state.shifts)))
+        del_idx = st.selectbox(
+            "Delete shift", del_opts,
+            format_func=lambda i: st.session_state.shifts[i].label,
+        )
+        if st.button("Delete Shift", key="del_shift"):
+            st.session_state.shifts.pop(del_idx)
 
 cols = st.columns(2)
 with cols[0]:
