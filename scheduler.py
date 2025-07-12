@@ -196,6 +196,93 @@ def balance_totals(schedule_rows, stats, target_total, min_gap, shift_labels, la
         last_assigned[person] = max(dates) if dates else None
 
 
+def fill_unassigned_shifts(
+    schedule_rows,
+    stats,
+    unfilled,
+    shift_cfg_map,
+    points_assigned,
+    expected_points_total,
+    juniors,
+    seniors,
+    regular_pool,
+    shift_labels,
+    target_total,
+    target_weekend,
+):
+    """Assign remaining unfilled slots to the most under‑scheduled staff."""
+
+    def has_conflict(person: str, dt: date) -> bool:
+        for row in schedule_rows:
+            if any(row[l] == person for l in shift_labels):
+                if abs((dt - row["Date"]).days) < st.session_state.min_gap:
+                    return True
+        return False
+
+    point_deficit = {
+        p: expected_points_total.get(p, 0) - points_assigned.get(p, 0)
+        for p in regular_pool
+    }
+
+    new_unfilled = []
+    for dt, lbl in unfilled:
+        row_idx = next((i for i, r in enumerate(schedule_rows) if r["Date"] == dt), None)
+        if row_idx is None:
+            continue
+        row = schedule_rows[row_idx]
+        if row.get(lbl) != "Unfilled":
+            continue
+
+        cfg = shift_cfg_map[lbl]
+        role_pool = juniors if cfg["role"] == "Junior" else seniors
+        role_pool = [p for p in role_pool if p in regular_pool]
+
+        def eligible(p: str) -> bool:
+            if p not in role_pool:
+                return False
+            if any(row[l] == p for l in shift_labels):
+                return False
+            if on_leave(p, dt) or not is_active_rotator(p, dt):
+                return False
+            if has_conflict(p, dt):
+                return False
+            return True
+
+        total_deficit = {
+            p: target_total.get(lbl, {}).get(p, 0) - stats[p][lbl]["total"]
+            for p in role_pool
+        }
+        wkd_deficit = {
+            p: target_weekend.get(lbl, {}).get(p, 0) - stats[p][lbl]["weekend"]
+            for p in role_pool
+        }
+
+        candidates = [p for p in role_pool if eligible(p)]
+        if not candidates:
+            new_unfilled.append((dt, lbl))
+            continue
+
+        def priority(p: str):
+            return (
+                wkd_deficit.get(p, 0) if is_weekend(dt, cfg) else 0,
+                total_deficit.get(p, 0),
+                point_deficit.get(p, 0),
+            )
+
+        pick = max(candidates, key=priority)
+        row[lbl] = pick
+        stats[pick][lbl]["total"] += 1
+        if is_weekend(dt, cfg):
+            stats[pick][lbl]["weekend"] += 1
+        points_assigned[pick] += get_shift_points(dt, cfg)
+        point_deficit[pick] = expected_points_total.get(pick, 0) - points_assigned.get(pick, 0)
+
+    return new_unfilled
+
+
+
+
+
 def build_median_report(summary_df: pd.DataFrame, tol: int = 0):
     rows = []
     for col in [c for c in summary_df.columns if c.endswith("_assigned_total")]:
@@ -221,6 +308,38 @@ def build_median_report(summary_df: pd.DataFrame, tol: int = 0):
                     "Name": r["Name"],
                     "Label": "Points",
                     "Δ Points vs median": int(d_pts),
+                })
+    return pd.DataFrame(rows)
+
+
+def build_expectation_report(summary_df: pd.DataFrame, tol: int = 0) -> pd.DataFrame:
+    """Highlight deviations from expected totals, weekends and points."""
+    rows = []
+    records = summary_df.to_dict(orient="records")
+    if not records:
+        return pd.DataFrame(rows)
+
+    cols = getattr(summary_df, "columns", None) or list(records[0].keys())
+    for col in [c for c in cols if c.endswith("_assigned_total")]:
+        label = col.replace("_assigned_total", "")
+        for r in records:
+            d_tot = r[f"{label}_assigned_total"] - r[f"{label}_expected_total"]
+            d_wkd = r[f"{label}_assigned_weekend"] - r[f"{label}_expected_weekend"]
+            if abs(d_tot) > tol or abs(d_wkd) > tol:
+                rows.append({
+                    "Name": r["Name"],
+                    "Label": label,
+                    "Δ Total vs expected": int(d_tot),
+                    "Δ Weekend vs expected": int(d_wkd),
+                })
+    if "Assigned Points" in cols and "Expected Points" in cols:
+        for r in records:
+            d_pts = r["Assigned Points"] - r["Expected Points"]
+            if abs(d_pts) > tol:
+                rows.append({
+                    "Name": r["Name"],
+                    "Label": "Points",
+                    "Δ Points vs expected": int(d_pts),
                 })
     return pd.DataFrame(rows)
 
@@ -375,7 +494,9 @@ def build_schedule(group_by: str | None = None):
             eligible = [p for p in eligible if stats[p][lbl]["total"] < target_total[lbl].get(p, 0) + 1]
             wknd = is_weekend(d.date(), cfg)
             if wknd and slot_weekends[lbl] > 0:
-                eligible = [p for p in eligible if stats[p][lbl]["weekend"] < target_weekend[lbl][p]]
+                wk_eligible = [p for p in eligible if stats[p][lbl]["weekend"] < target_weekend[lbl][p]]
+                if wk_eligible:
+                    eligible = wk_eligible
             if not eligible:
                 row[lbl] = "Unfilled"
                 unfilled.append((d.date(), lbl))
@@ -427,6 +548,27 @@ def build_schedule(group_by: str | None = None):
         shift_labels,
         last_assigned,
     )
+
+    prev = None
+    for _ in range(3):
+        unfilled = fill_unassigned_shifts(
+            schedule_rows,
+            stats,
+            unfilled,
+            {cfg["label"]: cfg for cfg in shifts_cfg},
+            points_assigned,
+            expected_points_total,
+            juniors,
+            seniors,
+            regular_pool,
+            shift_labels,
+            target_total,
+            target_weekend,
+        )
+        if prev is not None and len(unfilled) >= prev:
+            break
+        prev = len(unfilled)
+
 
     df_schedule = pd.DataFrame(schedule_rows)
 
