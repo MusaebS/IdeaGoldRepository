@@ -196,6 +196,87 @@ def balance_totals(schedule_rows, stats, target_total, min_gap, shift_labels, la
         last_assigned[person] = max(dates) if dates else None
 
 
+def balance_points(
+    schedule_rows,
+    stats,
+    shift_cfg_map,
+    expected_points,
+    points_assigned,
+    min_gap,
+    shift_labels,
+    last_assigned,
+    max_iter=10,
+):
+    """Adjust assignments to better match expected point totals."""
+
+    all_labels = [lbl for lbl in schedule_rows[0] if lbl not in ("Date", "Day")]
+
+    def violates(person, dt, ignore_idx):
+        return (
+            any(
+                abs((dt - r["Date"]).days) < min_gap and any(r[l] == person for l in all_labels)
+                for i, r in enumerate(schedule_rows) if i != ignore_idx
+            )
+            or on_leave(person, dt)
+            or not is_active_rotator(person, dt)
+        )
+
+    for _ in range(max_iter):
+        over = [p for p in points_assigned if points_assigned[p] - expected_points.get(p, 0) > 0]
+        under = [p for p in points_assigned if points_assigned[p] - expected_points.get(p, 0) < 0]
+        if not over or not under:
+            break
+
+        over.sort(key=lambda p: points_assigned[p] - expected_points.get(p, 0), reverse=True)
+        under.sort(key=lambda p: expected_points.get(p, 0) - points_assigned[p], reverse=True)
+
+        moved = False
+        for idx, row in enumerate(schedule_rows):
+            for lbl in shift_labels:
+                p_over = row.get(lbl)
+                if p_over not in over:
+                    continue
+                dt = row["Date"]
+                cfg = shift_cfg_map[lbl]
+                pts = get_shift_points(dt, cfg)
+                candidates = [p for p in under if p != p_over]
+                for p_under in candidates:
+                    role_pool = st.session_state.juniors if cfg["role"] == "Junior" else st.session_state.seniors
+                    if p_under not in role_pool:
+                        continue
+                    if any(row[l] == p_under for l in shift_labels):
+                        continue
+                    if violates(p_under, dt, idx):
+                        continue
+                    if points_assigned[p_over] - pts < expected_points.get(p_over, 0):
+                        continue
+                    if points_assigned[p_under] + pts > expected_points.get(p_under, 0):
+                        continue
+
+                    row[lbl] = p_under
+                    stats[p_over][lbl]["total"] -= 1
+                    stats[p_under][lbl]["total"] += 1
+                    if is_weekend(dt, cfg):
+                        stats[p_over][lbl]["weekend"] -= 1
+                        stats[p_under][lbl]["weekend"] += 1
+                    points_assigned[p_over] -= pts
+                    points_assigned[p_under] += pts
+
+                    last_assigned[p_under] = dt
+                    moved = True
+                    break
+                if moved:
+                    break
+            if moved:
+                break
+        if not moved:
+            break
+
+    for person in last_assigned:
+        dates = [r["Date"] for r in schedule_rows if any(r[l] == person for l in all_labels)]
+        last_assigned[person] = max(dates) if dates else None
+
+
 def fill_unassigned_shifts(
     schedule_rows,
     stats,
@@ -548,6 +629,17 @@ def build_schedule(group_by: str | None = None):
         schedule_rows,
         stats,
         target_total,
+        st.session_state.min_gap,
+        shift_labels,
+        last_assigned,
+    )
+
+    balance_points(
+        schedule_rows,
+        stats,
+        {cfg["label"]: cfg for cfg in shifts_cfg},
+        {p: round(expected_points_total.get(p, 0), 1) for p in pool},
+        points_assigned,
         st.session_state.min_gap,
         shift_labels,
         last_assigned,
