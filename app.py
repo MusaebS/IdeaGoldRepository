@@ -4,6 +4,7 @@ from datetime import date, timedelta
 
 from model.data_models import ShiftTemplate, InputData
 from model.optimiser import build_schedule
+from model.demo_data import sample_shifts, sample_names
 import os
 
 st.set_page_config(page_title="Idea Gold Scheduler", layout="wide")
@@ -20,6 +21,19 @@ if "nf_juniors" not in st.session_state:
     st.session_state.nf_juniors = []
 if "nf_seniors" not in st.session_state:
     st.session_state.nf_seniors = []
+if "demo_loaded" not in st.session_state:
+    st.session_state.demo_loaded = False
+
+# optional sample data for quick testing
+test_mode = st.checkbox("Test mode (preload example data)")
+if test_mode and not st.session_state.demo_loaded:
+    st.session_state.shifts = sample_shifts()
+    juniors, seniors = sample_names()
+    st.session_state.juniors = juniors
+    st.session_state.seniors = seniors
+    st.session_state.nf_juniors = juniors[:]
+    st.session_state.nf_seniors = seniors[:]
+    st.session_state.demo_loaded = True
 
 st.header("Configuration")
 
