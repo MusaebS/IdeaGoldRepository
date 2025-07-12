@@ -71,6 +71,7 @@ def_state = {
     "min_gap": 2,
     "nf_block_length": 5,
     "seed": 0,
+    "quota_method": "hare",
     "pytest_opts": "-q",
     "use_cov": False,
     "fail_fast": False,
@@ -90,6 +91,7 @@ if st.button("🔁 Reset All Data", key="btn_reset"):
         "nf_juniors",
         "nf_seniors",
         "seed",
+        "quota_method",
         "df_sched",
         "df_summary",
         "df_unfilled",
@@ -237,6 +239,12 @@ st.session_state.nf_block_length = st.slider(
 )
 st.session_state.seed = st.number_input(
     "Random Seed", value=st.session_state.seed, step=1
+)
+method_opts = ["hare", "sainte", "vinton"]
+st.session_state.quota_method = st.selectbox(
+    "Quota Rounding Method",
+    method_opts,
+    index=method_opts.index(st.session_state.quota_method),
 )
 
 # ────────────────────────────────────────────────────────────────────────────────
