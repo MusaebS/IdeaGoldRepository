@@ -98,9 +98,8 @@ def test_fill_unassigned_shifts_prioritizes_deficit(sched, simple_state):
     assert schedule_rows[0]["Shift1"] == "B"
 
 
-def test_balance_points_basic():
-    setup_state_simple()
-    cfg = st.session_state.shifts[0]
+def test_balance_points_basic(sched, simple_state):
+    cfg = simple_state.session_state.shifts[0]
     shift_cfg_map = {"Shift1": cfg}
     schedule_rows = [
         {"Date": date(2023, 1, 1), "Day": "Mon", "Shift1": "A"},
@@ -114,13 +113,13 @@ def test_balance_points_basic():
     expected_points_total = {"A": 1, "B": 1}
     last_assigned = {"A": date(2023, 1, 2), "B": None}
 
-    scheduler.balance_points(
+    sched.balance_points(
         schedule_rows,
         stats,
         shift_cfg_map,
         expected_points_total,
         points_assigned,
-        st.session_state.min_gap,
+        simple_state.session_state.min_gap,
         ["Shift1"],
         last_assigned,
     )
@@ -128,4 +127,20 @@ def test_balance_points_basic():
     assigned = [row["Shift1"] for row in schedule_rows]
     assert set(assigned) == {"A", "B"}
     assert points_assigned == {"A": 1, "B": 1}
+
+
+def test_points_recomputed_after_balancing(sched, simple_state):
+    simple_state.session_state.end_date = date(2023, 1, 4)
+    df_schedule, df_summary, _, _ = sched.build_schedule()
+
+    cfg = simple_state.session_state.shifts[0]
+    expected = {}
+    for row in df_schedule._data:
+        person = row.get(cfg["label"])
+        if person != "Unfilled":
+            pts = sched.get_shift_points(row["Date"], cfg)
+            expected[person] = expected.get(person, 0) + pts
+
+    for row in df_summary._data:
+        assert row["Assigned Points"] == expected.get(row["Name"], 0)
 
