@@ -146,6 +146,56 @@ def balance_weekends(schedule_rows, stats, target_weekend, shift_cfg_map, min_ga
         last_assigned[person] = max(dates) if dates else None
 
 
+def balance_totals(schedule_rows, stats, target_total, min_gap, shift_labels, last_assigned):
+    """Swap over-assigned shifts to under-assigned staff keeping constraints."""
+    all_labels = [lbl for lbl in schedule_rows[0] if lbl not in ("Date", "Day")]
+
+    changed = True
+    while changed:
+        changed = False
+        for lbl in shift_labels:
+            over = [p for p in stats if stats[p][lbl]["total"] > target_total[lbl].get(p, 0)]
+            under = [p for p in stats if stats[p][lbl]["total"] < target_total[lbl].get(p, 0)]
+            if not over or not under:
+                continue
+
+            for idx, row in enumerate(schedule_rows):
+                p_over = row.get(lbl)
+                if p_over not in over:
+                    continue
+                dt = row["Date"]
+
+                def violates(person):
+                    return (
+                        any(
+                            abs((dt - r["Date"]).days) < min_gap and any(r[l] == person for l in all_labels)
+                            for i, r in enumerate(schedule_rows) if i != idx
+                        )
+                        or on_leave(person, dt)
+                        or not is_active_rotator(person, dt)
+                    )
+
+                for p_under in under:
+                    if p_under == p_over or violates(p_under):
+                        continue
+
+                    row[lbl] = p_under
+                    stats[p_over][lbl]["total"] -= 1
+                    stats[p_under][lbl]["total"] += 1
+                    last_assigned[p_under] = dt
+
+                    changed = True
+                    break
+                if changed:
+                    break
+            if changed:
+                break
+
+    for person in last_assigned:
+        dates = [r["Date"] for r in schedule_rows if any(r[l] == person for l in all_labels)]
+        last_assigned[person] = max(dates) if dates else None
+
+
 def build_median_report(summary_df: pd.DataFrame, tol: int = 0):
     rows = []
     for col in [c for c in summary_df.columns if c.endswith("_assigned_total")]:
@@ -359,7 +409,24 @@ def build_schedule(group_by: str | None = None):
 
         schedule_rows.append(row)
 
-    balance_weekends(schedule_rows, stats, target_weekend, {cfg["label"]: cfg for cfg in shifts_cfg if not cfg["night_float"]}, st.session_state.min_gap, shift_labels, last_assigned)
+    balance_weekends(
+        schedule_rows,
+        stats,
+        target_weekend,
+        {cfg["label"]: cfg for cfg in shifts_cfg if not cfg["night_float"]},
+        st.session_state.min_gap,
+        shift_labels,
+        last_assigned,
+    )
+
+    balance_totals(
+        schedule_rows,
+        stats,
+        target_total,
+        st.session_state.min_gap,
+        shift_labels,
+        last_assigned,
+    )
 
     df_schedule = pd.DataFrame(schedule_rows)
 
