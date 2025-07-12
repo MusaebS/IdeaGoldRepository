@@ -29,4 +29,5 @@ def sample_names():
         "Erin", "Felix", "Gina", "Harold", "Ivy", "Jonah", "Karen",
         "Leo", "Monica", "Nathan", "Opal", "Perry", "Ruth", "Simon", "Tanya",
     ]
+
     return juniors, seniors

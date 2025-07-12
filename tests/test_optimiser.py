@@ -1,10 +1,14 @@
 import sys, os
 from datetime import date
-
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+try:
+    import pandas as pd
+except Exception:
+    from model import optimiser as opt
+    pd = opt.pd
 
 from model.data_models import ShiftTemplate, InputData
-from model.optimiser import build_schedule
+from model.optimiser import build_schedule, respects_min_gap
 
 
 def test_simple_schedule():
@@ -103,3 +107,17 @@ def test_role_and_gap_constraints():
     df = build_schedule(data)
     # Only unfilled is eligible due to NF restriction; also min_gap prevents A working both days
     assert set(df["S1"]) == {"Unfilled"}
+
+
+def test_respects_min_gap_function():
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 1), "S1": "A"},
+        {"Date": date(2023, 1, 2), "S1": "A"},
+    ])
+    assert not respects_min_gap(df, 2)
+
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 1), "S1": "A"},
+        {"Date": date(2023, 1, 3), "S1": "A"},
+    ])
+    assert respects_min_gap(df, 2)

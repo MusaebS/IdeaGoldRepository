@@ -160,7 +160,7 @@ class SchedulerSolver:
             for p_idx, _ in enumerate(self.people[:-1]):  # exclude Unfilled
                 for d1_idx, day1 in enumerate(self.days):
                     for d2_idx in range(d1_idx + 1, len(self.days)):
-                        if (self.days[d2_idx] - day1).days < gap:
+                        if (self.days[d2_idx] - day1).days <= gap:
                             for s1_idx in range(len(self.shifts)):
                                 for s2_idx in range(len(self.shifts)):
                                     self.model.Add(
@@ -209,6 +209,28 @@ def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
         limit = 1
     else:
         limit = 60
-    return solver.solve(time_limit_sec=limit)
+    df = solver.solve(time_limit_sec=limit)
+    if not respects_min_gap(df, data.min_gap):
+        raise RuntimeError("Schedule violates min_gap constraint")
+    return df
+
+
+def respects_min_gap(df: pd.DataFrame, gap: int) -> bool:
+    """Return True if no resident appears on days closer than ``gap``."""
+    if gap <= 0:
+        return True
+    assignments: Dict[str, list] = {}
+    for row in df.to_dict("records"):
+        day = row.get("Date")
+        for label, person in row.items():
+            if label == "Date" or person in (None, "Unfilled"):
+                continue
+            assignments.setdefault(person, []).append(day)
+    for days in assignments.values():
+        days.sort()
+        for d1, d2 in zip(days, days[1:]):
+            if (d2 - d1).days < gap:
+                return False
+    return True
 
 
