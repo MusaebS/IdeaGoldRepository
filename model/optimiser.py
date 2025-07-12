@@ -139,7 +139,7 @@ class SchedulerSolver:
         return pd.DataFrame(rows)
 
 
-def build_schedule(data: InputData) -> pd.DataFrame:
+def build_schedule(data: InputData, time_limit_sec: int | None = 60) -> pd.DataFrame:
     solver = SchedulerSolver(data)
-    return solver.solve(time_limit_sec=60)
+    return solver.solve(time_limit_sec=time_limit_sec)
 
