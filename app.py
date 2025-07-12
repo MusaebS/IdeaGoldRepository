@@ -78,11 +78,12 @@ if st.button("🔁 Reset All Data", key="btn_reset"):
 # ────────────────────────────────────────────────────────────────────────────────
 
 with st.expander("⚙️ Shift Templates"):
-    col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
+    col1, col2, col3, col4, col5 = st.columns([3, 2, 1, 1, 1])
     shift_label   = col1.text_input("Shift Label (e.g. ER1)")
     role          = col2.selectbox("Role", ["Junior", "Senior"])
     night_float   = col3.checkbox("Night Float")
     thur_weekend  = col4.checkbox("Thursday Night = Weekend")
+    points        = col5.number_input("Points", 1.0, 10.0, value=2.0 if night_float else 1.0, step=0.5)
 
     if st.button("Add Shift", key="btn_add_shift"):
         if not shift_label.strip():
@@ -100,6 +101,7 @@ with st.expander("⚙️ Shift Templates"):
                     "role": role,
                     "night_float": night_float,
                     "thur_weekend": thur_weekend,
+                    "points": points,
                 }
             )
 
@@ -276,6 +278,13 @@ def is_active_rotator(p: str, dt: date) -> bool:
             return start <= dt <= end
     return True
 
+def get_shift_points(dt: date, cfg: dict) -> float:
+    """Return point value for a shift on a specific date."""
+    base = cfg.get("points", 1)
+    if cfg.get("night_float") or is_weekend(dt, cfg):
+        return base * 2
+    return base
+
 #----------------------------------------------------------
 # cross-bucket quota normalization helper
 #----------------------------------------------------------
@@ -417,6 +426,16 @@ def build_median_report(summary_df: pd.DataFrame, tol: int = 0):
                     "Δ Total vs median":   int(d_tot),
                     "Δ Weekend vs median": int(d_wkd),
                 })
+    if "Assigned Points" in summary_df.columns:
+        med_pts = summary_df["Assigned Points"].median()
+        for _, r in summary_df.iterrows():
+            d_pts = r["Assigned Points"] - med_pts
+            if abs(d_pts) > tol:
+                rows.append({
+                    "Name": r["Name"],
+                    "Label": "Points",
+                    "Δ Points vs median": int(d_pts),
+                })
     return pd.DataFrame(rows)
 
 
@@ -434,6 +453,9 @@ def build_schedule():
 
     juniors, seniors = st.session_state.juniors, st.session_state.seniors
     pool              = juniors + seniors                      # for summary only
+
+    points_assigned = {p: 0 for p in pool}
+    expected_points_total = {p: 0.0 for p in pool}
 
     # 0️⃣  Staff who ever cover a night-float shift
     nf_staff = set()
@@ -494,6 +516,7 @@ def build_schedule():
         lbl        = cfg["label"]
         role_pool  = juniors if cfg["role"] == "Junior" else seniors
         role_pool  = [p for p in role_pool if p in regular_pool]
+        base_pts   = cfg.get("points", 1)
 
         role_weight   = sum(weight[p] for p in role_pool) or 1
         total_slots   = slot_totals[lbl]
@@ -506,6 +529,9 @@ def build_schedule():
             else:
                 expected_total[p][lbl]   = 0.0
                 expected_weekend[p][lbl] = 0.0
+
+            weekday_share = expected_total[p][lbl] - expected_weekend[p][lbl]
+            expected_points_total[p] += base_pts * weekday_share + base_pts * 2 * expected_weekend[p][lbl]
 
 # 4️⃣ INTEGER TARGETS VIA HARE–NIEMEYER (role-aware)
     target_total, target_weekend = {}, {}
@@ -576,6 +602,9 @@ def build_schedule():
                 unfilled.append((d.date(), cfg["label"]))
             else:
                 nf_assignments[cfg["label"]][d.date()] = person
+                pt = get_shift_points(d.date(), cfg)
+                points_assigned[person] += pt
+                expected_points_total[person] += pt
 
     # 7️⃣  DAY-BY-DAY ASSIGNMENT LOOP
     schedule_rows = []
@@ -654,6 +683,7 @@ def build_schedule():
             stats[pick][lbl]["total"]   += 1
             if wknd:
                 stats[pick][lbl]["weekend"] += 1
+            points_assigned[pick] += get_shift_points(d.date(), cfg)
             last_assigned[pick] = d.date()
 
         # record today's assignments
@@ -675,7 +705,11 @@ def build_schedule():
 
     summary_rows = []
     for p in pool:                               # include NF staff with zeros
-        entry = {"Name": p}
+        entry = {
+            "Name": p,
+            "Assigned Points": points_assigned.get(p, 0),
+            "Expected Points": round(expected_points_total.get(p, 0), 1),
+        }
         for lbl in shift_labels:
             entry[f"{lbl}_assigned_total"]   = stats.get(p, {}).get(lbl, {}).get("total", 0)
             entry[f"{lbl}_expected_total"]   = target_total.get(lbl, {}).get(p, 0)
