@@ -166,3 +166,4 @@ def test_fill_unassigned_shifts_prioritizes_deficit():
 
     assert new_unfilled == []
     assert schedule_rows[0]["Shift1"] == "B"
+
