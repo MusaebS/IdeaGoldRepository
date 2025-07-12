@@ -175,7 +175,7 @@ def build_median_report(summary_df: pd.DataFrame, tol: int = 0):
     return pd.DataFrame(rows)
 
 
-def build_schedule():
+def build_schedule(group_by: str | None = None):
     shifts_cfg = st.session_state.shifts
     start, end = st.session_state.start_date, st.session_state.end_date
     days = pd.date_range(start, end)
@@ -380,4 +380,38 @@ def build_schedule():
     df_summary = pd.DataFrame(summary_rows)
     df_unfilled = pd.DataFrame(unfilled, columns=["Date", "Shift"])
 
-    return df_schedule, df_summary, df_unfilled
+    # ------------------------------------------------------------------
+    # Build compact summary
+    # ------------------------------------------------------------------
+    compact_rows = []
+    for p in pool:
+        tot = sum(stats.get(p, {}).get(lbl, {}).get("total", 0) for lbl in shift_labels)
+        wkd = sum(stats.get(p, {}).get(lbl, {}).get("weekend", 0) for lbl in shift_labels)
+        compact_rows.append({
+            "Name": p,
+            "Role": "Junior" if p in juniors else "Senior",
+            "Total Assigned": tot,
+            "Weekend Assigned": wkd,
+            "Assigned Points": points_assigned.get(p, 0),
+            "Expected Points": round(expected_points_total.get(p, 0), 1),
+        })
+
+    df_compact = pd.DataFrame(compact_rows)
+
+    if group_by == "role":
+        df_compact = (
+            df_compact.groupby("Role")
+            .sum(numeric_only=True)
+            .reset_index()
+        )
+    elif group_by == "shift":
+        rows = []
+        for lbl in shift_labels:
+            rows.append({
+                "Shift": lbl,
+                "Total Assigned": sum(stats[p][lbl]["total"] for p in stats),
+                "Weekend Assigned": sum(stats[p][lbl]["weekend"] for p in stats),
+            })
+        df_compact = pd.DataFrame(rows)
+
+    return df_schedule, df_summary, df_unfilled, df_compact
