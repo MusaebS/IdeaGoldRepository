@@ -46,6 +46,9 @@ except Exception:  # pragma: no cover - simple fallback if ortools missing
     class CpSolver:
         OPTIMAL = 0
         FEASIBLE = 0
+        INFEASIBLE = 1
+        MODEL_INVALID = 2
+        UNKNOWN = 3
 
         def __init__(self):
             self.parameters = type("p", (), {})()
@@ -66,10 +69,32 @@ except Exception:  # pragma: no cover - simple fallback if ortools missing
                         model.vars[(unfilled_idx, d_idx, s_idx)].value = 1
             return self.OPTIMAL
 
+        def StatusName(self, status):
+            names = {
+                self.OPTIMAL: "OPTIMAL",
+                self.FEASIBLE: "FEASIBLE",
+                self.INFEASIBLE: "INFEASIBLE",
+                self.MODEL_INVALID: "MODEL_INVALID",
+                self.UNKNOWN: "UNKNOWN",
+            }
+            return names.get(status, str(status))
+
         def Value(self, var):
             return var.value
 
-    cp_model = type("cp_model", (), {"CpModel": CpModel, "CpSolver": CpSolver, "OPTIMAL": 0, "FEASIBLE": 0})
+    cp_model = type(
+        "cp_model",
+        (),
+        {
+            "CpModel": CpModel,
+            "CpSolver": CpSolver,
+            "OPTIMAL": CpSolver.OPTIMAL,
+            "FEASIBLE": CpSolver.FEASIBLE,
+            "INFEASIBLE": CpSolver.INFEASIBLE,
+            "MODEL_INVALID": CpSolver.MODEL_INVALID,
+            "UNKNOWN": CpSolver.UNKNOWN,
+        },
+    )
 
 from .data_models import InputData, ShiftTemplate
 
@@ -120,7 +145,10 @@ class SchedulerSolver:
         solver = cp_model.CpSolver()
         if time_limit_sec:
             solver.parameters.max_time_in_seconds = time_limit_sec
-        solver.Solve(self.model)
+        status = solver.Solve(self.model)
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            name_func = getattr(solver, "StatusName", lambda s: str(s))
+            raise RuntimeError(f"Solver ended with status {name_func(status)}")
         rows = []
         for d_idx, day in enumerate(self.days):
             row = {"Date": day}
