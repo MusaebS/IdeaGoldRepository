@@ -81,6 +81,11 @@ if st.button("🔁 Reset All Data", key="btn_reset"):
         "nf_juniors",
         "nf_seniors",
         "seed",
+        "df_sched",
+        "df_summary",
+        "df_unfilled",
+        "median_df",
+        "generated",
     ):
         st.session_state.pop(k, None)
     st.experimental_rerun()
@@ -298,13 +303,24 @@ with st.expander("🔄 Rotators"):
 if st.button("🚀 Generate Schedule", disabled=False):
     random.seed(st.session_state.seed)
     df, summ, unf = build_schedule()
+    st.session_state.df_sched = df
+    st.session_state.df_summary = summ
+    st.session_state.df_unfilled = unf
+    FAIR_TOL = 0    # 0 = show every deviation, 1 = ignore ±1
+    st.session_state.median_df = build_median_report(summ, FAIR_TOL)
+    st.session_state.generated = True
     st.success("✅ Schedule generated!")
+
+if st.session_state.get("generated"):
+    df = st.session_state.df_sched
+    summ = st.session_state.df_summary
+    unf = st.session_state.df_unfilled
+    median_df = st.session_state.median_df
     st.dataframe(df)
     st.subheader("📊 Assignment Summary")
     st.dataframe(summ)
     # ---------- fairness vs MEDIAN ----------
     FAIR_TOL = 0    # 0 = show every deviation, 1 = ignore ±1
-    median_df = build_median_report(summ, FAIR_TOL)
 
     if not median_df.empty:
         st.warning("⚖️  Median fairness – residents above / below peer median")
