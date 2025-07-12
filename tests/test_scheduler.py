@@ -1,33 +1,6 @@
 from datetime import date
 
 
-def setup_state_simple():
-    import streamlit as st
-    st.session_state.clear()
-    st.session_state.shifts = [
-        {
-            "label": "Shift1",
-            "role": "Junior",
-            "night_float": False,
-            "thur_weekend": False,
-            "points": 1.0,
-        }
-    ]
-    st.session_state.juniors = ["A", "B"]
-    st.session_state.seniors = []
-    st.session_state.nf_juniors = []
-    st.session_state.nf_seniors = []
-    st.session_state.leaves = []
-    st.session_state.rotators = []
-    st.session_state.extra_oncalls = {}
-    st.session_state.weights = {}
-    st.session_state.start_date = date(2023, 1, 1)
-    st.session_state.end_date = date(2023, 1, 2)
-    st.session_state.min_gap = 1
-    st.session_state.nf_block_length = 5
-    st.session_state.seed = 0
-
-
 def test_allocate_integer_quotas_basic(sched):
     quotas = {"A": 1.2, "B": 0.8}
     result = sched.allocate_integer_quotas(quotas, 2)
@@ -40,32 +13,6 @@ def test_build_schedule_simple(sched, simple_state):
     assert unf.empty
     assert not wide.empty
     assert not compact.empty
-
-
-def test_build_expectation_report(sched):
-    data = [
-        {
-            "Name": "A",
-            "Shift1_assigned_total": 2,
-            "Shift1_expected_total": 1,
-            "Shift1_assigned_weekend": 1,
-            "Shift1_expected_weekend": 0,
-            "Assigned Points": 3,
-            "Expected Points": 1,
-        },
-        {
-            "Name": "B",
-            "Shift1_assigned_total": 0,
-            "Shift1_expected_total": 1,
-            "Shift1_assigned_weekend": 0,
-            "Shift1_expected_weekend": 1,
-            "Assigned Points": 0,
-            "Expected Points": 2,
-        },
-    ]
-    df = sched.pd.DataFrame(data)
-    report = sched.build_expectation_report(df)
-    assert len(report) == 4
 
 
 def test_weekend_filter_fallback(sched, simple_state):
@@ -125,10 +72,8 @@ def test_fill_unassigned_shifts_prioritizes_deficit(sched, simple_state):
     assert schedule_rows[0]["Shift1"] == "B"
 
 
-def test_balance_points_basic(sched):
-    import streamlit as st
-    setup_state_simple()
-    cfg = st.session_state.shifts[0]
+def test_balance_points_basic(sched, simple_state):
+    cfg = simple_state.session_state.shifts[0]
 
     shift_cfg_map = {"Shift1": cfg}
     schedule_rows = [

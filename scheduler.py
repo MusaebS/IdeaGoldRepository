@@ -442,38 +442,6 @@ def build_median_report(summary_df: pd.DataFrame, tol: int = 0):
     return pd.DataFrame(rows)
 
 
-def build_expectation_report(summary_df: pd.DataFrame, tol: int = 0) -> pd.DataFrame:
-    """Highlight deviations from expected totals, weekends and points."""
-    rows = []
-    records = summary_df.to_dict(orient="records")
-    if not records:
-        return pd.DataFrame(rows)
-
-    cols = getattr(summary_df, "columns", None) or list(records[0].keys())
-    for col in [c for c in cols if c.endswith("_assigned_total")]:
-        label = col.replace("_assigned_total", "")
-        for r in records:
-            d_tot = r[f"{label}_assigned_total"] - r[f"{label}_expected_total"]
-            d_wkd = r[f"{label}_assigned_weekend"] - r[f"{label}_expected_weekend"]
-            if abs(d_tot) > tol or abs(d_wkd) > tol:
-                rows.append({
-                    "Name": r["Name"],
-                    "Label": label,
-                    "Δ Total vs expected": int(d_tot),
-                    "Δ Weekend vs expected": int(d_wkd),
-                })
-    if "Assigned Points" in cols and "Expected Points" in cols:
-        for r in records:
-            d_pts = r["Assigned Points"] - r["Expected Points"]
-            if abs(d_pts) > tol:
-                rows.append({
-                    "Name": r["Name"],
-                    "Label": "Points",
-                    "Δ Points vs expected": int(d_pts),
-                })
-    return pd.DataFrame(rows)
-
-
 def build_schedule(group_by: str | None = None):
     shifts_cfg = st.session_state.shifts
     start, end = st.session_state.start_date, st.session_state.end_date
