@@ -560,7 +560,9 @@ def build_schedule(group_by: str | None = None):
             eligible = [p for p in eligible if stats[p][lbl]["total"] < target_total[lbl].get(p, 0) + 1]
             wknd = is_weekend(d.date(), cfg)
             if wknd and slot_weekends[lbl] > 0:
-                eligible = [p for p in eligible if stats[p][lbl]["weekend"] < target_weekend[lbl][p]]
+                wk_eligible = [p for p in eligible if stats[p][lbl]["weekend"] < target_weekend[lbl][p]]
+                if wk_eligible:
+                    eligible = wk_eligible
             if not eligible:
                 row[lbl] = "Unfilled"
                 unfilled.append((d.date(), lbl))

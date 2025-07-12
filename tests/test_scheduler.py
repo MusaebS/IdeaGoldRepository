@@ -122,6 +122,18 @@ def test_build_expectation_report():
     assert len(report) == 4
 
 
+def test_weekend_filter_fallback():
+    setup_state_simple()
+    st.session_state.shifts[0]["thur_weekend"] = True
+    st.session_state.start_date = date(2023, 1, 5)
+    st.session_state.end_date = date(2023, 1, 5)
+    st.session_state.leaves = [("A", date(2023, 1, 5), date(2023, 1, 5))]
+    df, _, unf, _ = scheduler.build_schedule()
+    assert unf.empty
+    assert df._data[0]["Shift1"] == "B"
+
+
+
 def test_fill_unassigned_shifts_prioritizes_deficit():
     cfg = {
         "label": "Shift1",
