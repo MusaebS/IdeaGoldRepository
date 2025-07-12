@@ -5,11 +5,44 @@ from datetime import datetime, timedelta, date
 import math
 import json
 
+# ------------------------------------------------------------------
+# Optional test data
+# ------------------------------------------------------------------
+TEST_JUNIORS = [
+    "Alice", "Bob", "Charlie", "Dina", "Ethan", "Fiona", "George", "Hannah",
+    "Ian", "Jade", "Kevin", "Lily", "Mason", "Nina", "Oscar", "Paula",
+    "Quincy", "Rosa", "Sam", "Tina", "Uma", "Victor", "Wendy", "Xander",
+    "Yara", "Zane", "Amy", "Brian", "Cindy", "David",
+]
+
+TEST_SENIORS = [
+    "Eli", "Fay", "Gina", "Hank", "Iris", "Jack", "Kara", "Leo",
+    "Mira", "Neil", "Olga", "Pete", "Quinn", "Ruth", "Steve",
+]
+
+TEST_SHIFTS = [
+    {"label": "Junior NF", "role": "Junior", "night_float": True,  "thur_weekend": False, "points": 2.0},
+    {"label": "Senior NF", "role": "Senior", "night_float": True,  "thur_weekend": False, "points": 2.0},
+    {"label": "ER night", "role": "Junior", "night_float": False, "thur_weekend": True,  "points": 1.0},
+    {"label": "Ward night", "role": "Junior", "night_float": False, "thur_weekend": True,  "points": 1.0},
+    {"label": "Senior night", "role": "Senior", "night_float": False, "thur_weekend": True,  "points": 1.0},
+    {"label": "Evening shift", "role": "Senior", "night_float": False, "thur_weekend": False, "points": 1.0},
+    {"label": "Morning shift", "role": "Senior", "night_float": False, "thur_weekend": False, "points": 1.0},
+    {"label": "Ward morning", "role": "Junior", "night_float": False, "thur_weekend": False, "points": 1.0},
+    {"label": "ER zone 1 morning", "role": "Junior", "night_float": False, "thur_weekend": False, "points": 1.0},
+    {"label": "ER zone 2 morning", "role": "Junior", "night_float": False, "thur_weekend": False, "points": 1.0},
+]
+
 # ────────────────────────────────────────────────────────────────────
 # Page configuration – MUST precede every other Streamlit call
 # ────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Idea Gold Scheduler", layout="wide")
 st.title("🪙 Idea Gold Scheduler – Stable & Fair v2025-05-16")
+
+# Optional toggle to load predefined test data
+use_test_data = st.checkbox("🧪 Use Test Data", value=False)
+if use_test_data:
+    st.session_state.shifts = TEST_SHIFTS.copy()
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Helper: integer‑quota allocator (Hare–Niemeyer)
@@ -81,47 +114,52 @@ if st.button("🔁 Reset All Data", key="btn_reset"):
 # ────────────────────────────────────────────────────────────────────────────────
 
 with st.expander("⚙️ Shift Templates"):
-    col1, col2, col3, col4, col5 = st.columns([3, 2, 1, 1, 1])
-    shift_label   = col1.text_input("Shift Label (e.g. ER1)")
-    role          = col2.selectbox("Role", ["Junior", "Senior"])
-    night_float   = col3.checkbox("Night Float")
-    thur_weekend  = col4.checkbox("Thursday Night = Weekend")
-    points        = col5.number_input("Points", 1.0, 10.0, value=2.0 if night_float else 1.0, step=0.5)
-
-    if st.button("Add Shift", key="btn_add_shift"):
-        if not shift_label.strip():
-            st.error("Shift label cannot be empty.")
-        else:
-            base = shift_label.strip()
-            existing = {s["label"] for s in st.session_state.shifts}
-            idx, unique = 1, base
-            while unique in existing:
-                idx += 1
-                unique = f"{base} #{idx}"
-            st.session_state.shifts.append(
-                {
-                    "label": unique,
-                    "role": role,
-                    "night_float": night_float,
-                    "thur_weekend": thur_weekend,
-                    "points": points,
-                }
-            )
-
-    # Show list & delete picker
-    if st.session_state.shifts:
+    if use_test_data:
+        st.info("Using preset test shifts")
+        st.session_state.shifts = TEST_SHIFTS.copy()
         st.table(pd.DataFrame(st.session_state.shifts))
-        delete_shift = st.selectbox(
-            "Select a shift to delete",
-            [""] + [s["label"] for s in st.session_state.shifts],
-            key="del_shift_select",
-        )
-        if st.button("🗑️ Delete Shift") and delete_shift:
-            st.session_state.shifts = [
-                s for s in st.session_state.shifts if s["label"] != delete_shift
-            ]
-            st.session_state.pop("del_shift_select", None)  # forget picker state
-            st.experimental_rerun()
+    else:
+        col1, col2, col3, col4, col5 = st.columns([3, 2, 1, 1, 1])
+        shift_label   = col1.text_input("Shift Label (e.g. ER1)")
+        role          = col2.selectbox("Role", ["Junior", "Senior"])
+        night_float   = col3.checkbox("Night Float")
+        thur_weekend  = col4.checkbox("Thursday Night = Weekend")
+        points        = col5.number_input("Points", 1.0, 10.0, value=2.0 if night_float else 1.0, step=0.5)
+
+        if st.button("Add Shift", key="btn_add_shift"):
+            if not shift_label.strip():
+                st.error("Shift label cannot be empty.")
+            else:
+                base = shift_label.strip()
+                existing = {s["label"] for s in st.session_state.shifts}
+                idx, unique = 1, base
+                while unique in existing:
+                    idx += 1
+                    unique = f"{base} #{idx}"
+                st.session_state.shifts.append(
+                    {
+                        "label": unique,
+                        "role": role,
+                        "night_float": night_float,
+                        "thur_weekend": thur_weekend,
+                        "points": points,
+                    }
+                )
+
+        # Show list & delete picker
+        if st.session_state.shifts:
+            st.table(pd.DataFrame(st.session_state.shifts))
+            delete_shift = st.selectbox(
+                "Select a shift to delete",
+                [""] + [s["label"] for s in st.session_state.shifts],
+                key="del_shift_select",
+            )
+            if st.button("🗑️ Delete Shift") and delete_shift:
+                st.session_state.shifts = [
+                    s for s in st.session_state.shifts if s["label"] != delete_shift
+                ]
+                st.session_state.pop("del_shift_select", None)  # forget picker state
+                st.experimental_rerun()
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -129,13 +167,18 @@ with st.expander("⚙️ Shift Templates"):
 # ────────────────────────────────────────────────────────────────────────────────
 
 with st.expander("👥 Participants"):
-    use_demo = st.checkbox("Use Demo Participants", True)
-    if use_demo:
-        juniors = ["Alice", "Bob", "Charlie", "Dina"]
-        seniors = ["Eli", "Fay", "Gina", "Hank"]
+    if use_test_data:
+        st.info("Using preset test participants")
+        juniors = TEST_JUNIORS
+        seniors = TEST_SENIORS
     else:
-        juniors = [n.strip() for n in st.text_area("Juniors").splitlines() if n.strip()]
-        seniors = [n.strip() for n in st.text_area("Seniors").splitlines() if n.strip()]
+        use_demo = st.checkbox("Use Demo Participants", True)
+        if use_demo:
+            juniors = ["Alice", "Bob", "Charlie", "Dina"]
+            seniors = ["Eli", "Fay", "Gina", "Hank"]
+        else:
+            juniors = [n.strip() for n in st.text_area("Juniors").splitlines() if n.strip()]
+            seniors = [n.strip() for n in st.text_area("Seniors").splitlines() if n.strip()]
 
     st.session_state.juniors = juniors
     st.session_state.seniors = seniors
