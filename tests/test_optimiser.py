@@ -103,6 +103,7 @@ def test_role_and_gap_constraints():
         leaves=[],
         rotators=[],
         min_gap=2,
+        nf_block_length=1,
     )
 
     df = build_schedule(data)

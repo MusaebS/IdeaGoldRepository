@@ -80,6 +80,7 @@ with date_cols[0]:
 with date_cols[1]:
     end_date = st.date_input("End Date", date.today() + timedelta(days=27))
 min_gap = st.slider("Minimum Gap", 0, 7, 1)
+nf_block_len = st.number_input("NF Block Length", 1, 7, 5)
 
 if st.button("Generate Schedule"):
     data = InputData(
@@ -93,6 +94,7 @@ if st.button("Generate Schedule"):
         leaves=[],
         rotators=[],
         min_gap=min_gap,
+        nf_block_length=nf_block_len,
     )
     try:
         env = os.getenv("ENV", "dev")
