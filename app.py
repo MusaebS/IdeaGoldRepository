@@ -298,7 +298,21 @@ with st.expander("🔄 Rotators"):
 if st.button("🚀 Generate Schedule", disabled=False):
     random.seed(st.session_state.seed)
     df, wide_summ, unf, compact_summ = build_schedule()
+    st.session_state.df_sched = df
+    st.session_state.df_summary = wide_summ
+    st.session_state.df_unfilled = unf
+    st.session_state.compact_summ = compact_summ
+    FAIR_TOL = 0  # 0 = show every deviation, 1 = ignore ±1
+    st.session_state.median_df = build_median_report(wide_summ, FAIR_TOL)
+    st.session_state.generated = True
     st.success("✅ Schedule generated!")
+
+if st.session_state.get("generated"):
+    df = st.session_state.df_sched
+    wide_summ = st.session_state.df_summary
+    unf = st.session_state.df_unfilled
+    compact_summ = st.session_state.compact_summ
+    median_df = st.session_state.median_df
     st.dataframe(df)
     st.subheader("📊 Compact Summary")
     st.dataframe(compact_summ)
@@ -306,7 +320,7 @@ if st.button("🚀 Generate Schedule", disabled=False):
     st.dataframe(wide_summ)
     # ---------- fairness vs MEDIAN ----------
     FAIR_TOL = 0    # 0 = show every deviation, 1 = ignore ±1
-    median_df = build_median_report(wide_summ, FAIR_TOL)
+    median_df = st.session_state.median_df
 
     if not median_df.empty:
         st.warning("⚖️  Median fairness – residents above / below peer median")
