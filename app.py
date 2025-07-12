@@ -4,6 +4,9 @@ import random
 from datetime import datetime, timedelta, date
 import json
 import subprocess
+import threading
+import shlex
+import re
 from scheduler import build_schedule, build_median_report
 
 # ------------------------------------------------------------------
@@ -68,6 +71,9 @@ def_state = {
     "min_gap": 2,
     "nf_block_length": 5,
     "seed": 0,
+    "pytest_opts": "-q",
+    "use_cov": False,
+    "fail_fast": False,
 }
 for k, v in def_state.items():
     st.session_state.setdefault(k, v)
@@ -87,6 +93,14 @@ if st.button("🔁 Reset All Data", key="btn_reset"):
         "df_unfilled",
         "median_df",
         "generated",
+        "test_log",
+        "test_summary",
+        "coverage_pct",
+        "cov_xml",
+        "test_running",
+        "pytest_opts",
+        "use_cov",
+        "fail_fast",
     ):
         st.session_state.pop(k, None)
     st.experimental_rerun()
@@ -364,21 +378,75 @@ if st.session_state.get("generated"):
         st.download_button("Download Unfilled CSV", unf.to_csv(index=False), "unfilled.csv")
 
     # --------------------------------------
-    # Heavy testing button
+    # Heavy testing utilities
     # --------------------------------------
-    if st.button("🧪 Run Heavy Tests", key="btn_heavy_tests"):
-        with st.spinner("Running tests..."):
-            proc = subprocess.run(["pytest", "-q"], capture_output=True, text=True)
-        st.session_state.test_log = proc.stdout + proc.stderr
 
-    if "test_log" in st.session_state:
-        st.text_area("Test Output", st.session_state.test_log, height=300, key="txt_test_output")
-        st.download_button(
-            "Download Test Log",
-            st.session_state.test_log,
-            "test_log.txt",
-            key="btn_dl_test_log",
-        )
+    def parse_summary(log_text: str) -> str:
+        lines = log_text.splitlines()
+        for ln in reversed(lines):
+            if "passed" in ln or "failed" in ln:
+                return ln.strip()
+        return ""
+
+    def parse_coverage(log_text: str) -> str | None:
+        m = re.search(r"TOTAL\s+\d+\s+\d+\s+(\d+%)", log_text)
+        return m.group(1) if m else None
+
+    def run_tests(opts: str, cov: bool, fail_fast: bool):
+        cmd = ["pytest"]
+        if fail_fast:
+            cmd.append("-x")
+        if opts:
+            cmd.extend(shlex.split(opts))
+        if cov:
+            cmd.extend(["--cov=.", "--cov-report=term", "--cov-report=xml"])
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        st.session_state.test_log = proc.stdout + proc.stderr
+        st.session_state.test_summary = parse_summary(st.session_state.test_log)
+        st.session_state.coverage_pct = parse_coverage(st.session_state.test_log)
+        if cov:
+            try:
+                with open("coverage.xml") as f:
+                    st.session_state.cov_xml = f.read()
+            except Exception:
+                st.session_state.cov_xml = None
+        st.session_state.test_running = False
+
+    with st.expander("🧪 Heavy Testing"):
+        opts = st.text_input("Extra pytest options", st.session_state.pytest_opts, key="pytest_opts")
+        cov = st.checkbox("Enable coverage", value=st.session_state.use_cov, key="use_cov")
+        ff = st.checkbox("Fail fast (-x)", value=st.session_state.fail_fast, key="fail_fast")
+
+        if st.button("Run Heavy Tests", key="btn_heavy_tests"):
+            st.session_state.test_running = True
+            st.session_state.test_log = ""
+            st.session_state.test_summary = ""
+            st.session_state.coverage_pct = None
+            st.session_state.cov_xml = None
+            threading.Thread(target=run_tests, args=(opts, cov, ff), daemon=True).start()
+
+        if st.session_state.get("test_running"):
+            st.info("Running tests in background...")
+
+        if st.session_state.get("test_log"):
+            if st.session_state.get("test_summary"):
+                st.success(st.session_state.test_summary)
+            if st.session_state.get("coverage_pct"):
+                st.write(f"Coverage: {st.session_state.coverage_pct}")
+            st.text_area("Test Output", st.session_state.test_log, height=300, key="txt_test_output")
+            st.download_button(
+                "Download Test Log",
+                st.session_state.test_log,
+                "test_log.txt",
+                key="btn_dl_test_log",
+            )
+            if st.session_state.get("cov_xml"):
+                st.download_button(
+                    "Download Coverage XML",
+                    st.session_state.cov_xml,
+                    "coverage.xml",
+                    key="btn_dl_cov",
+                )
 
 
 
