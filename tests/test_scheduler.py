@@ -52,6 +52,7 @@ def test_weekend_filter_fallback(sched, simple_state):
 
 
 def test_fill_unassigned_shifts_prioritizes_deficit(sched, simple_state):
+
     cfg = {
         "label": "Shift1",
         "role": "Junior",
@@ -95,4 +96,36 @@ def test_fill_unassigned_shifts_prioritizes_deficit(sched, simple_state):
 
     assert new_unfilled == []
     assert schedule_rows[0]["Shift1"] == "B"
+
+
+def test_balance_points_basic():
+    setup_state_simple()
+    cfg = st.session_state.shifts[0]
+    shift_cfg_map = {"Shift1": cfg}
+    schedule_rows = [
+        {"Date": date(2023, 1, 1), "Day": "Mon", "Shift1": "A"},
+        {"Date": date(2023, 1, 2), "Day": "Tue", "Shift1": "A"},
+    ]
+    stats = {
+        "A": {"Shift1": {"total": 2, "weekend": 0}},
+        "B": {"Shift1": {"total": 0, "weekend": 0}},
+    }
+    points_assigned = {"A": 2, "B": 0}
+    expected_points_total = {"A": 1, "B": 1}
+    last_assigned = {"A": date(2023, 1, 2), "B": None}
+
+    scheduler.balance_points(
+        schedule_rows,
+        stats,
+        shift_cfg_map,
+        expected_points_total,
+        points_assigned,
+        st.session_state.min_gap,
+        ["Shift1"],
+        last_assigned,
+    )
+
+    assigned = [row["Shift1"] for row in schedule_rows]
+    assert set(assigned) == {"A", "B"}
+    assert points_assigned == {"A": 1, "B": 1}
 
