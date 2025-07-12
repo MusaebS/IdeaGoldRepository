@@ -159,6 +159,15 @@ class SchedulerSolver:
         gap = self.data.min_gap
         if gap > 0:
             for p_idx, _ in enumerate(self.people[:-1]):  # exclude Unfilled
+                # no more than one shift per day
+                for d_idx in range(len(self.days)):
+                    self.model.Add(
+                        sum(
+                            self.vars[(p_idx, d_idx, s_idx)]
+                            for s_idx in range(len(self.shifts))
+                        )
+                        <= 1
+                    )
                 for d1_idx, day1 in enumerate(self.days):
                     for d2_idx in range(d1_idx + 1, len(self.days)):
                         if (self.days[d2_idx] - day1).days <= gap:
