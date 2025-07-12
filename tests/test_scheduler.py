@@ -211,3 +211,4 @@ def test_rebalance_points_swaps():
 
     assigned = [row["Shift1"] for row in schedule_rows]
     assert assigned.count("B") == 1
+
