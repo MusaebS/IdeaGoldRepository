@@ -327,7 +327,7 @@ def normalize_overall_quota(target_total, full_participants, tol=1):
 # Post-process: swap a weekday with a weekend to fix weekend deficits
 # Works label-by-label until every weekend quota is met (or no legal swap).
 # ────────────────────────────────────────────────────────────────────
-def balance_weekends(schedule_rows, stats, target_weekend, shift_cfg_map, min_gap, shift_labels):
+def balance_weekends(schedule_rows, stats, target_weekend, shift_cfg_map, min_gap, shift_labels, last_assigned):
     """
     schedule_rows : list[dict]   rows produced in the day-by-day loop
     stats          : stats[p][lbl][weekend/total]  (mutated in place)
@@ -339,6 +339,8 @@ def balance_weekends(schedule_rows, stats, target_weekend, shift_cfg_map, min_ga
     def is_weekend_row(date_, label):
         cfg = shift_cfg_map[label]
         return date_.weekday() in (4, 5) or (date_.weekday() == 3 and cfg.get("thur_weekend", False))
+
+    all_labels = [lbl for lbl in schedule_rows[0] if lbl not in ("Date", "Day")]
 
     changed = True
     while changed:
@@ -370,23 +372,21 @@ def balance_weekends(schedule_rows, stats, target_weekend, shift_cfg_map, min_ga
                     # min-gap check for both people after the swap
                     w_date, d_date = w_row["Date"], d_row["Date"]
 
-                    def violates(person, new_date):
+                    def violates(person, new_date, ignore_idx):
                         """True if swapping would break any rule for *person*"""
                         return (
-                            # violates min-gap for this label
                             any(
                                 abs((new_date - r["Date"]).days) < min_gap
-                                and r[lbl] == person
-                                for r in schedule_rows
+                                and any(r[l] == person for l in all_labels)
+                                for i, r in enumerate(schedule_rows)
+                                if i != ignore_idx
                             )
-                            # on leave that day
                             or on_leave(person, new_date)
-                            # outside rotator window that day
                             or not is_active_rotator(person, new_date)
                         )
 
 
-                    if violates(p_over, d_date) or violates(p_under, w_date):
+                    if violates(p_over, d_date, w_idx) or violates(p_under, w_date, d_idx):
                         continue  # not legal, try next pair
 
                     # --- perform the swap ---
@@ -394,10 +394,24 @@ def balance_weekends(schedule_rows, stats, target_weekend, shift_cfg_map, min_ga
                     schedule_rows[d_idx][lbl] = p_over
                     stats[p_over ][lbl]["weekend"] -= 1
                     stats[p_under][lbl]["weekend"] += 1
+
+                    def recompute_last(person):
+                        dates = [r["Date"] for r in schedule_rows
+                                 if any(r[l] == person for l in all_labels)]
+                        last_assigned[person] = max(dates) if dates else None
+
+                    recompute_last(p_over)
+                    recompute_last(p_under)
+
                     changed = True
                     break
                 if changed:
                     break    # restart while-loop to recompute over/under
+
+    # final recomputation to ensure last_assigned reflects the new schedule
+    for person in last_assigned:
+        dates = [r["Date"] for r in schedule_rows if any(r[l] == person for l in all_labels)]
+        last_assigned[person] = max(dates) if dates else None
 
 # ────────────────────────────────────────────────────────────────────
 # Fairness-vs-Median helper
@@ -697,6 +711,7 @@ def build_schedule():
         {cfg["label"]: cfg for cfg in shifts_cfg if not cfg["night_float"]},
         st.session_state.min_gap,
         shift_labels,
+        last_assigned,
     )
 
 
