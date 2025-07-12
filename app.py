@@ -43,8 +43,13 @@ TEST_SHIFTS = [
 st.set_page_config(page_title="Idea Gold Scheduler", layout="wide")
 st.title("🪙 Idea Gold Scheduler – Stable & Fair v2025-05-16")
 
-# Optional toggle to load predefined test data
-use_test_data = st.checkbox("🧪 Use Test Data", value=False)
+# Debug tools
+debug_mode = st.sidebar.checkbox("Debug Mode")
+
+# Optional toggle to load predefined test data and persist choice
+st.session_state.setdefault("use_test_data", False)
+use_test_data = st.checkbox("🧪 Use Test Data", value=st.session_state.use_test_data)
+st.session_state.use_test_data = use_test_data
 if use_test_data:
     st.session_state.shifts = TEST_SHIFTS.copy()
 
@@ -80,6 +85,14 @@ def_state = {
 for k, v in def_state.items():
     st.session_state.setdefault(k, v)
 
+
+@st.cache_data(show_spinner=False)
+def cached_build(state_json, seed):
+    random.seed(seed)
+    df, wide, unf, compact = build_schedule()
+    med = build_median_report(wide, 0)
+    return df, wide, unf, compact, med
+
 if st.button("🔁 Reset All Data", key="btn_reset"):
     for k in (
         "shifts",
@@ -109,24 +122,39 @@ if st.button("🔁 Reset All Data", key="btn_reset"):
         st.session_state.pop(k, None)
     st.experimental_rerun()
 
+# Tabs for navigation
+tab_setup, tab_staff, tab_schedule, tab_results = st.tabs(
+    ["Setup", "Staff", "Schedule", "Results"]
+)
+
 # ────────────────────────────────────────────────────────────────────────────────
 # Shift template entry
 # ────────────────────────────────────────────────────────────────────────────────
 
-with st.expander("⚙️ Shift Templates"):
+with tab_setup:
+    st.subheader("⚙️ Shift Templates")
     if use_test_data:
         st.info("Using preset test shifts")
         st.session_state.shifts = TEST_SHIFTS.copy()
-        st.table(pd.DataFrame(st.session_state.shifts))
     else:
-        col1, col2, col3, col4, col5 = st.columns([3, 2, 1, 1, 1])
-        shift_label   = col1.text_input("Shift Label (e.g. ER1)")
-        role          = col2.selectbox("Role", ["Junior", "Senior"])
-        night_float   = col3.checkbox("Night Float")
-        thur_weekend  = col4.checkbox("Thursday Night = Weekend")
-        points        = col5.number_input("Points", 1.0, 10.0, value=2.0 if night_float else 1.0, step=0.5)
-
-        if st.button("Add Shift", key="btn_add_shift"):
+        with st.form("shift_form"):
+            col1, col2, col3, col4, col5 = st.columns([3, 2, 1, 1, 1])
+            shift_label = col1.text_input("Shift Label (e.g. ER1)")
+            role = col2.selectbox("Role", ["Junior", "Senior"])
+            night_float = col3.checkbox("Night Float")
+            thur_weekend = col4.checkbox(
+                "Thursday Night = Weekend",
+                help="Counts Thursday night as a weekend for fairness",
+            )
+            points = col5.number_input(
+                "Points",
+                1.0,
+                10.0,
+                value=2.0 if night_float else 1.0,
+                step=0.5,
+            )
+            submitted_shift = st.form_submit_button("Add Shift")
+        if submitted_shift:
             if not shift_label.strip():
                 st.error("Shift label cannot be empty.")
             else:
@@ -146,48 +174,93 @@ with st.expander("⚙️ Shift Templates"):
                     }
                 )
 
-        # Show list & delete picker
+        # Edit existing shifts inline
         if st.session_state.shifts:
-            st.table(pd.DataFrame(st.session_state.shifts))
-            delete_shift = st.selectbox(
-                "Select a shift to delete",
-                [""] + [s["label"] for s in st.session_state.shifts],
-                key="del_shift_select",
+            edited = st.data_editor(
+                pd.DataFrame(st.session_state.shifts),
+                num_rows="dynamic",
+                key="edit_shifts",
             )
-            if st.button("🗑️ Delete Shift") and delete_shift:
-                st.session_state.shifts = [
-                    s for s in st.session_state.shifts if s["label"] != delete_shift
-                ]
-                st.session_state.pop("del_shift_select", None)  # forget picker state
-                st.experimental_rerun()
+        st.session_state.shifts = edited.to_dict(orient="records")
 
+    st.subheader("📅 Schedule Settings")
+    st.session_state.start_date = st.date_input(
+        "Start Date",
+        st.session_state.start_date,
+    )
+    st.session_state.end_date = st.date_input(
+        "End Date",
+        st.session_state.end_date,
+    )
+
+    if st.session_state.start_date > st.session_state.end_date:
+        st.error("Start date must be on or before end date.")
+        gen_disabled = True
+    else:
+        gen_disabled = False
+
+    st.session_state.min_gap = st.slider(
+        "Minimum Days Between Shifts",
+        0,
+        7,
+        st.session_state.min_gap,
+    )
+    st.session_state.nf_block_length = st.slider(
+        "Night Float Block Length",
+        1,
+        10,
+        st.session_state.nf_block_length,
+        help="Length of consecutive night float block",
+    )
+    st.session_state.seed = st.number_input(
+        "Random Seed",
+        value=st.session_state.seed,
+        step=1,
+    )
+
+    cfg_keys = list(def_state.keys()) + ["juniors", "seniors"]
+    cfg = {k: st.session_state.get(k) for k in cfg_keys}
+    st.download_button(
+        "Download config JSON",
+        json.dumps(cfg, default=str),
+        "config.json",
+        key="btn_dl_cfg",
+    )
+    uploaded = st.file_uploader("Load config JSON", type="json")
+    if uploaded:
+        data = json.load(uploaded)
+        for k, v in data.items():
+            st.session_state[k] = v
+        st.experimental_rerun()
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Participants
 # ────────────────────────────────────────────────────────────────────────────────
 
-with st.expander("👥 Participants"):
+with tab_staff:
+    st.subheader("👥 Participants")
     if use_test_data:
         st.info("Using preset test participants")
-        juniors = TEST_JUNIORS
-        seniors = TEST_SENIORS
+        st.session_state.juniors = TEST_JUNIORS
+        st.session_state.seniors = TEST_SENIORS
     else:
-        use_demo = st.checkbox("Use Demo Participants", True)
-        if use_demo:
-            juniors = ["Alice", "Bob", "Charlie", "Dina"]
-            seniors = ["Eli", "Fay", "Gina", "Hank"]
-        else:
-            juniors = [n.strip() for n in st.text_area("Juniors").splitlines() if n.strip()]
-            seniors = [n.strip() for n in st.text_area("Seniors").splitlines() if n.strip()]
+        with st.form("participants_form"):
+            use_demo = st.checkbox("Use Demo Participants", True)
+            if use_demo:
+                juniors = ["Alice", "Bob", "Charlie", "Dina"]
+                seniors = ["Eli", "Fay", "Gina", "Hank"]
+            else:
+                juniors = [n.strip() for n in st.text_area("Juniors").splitlines() if n.strip()]
+                seniors = [n.strip() for n in st.text_area("Seniors").splitlines() if n.strip()]
+            save_part = st.form_submit_button("Save Participants")
+        if save_part:
+            st.session_state.juniors = juniors
+            st.session_state.seniors = seniors
 
-    st.session_state.juniors = juniors
-    st.session_state.seniors = seniors
+    juniors = st.session_state.get("juniors", [])
+    seniors = st.session_state.get("seniors", [])
 
-# ────────────────────────────────────────────────────────────────────────────────
-# Night‑float eligibility
-# ────────────────────────────────────────────────────────────────────────────────
-
-with st.expander("🌙 Night Float Eligibility"):
+    st.subheader("🌙 Night Float Eligibility")
     st.session_state.nf_juniors = st.multiselect(
         "NF‑Eligible Juniors",
         juniors,
@@ -201,112 +274,73 @@ with st.expander("🌙 Night Float Eligibility"):
         key="nf_s_select",
     )
 
-# ────────────────────────────────────────────────────────────────────────────────
-# Extra on‑calls bias
-# ────────────────────────────────────────────────────────────────────────────────
+    st.subheader("⚖️ Extra On‑Calls")
+    with st.form("extra_oncalls_form"):
+        for nm in juniors + seniors:
+            st.session_state.extra_oncalls[nm] = st.number_input(
+                f"Extra on‑calls for {nm}",
+                0,
+                10,
+                value=st.session_state.extra_oncalls.get(nm, 0),
+                key=f"extra_{nm}",
+                help="Bias scheduling toward/away from this person",
+            )
+        st.form_submit_button("Save Extra On‑Calls")
 
-with st.expander("⚖️ Extra On‑Calls"):
-    for nm in juniors + seniors:
-        st.session_state.extra_oncalls[nm] = st.number_input(
-            f"Extra on‑calls for {nm}",
-            0,
-            10,
-            value=st.session_state.extra_oncalls.get(nm, 0),
-            key=f"extra_{nm}",
+    st.subheader("✈️ Leaves")
+    with st.form("leave_form"):
+        leave_name = st.selectbox("Leave Name", ["" ] + juniors + seniors)
+        leave_from, leave_to = st.date_input(
+            "Leave Period",
+            [st.session_state.start_date, st.session_state.start_date],
+            key="leave_period",
         )
+        submitted_leave = st.form_submit_button("Add Leave")
+    if submitted_leave and leave_name and leave_from <= leave_to:
+        entry = (leave_name, leave_from, leave_to)
+        if entry not in st.session_state.leaves:
+            st.session_state.leaves.append(entry)
+
+    if st.session_state.leaves:
+        leaves_df = pd.DataFrame(st.session_state.leaves, columns=["Name", "From", "To"])
+        edited_leaves = st.data_editor(
+            leaves_df,
+            num_rows="dynamic",
+            key="edit_leaves",
+        )
+        st.session_state.leaves = [tuple(r) for r in edited_leaves.to_records(index=False)]
+
+    st.subheader("🔄 Rotators")
+    with st.form("rot_form"):
+        rot_name = st.selectbox("Rotator Name", ["" ] + juniors + seniors)
+        rot_from, rot_to = st.date_input(
+            "Rotator Period",
+            [st.session_state.start_date, st.session_state.start_date],
+            key="rot_period",
+        )
+        submitted_rot = st.form_submit_button("Add Rotator")
+    if submitted_rot and rot_name and rot_from <= rot_to:
+        entry = (rot_name, rot_from, rot_to)
+        if entry not in st.session_state.rotators:
+            st.session_state.rotators.append(entry)
+
+    if st.session_state.rotators:
+        rot_df = pd.DataFrame(st.session_state.rotators, columns=["Name", "From", "To"])
+        edited_rot = st.data_editor(
+            rot_df,
+            num_rows="dynamic",
+            key="edit_rotators",
+        )
+        st.session_state.rotators = [tuple(r) for r in edited_rot.to_records(index=False)]
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Date range & rules
 # ────────────────────────────────────────────────────────────────────────────────
 
-st.subheader("📅 Schedule Settings")
-st.session_state.start_date = st.date_input("Start Date", st.session_state.start_date)
-st.session_state.end_date = st.date_input("End Date", st.session_state.end_date)
-
-if st.session_state.start_date > st.session_state.end_date:
-    st.error("Start date must be on or before end date.")
-    gen_disabled = True
-else:
-    gen_disabled = False
-
-st.session_state.min_gap = st.slider(
-    "Minimum Days Between Shifts", 0, 7, st.session_state.min_gap
-)
-st.session_state.nf_block_length = st.slider(
-    "Night Float Block Length", 1, 10, st.session_state.nf_block_length
-)
-st.session_state.seed = st.number_input(
-    "Random Seed", value=st.session_state.seed, step=1
-)
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Leaves & rotators
 # ────────────────────────────────────────────────────────────────────────────────
 
-with st.expander("✈️ Leaves"):
-    leave_name = st.selectbox("Leave Name", [""] + juniors + seniors)
-    leave_from, leave_to = st.date_input(
-        "Leave Period",
-        [st.session_state.start_date, st.session_state.start_date],
-        key="leave_period",
-    )
-    if st.button("Add Leave", key="btn_add_leave") and leave_name and leave_from <= leave_to:
-        entry = (leave_name, leave_from, leave_to)
-        if entry not in st.session_state.leaves:
-            st.session_state.leaves.append(entry)
-
-    # Show list & delete picker
-    if st.session_state.leaves:
-        leaves_df = pd.DataFrame(
-            st.session_state.leaves, columns=["Name", "From", "To"]
-        )
-        st.table(leaves_df)
-        leave_labels = [
-            f"{n}  {f.strftime('%Y-%m-%d')} → {t.strftime('%Y-%m-%d')}"
-            for n, f, t in st.session_state.leaves
-        ]
-        delete_leave = st.selectbox(
-            "Select a leave to delete", [""] + leave_labels, key="del_leave_select"
-        )
-        if st.button("🗑️ Delete Leave") and delete_leave:
-            idx = leave_labels.index(delete_leave)
-            st.session_state.leaves.pop(idx)
-            st.session_state.pop("del_leave_select", None)
-            st.experimental_rerun()
-
-
-
-
-with st.expander("🔄 Rotators"):
-    rot_name = st.selectbox("Rotator Name", [""] + juniors + seniors)
-    rot_from, rot_to = st.date_input(
-        "Rotator Period",
-        [st.session_state.start_date, st.session_state.start_date],
-        key="rot_period",
-    )
-    if st.button("Add Rotator", key="btn_add_rotator") and rot_name and rot_from <= rot_to:
-        entry = (rot_name, rot_from, rot_to)
-        if entry not in st.session_state.rotators:
-            st.session_state.rotators.append(entry)
-
-    # Show list & delete picker
-    if st.session_state.rotators:
-        rot_df = pd.DataFrame(
-            st.session_state.rotators, columns=["Name", "From", "To"]
-        )
-        st.table(rot_df)
-        rot_labels = [
-            f"{n}  {f.strftime('%Y-%m-%d')} → {t.strftime('%Y-%m-%d')}"
-            for n, f, t in st.session_state.rotators
-        ]
-        delete_rot = st.selectbox(
-            "Select a rotator period to delete", [""] + rot_labels, key="del_rot_select"
-        )
-        if st.button("🗑️ Delete Rotator") and delete_rot:
-            idx = rot_labels.index(delete_rot)
-            st.session_state.rotators.pop(idx)
-            st.session_state.pop("del_rot_select", None)
-            st.experimental_rerun()
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -318,68 +352,59 @@ with st.expander("🔄 Rotators"):
 # ────────────────────────────────────────────────────────────────────────────────
 # Generate button & outputs
 # ────────────────────────────────────────────────────────────────────────────────
-
-if st.button("🚀 Generate Schedule", disabled=False):
-    random.seed(st.session_state.seed)
-    df, wide_summ, unf, compact_summ = build_schedule()
-    st.session_state.df_sched = df
-    st.session_state.df_summary = wide_summ
-    st.session_state.df_unfilled = unf
-    st.session_state.compact_summ = compact_summ
-    FAIR_TOL = 0  # 0 = show every deviation, 1 = ignore ±1
-    st.session_state.median_df = build_median_report(wide_summ, FAIR_TOL)
-
-    st.session_state.generated = True
-    st.success("✅ Schedule generated!")
-
-if st.session_state.get("generated"):
-    df = st.session_state.df_sched
-    wide_summ = st.session_state.df_summary
-    unf = st.session_state.df_unfilled
-    compact_summ = st.session_state.compact_summ
-
-    median_df = st.session_state.median_df
-    st.dataframe(df)
-    st.subheader("📊 Compact Summary")
-    st.dataframe(compact_summ)
-    st.subheader("📊 Assignment Summary (wide)")
-    st.dataframe(wide_summ)
-    # ---------- fairness vs MEDIAN ----------
-    FAIR_TOL = 0    # 0 = show every deviation, 1 = ignore ±1
-    median_df = st.session_state.median_df
- 
-
-    if not median_df.empty:
-        st.warning("⚖️  Median fairness – residents above / below peer median")
-        st.dataframe(median_df, hide_index=True)
-        st.download_button(
-            "Download median fairness CSV",
-            median_df.to_csv(index=False),
-            "median_fairness.csv",
-            key="btn_dl_median",
-        )
-    else:
-        st.info(f"✨ Everyone is within ±{FAIR_TOL} of the median for every label.")
-
-    if not unf.empty:
-        st.warning("⚠️ Unfilled Slots Detected")
-        st.dataframe(unf)
-    st.download_button("Download Schedule CSV", df.to_csv(index=False), "schedule.csv")
-    st.download_button("Download Summary CSV", wide_summ.to_csv(index=False), "summary.csv")
-    log_data = {
-        "config": {k: st.session_state[k] for k in st.session_state if k in def_state or k in ("juniors", "seniors", "seed")},
-        "schedule": df.to_dict(orient="records"),
-        "summary": wide_summ.to_dict(orient="records"),
-        "unfilled": unf.to_dict(orient="records"),
-    }
-    st.download_button(
-        "Download Log",
-        json.dumps(log_data, default=str),
-        "schedule_log.json",
-        key="btn_dl_log",
+with tab_schedule:
+    disabled = gen_disabled or not st.session_state.shifts or not (
+        st.session_state.juniors or st.session_state.seniors
     )
-    if not unf.empty:
-        st.download_button("Download Unfilled CSV", unf.to_csv(index=False), "unfilled.csv")
+    if st.button("🚀 Generate Schedule", disabled=disabled):
+        cfg = {k: st.session_state[k] for k in (
+            "shifts", "rotators", "leaves", "juniors", "seniors",
+            "start_date", "end_date", "min_gap", "nf_block_length", "seed"
+        )}
+        state_json = json.dumps(cfg, default=str)
+        with st.spinner("Generating schedule…"):
+            df, wide_summ, unf, compact_summ, med_df = cached_build(state_json, st.session_state.seed)
+        st.session_state.df_sched = df
+        st.session_state.df_summary = wide_summ
+        st.session_state.df_unfilled = unf
+        st.session_state.compact_summ = compact_summ
+        st.session_state.median_df = med_df
+        st.session_state.generated = True
+        st.success("✅ Schedule generated!")
+
+with tab_results:
+    if st.session_state.get("generated"):
+        df = st.session_state.df_sched
+        wide_summ = st.session_state.df_summary
+        unf = st.session_state.df_unfilled
+        compact_summ = st.session_state.compact_summ
+        median_df = st.session_state.median_df
+        st.dataframe(df)
+        st.subheader("📊 Compact Summary")
+        st.dataframe(compact_summ)
+        st.subheader("📊 Assignment Summary (wide)")
+        st.dataframe(wide_summ)
+        FAIR_TOL = 0
+        if not median_df.empty:
+            st.warning("⚖️  Median fairness – residents above / below peer median")
+            st.dataframe(median_df, hide_index=True)
+            st.download_button("Download median fairness CSV", median_df.to_csv(index=False), "median_fairness.csv", key="btn_dl_median")
+        else:
+            st.info(f"✨ Everyone is within ±{FAIR_TOL} of the median for every label.")
+        if not unf.empty:
+            st.warning("⚠️ Unfilled Slots Detected")
+            st.dataframe(unf)
+        st.download_button("Download Schedule CSV", df.to_csv(index=False), "schedule.csv")
+        st.download_button("Download Summary CSV", wide_summ.to_csv(index=False), "summary.csv")
+        log_data = {
+            "config": {k: st.session_state[k] for k in st.session_state if k in def_state or k in ("juniors", "seniors", "seed")},
+            "schedule": df.to_dict(orient="records"),
+            "summary": wide_summ.to_dict(orient="records"),
+            "unfilled": unf.to_dict(orient="records"),
+        }
+        st.download_button("Download Log", json.dumps(log_data, default=str), "schedule_log.json", key="btn_dl_log")
+        if not unf.empty:
+            st.download_button("Download Unfilled CSV", unf.to_csv(index=False), "unfilled.csv")
 
     # --------------------------------------
     # Heavy testing utilities
@@ -450,45 +475,51 @@ if st.session_state.get("generated"):
             pass
 
 
-    with st.expander("🧪 Heavy Testing"):
-        opts = st.text_input("Extra pytest options", st.session_state.pytest_opts, key="pytest_opts")
-        cov = st.checkbox("Enable coverage", value=st.session_state.use_cov, key="use_cov")
-        ff = st.checkbox("Fail fast (-x)", value=st.session_state.fail_fast, key="fail_fast")
-
-        if st.button("Run Heavy Tests", key="btn_heavy_tests"):
-            st.session_state.test_running = True
-            st.session_state.test_log = ""
-            st.session_state.test_summary = ""
-            st.session_state.coverage_pct = None
-            st.session_state.cov_xml = None
-            st.session_state.test_progress = 0.0
-
-            threading.Thread(target=run_tests, args=(opts, cov, ff), daemon=True).start()
-
-        if st.session_state.get("test_running"):
-            st.info("Running tests in background...")
-            st.progress(st.session_state.get("test_progress", 0.0))
-
-
-        if st.session_state.get("test_log"):
-            if st.session_state.get("test_summary"):
-                st.success(st.session_state.test_summary)
-            if st.session_state.get("coverage_pct"):
-                st.write(f"Coverage: {st.session_state.coverage_pct}")
-            st.text_area("Test Output", st.session_state.test_log, height=300, key="txt_test_output")
-            st.download_button(
-                "Download Test Log",
-                st.session_state.test_log,
-                "test_log.txt",
-                key="btn_dl_test_log",
-            )
-            if st.session_state.get("cov_xml"):
-                st.download_button(
-                    "Download Coverage XML",
-                    st.session_state.cov_xml,
-                    "coverage.xml",
-                    key="btn_dl_cov",
+    if debug_mode:
+        with st.expander("🧪 Heavy Testing"):
+            opts = st.text_input("Extra pytest options", st.session_state.pytest_opts, key="pytest_opts")
+            cov = st.checkbox("Enable coverage", value=st.session_state.use_cov, key="use_cov")
+            ff = st.checkbox("Fail fast (-x)", value=st.session_state.fail_fast, key="fail_fast")
+    
+            if st.button("Run Heavy Tests", key="btn_heavy_tests"):
+                st.session_state.test_running = True
+                st.session_state.test_log = ""
+                st.session_state.test_summary = ""
+                st.session_state.coverage_pct = None
+                st.session_state.cov_xml = None
+                st.session_state.test_progress = 0.0
+    
+                threading.Thread(target=run_tests, args=(opts, cov, ff), daemon=True).start()
+    
+            if st.session_state.get("test_running"):
+                st.info("Running tests in background...")
+                st.progress(st.session_state.get("test_progress", 0.0))
+    
+    
+            if st.session_state.get("test_log"):
+                if st.session_state.get("test_summary"):
+                    st.success(st.session_state.test_summary)
+                if st.session_state.get("coverage_pct"):
+                    st.write(f"Coverage: {st.session_state.coverage_pct}")
+                st.text_area(
+                    "Test Output",
+                    st.session_state.test_log,
+                    height=300,
+                    key="txt_test_output",
                 )
+                st.download_button(
+                    "Download Test Log",
+                    st.session_state.test_log,
+                    "test_log.txt",
+                    key="btn_dl_test_log",
+                )
+                if st.session_state.get("cov_xml"):
+                    st.download_button(
+                        "Download Coverage XML",
+                        st.session_state.cov_xml,
+                        "coverage.xml",
+                        key="btn_dl_cov",
+                    )
 
 
 
