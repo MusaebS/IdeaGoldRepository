@@ -94,3 +94,29 @@ def test_build_schedule_simple():
     assert unf.empty
     assert not wide.empty
     assert not compact.empty
+
+
+def test_build_expectation_report():
+    data = [
+        {
+            "Name": "A",
+            "Shift1_assigned_total": 2,
+            "Shift1_expected_total": 1,
+            "Shift1_assigned_weekend": 1,
+            "Shift1_expected_weekend": 0,
+            "Assigned Points": 3,
+            "Expected Points": 1,
+        },
+        {
+            "Name": "B",
+            "Shift1_assigned_total": 0,
+            "Shift1_expected_total": 1,
+            "Shift1_assigned_weekend": 0,
+            "Shift1_expected_weekend": 1,
+            "Assigned Points": 0,
+            "Expected Points": 2,
+        },
+    ]
+    df = scheduler.pd.DataFrame(data)
+    report = scheduler.build_expectation_report(df)
+    assert len(report) == 4
