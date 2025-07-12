@@ -3,6 +3,7 @@ import pandas as pd
 import random
 from datetime import datetime, timedelta, date
 import json
+import subprocess
 from scheduler import build_schedule, build_median_report
 
 # ------------------------------------------------------------------
@@ -353,6 +354,23 @@ if st.session_state.get("generated"):
     )
     if not unf.empty:
         st.download_button("Download Unfilled CSV", unf.to_csv(index=False), "unfilled.csv")
+
+    # --------------------------------------
+    # Heavy testing button
+    # --------------------------------------
+    if st.button("🧪 Run Heavy Tests", key="btn_heavy_tests"):
+        with st.spinner("Running tests..."):
+            proc = subprocess.run(["pytest", "-q"], capture_output=True, text=True)
+        st.session_state.test_log = proc.stdout + proc.stderr
+
+    if "test_log" in st.session_state:
+        st.text_area("Test Output", st.session_state.test_log, height=300, key="txt_test_output")
+        st.download_button(
+            "Download Test Log",
+            st.session_state.test_log,
+            "test_log.txt",
+            key="btn_dl_test_log",
+        )
 
 
 
