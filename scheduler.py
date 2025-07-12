@@ -682,10 +682,12 @@ def build_schedule(group_by: str | None = None):
         points_assigned,
     )
 
+    shift_cfg_map = {cfg["label"]: cfg for cfg in shifts_cfg}
+
     balance_points(
         schedule_rows,
         stats,
-        {cfg["label"]: cfg for cfg in shifts_cfg},
+        shift_cfg_map,
         {p: round(expected_points_total.get(p, 0), 1) for p in pool},
         points_assigned,
         st.session_state.min_gap,
@@ -699,7 +701,7 @@ def build_schedule(group_by: str | None = None):
             schedule_rows,
             stats,
             unfilled,
-            {cfg["label"]: cfg for cfg in shifts_cfg},
+            shift_cfg_map,
             points_assigned,
             expected_points_total,
             juniors,
@@ -715,6 +717,16 @@ def build_schedule(group_by: str | None = None):
         prev = len(unfilled)
 
 
+
+    # Recompute assigned points from finalized schedule to ensure accuracy
+    points_assigned = {p: 0 for p in pool}
+    all_labels = [cfg["label"] for cfg in shifts_cfg]
+    for row in schedule_rows:
+        for lbl in all_labels:
+            person = row.get(lbl)
+            if person and person != "Unfilled":
+                cfg = shift_cfg_map[lbl]
+                points_assigned[person] += get_shift_points(row["Date"], cfg)
 
     df_schedule = pd.DataFrame(schedule_rows)
 

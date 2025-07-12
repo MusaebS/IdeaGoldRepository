@@ -129,6 +129,7 @@ def test_balance_points_basic(sched):
     import streamlit as st
     setup_state_simple()
     cfg = st.session_state.shifts[0]
+
     shift_cfg_map = {"Shift1": cfg}
     schedule_rows = [
         {"Date": date(2023, 1, 1), "Day": "Mon", "Shift1": "A"},
@@ -148,7 +149,7 @@ def test_balance_points_basic(sched):
         shift_cfg_map,
         expected_points_total,
         points_assigned,
-        st.session_state.min_gap,
+        simple_state.session_state.min_gap,
         ["Shift1"],
         last_assigned,
     )
@@ -223,4 +224,5 @@ def test_balance_totals_adjusts_weekend_stats(sched, simple_state):
     assert stats["B"]["Shift1"] == {"total": 1, "weekend": 1}
     assert points_assigned == {"A": 1, "B": 2}
     assert last_assigned == {"A": date(2023, 1, 2), "B": date(2023, 1, 6)}
+
 
