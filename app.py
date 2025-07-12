@@ -3,6 +3,7 @@ import pandas as pd
 import random
 from datetime import datetime, timedelta, date
 import math
+import json
 
 # ────────────────────────────────────────────────────────────────────
 # Page configuration – MUST precede every other Streamlit call
@@ -56,6 +57,7 @@ def_state = {
     "end_date": date.today() + timedelta(days=27),
     "min_gap": 2,
     "nf_block_length": 5,
+    "seed": 0,
 }
 for k, v in def_state.items():
     st.session_state.setdefault(k, v)
@@ -69,6 +71,7 @@ if st.button("🔁 Reset All Data", key="btn_reset"):
         "weights",
         "nf_juniors",
         "nf_seniors",
+        "seed",
     ):
         st.session_state.pop(k, None)
     st.experimental_rerun()
@@ -188,6 +191,9 @@ st.session_state.min_gap = st.slider(
 )
 st.session_state.nf_block_length = st.slider(
     "Night Float Block Length", 1, 10, st.session_state.nf_block_length
+)
+st.session_state.seed = st.number_input(
+    "Random Seed", value=st.session_state.seed, step=1
 )
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -743,6 +749,7 @@ def build_schedule():
 # ────────────────────────────────────────────────────────────────────────────────
 
 if st.button("🚀 Generate Schedule", disabled=False):
+    random.seed(st.session_state.seed)
     df, summ, unf = build_schedule()
     st.success("✅ Schedule generated!")
     st.dataframe(df)
@@ -769,6 +776,18 @@ if st.button("🚀 Generate Schedule", disabled=False):
         st.dataframe(unf)
     st.download_button("Download Schedule CSV", df.to_csv(index=False), "schedule.csv")
     st.download_button("Download Summary CSV", summ.to_csv(index=False), "summary.csv")
+    log_data = {
+        "config": {k: st.session_state[k] for k in st.session_state if k in def_state or k in ("juniors", "seniors", "seed")},
+        "schedule": df.to_dict(orient="records"),
+        "summary": summ.to_dict(orient="records"),
+        "unfilled": unf.to_dict(orient="records"),
+    }
+    st.download_button(
+        "Download Log",
+        json.dumps(log_data, default=str),
+        "schedule_log.json",
+        key="btn_dl_log",
+    )
     if not unf.empty:
         st.download_button("Download Unfilled CSV", unf.to_csv(index=False), "unfilled.csv")
 
