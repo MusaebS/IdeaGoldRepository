@@ -51,7 +51,6 @@ Deployment	Streamlit Cloud or any Python host; multi-file layout accepted (no si
 
 5 Minimum Viable Modules
 Module	Responsibility
-data_models.py	Dataclasses / dict schemas for templates, residents, absences.
 scheduler.py	Core algorithm (steps 1-6 above).
 app.py	Streamlit UI (upload / entry of data, button to run scheduler, display & downloads).
 
