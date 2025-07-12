@@ -81,9 +81,8 @@ if st.button("Generate Schedule"):
         min_gap=min_gap,
     )
     try:
-        env = os.getenv("APP_ENV", "dev")
-        limits = {"dev": 30, "test": 1, "prod": 60}
-        df = build_schedule(data, time_limit_sec=limits.get(env, 60))
+        env = os.getenv("ENV", "dev")
+        df = build_schedule(data, env=env)
         st.dataframe(df)
     except Exception as e:
         st.error(str(e))
