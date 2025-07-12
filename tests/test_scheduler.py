@@ -3,7 +3,7 @@ from datetime import date
 
 def test_allocate_integer_quotas_basic(sched):
     quotas = {"A": 1.2, "B": 0.8}
-    result = sched.allocate_integer_quotas(quotas, 2)
+    result = sched.allocate_integer_quotas(quotas, method="hare")
     assert result == {"A": 1, "B": 1}
 
 

@@ -87,6 +87,7 @@ def simple_state(stub_modules):
     st.session_state.min_gap = 1
     st.session_state.nf_block_length = 5
     st.session_state.seed = 0
+    st.session_state.quota_method = "hare"
     return st
 
 

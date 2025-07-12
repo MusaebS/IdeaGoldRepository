@@ -5,14 +5,20 @@ from datetime import date
 import math
 
 
-def allocate_integer_quotas(float_quotas: dict, total_slots: int) -> dict:
-    """Convert fractional quotas to integers that sum to *total_slots*."""
-    if total_slots <= 0 or not float_quotas:
-        return {p: 0 for p in float_quotas}
 
-    base = {p: math.floor(q) for p, q in float_quotas.items()}
+# ------------------------------------------------------------------
+# Integer quota allocation strategies
+# ------------------------------------------------------------------
+
+def allocate_hare(frac_quota: dict[str, float]) -> dict[str, int]:
+    """Hare–Niemeyer (largest remainder) rounding."""
+    total_slots = round(sum(frac_quota.values()))
+    if total_slots <= 0 or not frac_quota:
+        return {p: 0 for p in frac_quota}
+
+    base = {p: math.floor(q) for p, q in frac_quota.items()}
     used = sum(base.values())
-    remainder = {p: float_quotas[p] - base[p] for p in float_quotas}
+    remainder = {p: frac_quota[p] - base[p] for p in frac_quota}
     to_assign = total_slots - used
     if to_assign <= 0:
         return base
@@ -21,6 +27,53 @@ def allocate_integer_quotas(float_quotas: dict, total_slots: int) -> dict:
     for p, _ in extras:
         base[p] += 1
     return base
+
+
+def allocate_sainte_lague(frac_quota: dict[str, float]) -> dict[str, int]:
+    total = round(sum(frac_quota.values()))
+    if total == 0:
+        return {k: 0 for k in frac_quota}
+
+    lo, hi = 0, max(frac_quota.values())
+    for _ in range(60):
+        d = (lo + hi) / 2
+        s = sum(int(q / d + 0.5) for q in frac_quota.values())
+        if s > total:
+            lo, hi = lo, d
+        else:
+            lo, hi = d, hi
+
+    return {k: int(q / d + 0.5) for k, q in frac_quota.items()}
+
+
+def allocate_vinton(frac_quota: dict[str, float]) -> dict[str, int]:
+    total = round(sum(frac_quota.values()))
+    alloc = {k: 1 for k in frac_quota}
+    if total < len(alloc):
+        raise ValueError("Total points smaller than number of residents")
+    import heapq
+    heap = [(-(q / math.sqrt(1 * 2)), k, 1) for k, q in frac_quota.items()]
+    heapq.heapify(heap)
+    seats_left = total - len(alloc)
+    while seats_left:
+        neg_p, k, n = heapq.heappop(heap)
+        alloc[k] += 1
+        n += 1
+        heapq.heappush(heap, (-(frac_quota[k] / math.sqrt(n * (n + 1))), k, n))
+        seats_left -= 1
+    return alloc
+
+
+def allocate_integer_quotas(frac: dict[str, float], method: str = "hare") -> dict[str, int]:
+    """Strategy wrapper for integer quota allocation."""
+    method = (method or "hare").lower()
+    if method == "hare":
+        return allocate_hare(frac)
+    if method == "sainte":
+        return allocate_sainte_lague(frac)
+    if method == "vinton":
+        return allocate_vinton(frac)
+    raise ValueError(method)
 
 
 def is_weekend(dt: date, shift_cfg: dict) -> bool:
@@ -528,8 +581,15 @@ def build_schedule(group_by: str | None = None):
         role_pool = juniors if cfg["role"] == "Junior" else seniors
         role_pool = [p for p in role_pool if p in regular_pool]
 
-        target_total[lbl] = allocate_integer_quotas({p: expected_total[p][lbl] for p in role_pool}, slot_totals[lbl])
-        target_weekend[lbl] = allocate_integer_quotas({p: expected_weekend[p][lbl] for p in role_pool}, slot_weekends[lbl])
+        method = st.session_state.get("quota_method", "hare")
+        target_total[lbl] = allocate_integer_quotas(
+            {p: expected_total[p][lbl] for p in role_pool},
+            method=method,
+        )
+        target_weekend[lbl] = allocate_integer_quotas(
+            {p: expected_weekend[p][lbl] for p in role_pool},
+            method=method,
+        )
 
     span = (end - start).days + 1
 
