@@ -75,6 +75,7 @@ def_state = {
     "use_cov": False,
     "fail_fast": False,
     "test_progress": 0.0,
+
 }
 for k, v in def_state.items():
     st.session_state.setdefault(k, v)
@@ -100,6 +101,7 @@ if st.button("🔁 Reset All Data", key="btn_reset"):
         "cov_xml",
         "test_running",
         "test_progress",
+
         "pytest_opts",
         "use_cov",
         "fail_fast",
@@ -387,6 +389,7 @@ if st.session_state.get("generated"):
         m = re.search(r"=+\s*(.+?)\s*in\s*([0-9.]+s)\s*=+", log_text)
         if m:
             return f"{m.group(1)} in {m.group(2)}"
+
         lines = log_text.splitlines()
         for ln in reversed(lines):
             if "passed" in ln or "failed" in ln:
@@ -400,6 +403,7 @@ if st.session_state.get("generated"):
     def pytest_cov_available() -> bool:
         import importlib.util
         return importlib.util.find_spec("pytest_cov") is not None
+
 
     def run_tests(opts: str, cov: bool, fail_fast: bool):
         cmd = ["pytest"]
@@ -431,6 +435,8 @@ if st.session_state.get("generated"):
         st.session_state.test_summary = parse_summary(st.session_state.test_log)
         st.session_state.coverage_pct = parse_coverage(st.session_state.test_log)
         if use_cov:
+
+
             try:
                 with open("coverage.xml") as f:
                     st.session_state.cov_xml = f.read()
@@ -442,6 +448,7 @@ if st.session_state.get("generated"):
             st.experimental_rerun()
         except Exception:
             pass
+
 
     with st.expander("🧪 Heavy Testing"):
         opts = st.text_input("Extra pytest options", st.session_state.pytest_opts, key="pytest_opts")
@@ -455,11 +462,13 @@ if st.session_state.get("generated"):
             st.session_state.coverage_pct = None
             st.session_state.cov_xml = None
             st.session_state.test_progress = 0.0
+
             threading.Thread(target=run_tests, args=(opts, cov, ff), daemon=True).start()
 
         if st.session_state.get("test_running"):
             st.info("Running tests in background...")
             st.progress(st.session_state.get("test_progress", 0.0))
+
 
         if st.session_state.get("test_log"):
             if st.session_state.get("test_summary"):
