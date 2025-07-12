@@ -160,7 +160,7 @@ class SchedulerSolver:
             for p_idx, _ in enumerate(self.people[:-1]):  # exclude Unfilled
                 for d1_idx, day1 in enumerate(self.days):
                     for d2_idx in range(d1_idx + 1, len(self.days)):
-                        if (self.days[d2_idx] - day1).days < gap:
+                        if (self.days[d2_idx] - day1).days <= gap:
                             for s1_idx in range(len(self.shifts)):
                                 for s2_idx in range(len(self.shifts)):
                                     self.model.Add(
