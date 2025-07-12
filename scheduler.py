@@ -225,6 +225,7 @@ def fill_unassigned_shifts(
     }
 
     new_unfilled = []
+
     for dt, lbl in unfilled:
         row_idx = next((i for i, r in enumerate(schedule_rows) if r["Date"] == dt), None)
         if row_idx is None:
@@ -257,6 +258,7 @@ def fill_unassigned_shifts(
             for p in role_pool
         }
 
+
         candidates = [p for p in role_pool if eligible(p)]
         if not candidates:
             new_unfilled.append((dt, lbl))
@@ -270,11 +272,13 @@ def fill_unassigned_shifts(
             )
 
         pick = max(candidates, key=priority)
+
         row[lbl] = pick
         stats[pick][lbl]["total"] += 1
         if is_weekend(dt, cfg):
             stats[pick][lbl]["weekend"] += 1
         points_assigned[pick] += get_shift_points(dt, cfg)
+
         point_deficit[pick] = expected_points_total.get(pick, 0) - points_assigned.get(pick, 0)
 
     return new_unfilled
@@ -562,12 +566,14 @@ def build_schedule(group_by: str | None = None):
             seniors,
             regular_pool,
             shift_labels,
+
             target_total,
             target_weekend,
         )
         if prev is not None and len(unfilled) >= prev:
             break
         prev = len(unfilled)
+
 
 
     df_schedule = pd.DataFrame(schedule_rows)

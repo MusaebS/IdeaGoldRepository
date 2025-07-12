@@ -74,6 +74,8 @@ def_state = {
     "pytest_opts": "-q",
     "use_cov": False,
     "fail_fast": False,
+    "test_progress": 0.0,
+
 }
 for k, v in def_state.items():
     st.session_state.setdefault(k, v)
@@ -98,6 +100,8 @@ if st.button("🔁 Reset All Data", key="btn_reset"):
         "coverage_pct",
         "cov_xml",
         "test_running",
+        "test_progress",
+
         "pytest_opts",
         "use_cov",
         "fail_fast",
@@ -382,6 +386,10 @@ if st.session_state.get("generated"):
     # --------------------------------------
 
     def parse_summary(log_text: str) -> str:
+        m = re.search(r"=+\s*(.+?)\s*in\s*([0-9.]+s)\s*=+", log_text)
+        if m:
+            return f"{m.group(1)} in {m.group(2)}"
+
         lines = log_text.splitlines()
         for ln in reversed(lines):
             if "passed" in ln or "failed" in ln:
@@ -392,25 +400,55 @@ if st.session_state.get("generated"):
         m = re.search(r"TOTAL\s+\d+\s+\d+\s+(\d+%)", log_text)
         return m.group(1) if m else None
 
+    def pytest_cov_available() -> bool:
+        import importlib.util
+        return importlib.util.find_spec("pytest_cov") is not None
+
+
     def run_tests(opts: str, cov: bool, fail_fast: bool):
         cmd = ["pytest"]
         if fail_fast:
             cmd.append("-x")
         if opts:
             cmd.extend(shlex.split(opts))
-        if cov:
+        use_cov = cov and pytest_cov_available()
+        if cov and not use_cov:
+            st.session_state.test_log = "pytest-cov not installed; running without coverage\n"
+        if use_cov:
             cmd.extend(["--cov=.", "--cov-report=term", "--cov-report=xml"])
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        st.session_state.test_log = proc.stdout + proc.stderr
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        st.session_state.test_progress = 0.0
+        total = None
+        progress = 0
+        for line in proc.stdout:
+            if total is None:
+                m = re.search(r"collected (\d+) items", line)
+                if m:
+                    total = int(m.group(1))
+                    st.session_state.test_progress = 0.0
+            if total is not None:
+                if re.match(r"^[.FE]+$", line.strip()):
+                    progress += len(line.strip())
+                    st.session_state.test_progress = min(progress / total, 1.0)
+            st.session_state.test_log += line
+        proc.wait()
         st.session_state.test_summary = parse_summary(st.session_state.test_log)
         st.session_state.coverage_pct = parse_coverage(st.session_state.test_log)
-        if cov:
+        if use_cov:
+
+
             try:
                 with open("coverage.xml") as f:
                     st.session_state.cov_xml = f.read()
             except Exception:
                 st.session_state.cov_xml = None
         st.session_state.test_running = False
+        st.session_state.test_progress = 1.0
+        try:
+            st.experimental_rerun()
+        except Exception:
+            pass
+
 
     with st.expander("🧪 Heavy Testing"):
         opts = st.text_input("Extra pytest options", st.session_state.pytest_opts, key="pytest_opts")
@@ -423,10 +461,14 @@ if st.session_state.get("generated"):
             st.session_state.test_summary = ""
             st.session_state.coverage_pct = None
             st.session_state.cov_xml = None
+            st.session_state.test_progress = 0.0
+
             threading.Thread(target=run_tests, args=(opts, cov, ff), daemon=True).start()
 
         if st.session_state.get("test_running"):
             st.info("Running tests in background...")
+            st.progress(st.session_state.get("test_progress", 0.0))
+
 
         if st.session_state.get("test_log"):
             if st.session_state.get("test_summary"):

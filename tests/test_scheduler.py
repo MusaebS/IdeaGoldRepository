@@ -133,6 +133,7 @@ def test_weekend_filter_fallback():
     assert df._data[0]["Shift1"] == "B"
 
 
+=
 def test_fill_unassigned_shifts_prioritizes_deficit():
     cfg = {
         "label": "Shift1",
@@ -155,6 +156,7 @@ def test_fill_unassigned_shifts_prioritizes_deficit():
     seniors = []
     regular_pool = ["A", "B"]
     shift_labels = ["Shift1"]
+
     target_total = {"Shift1": {"A": 0, "B": 1}}
     target_weekend = {"Shift1": {"A": 0, "B": 1}}
 
@@ -169,11 +171,11 @@ def test_fill_unassigned_shifts_prioritizes_deficit():
         seniors,
         regular_pool,
         shift_labels,
+
         target_total,
         target_weekend,
     )
 
     assert new_unfilled == []
     assert schedule_rows[0]["Shift1"] == "B"
-
 
