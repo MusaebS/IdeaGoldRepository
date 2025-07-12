@@ -81,7 +81,16 @@ def normalize_overall_quota(target_total, full_participants, tol=1):
             break
 
 
-def balance_weekends(schedule_rows, stats, target_weekend, shift_cfg_map, min_gap, shift_labels, last_assigned):
+def balance_weekends(
+    schedule_rows,
+    stats,
+    target_weekend,
+    shift_cfg_map,
+    min_gap,
+    shift_labels,
+    last_assigned,
+    points_assigned,
+):
     def is_weekend_row(date_, label):
         cfg = shift_cfg_map[label]
         return date_.weekday() in (4, 5) or (date_.weekday() == 3 and cfg.get("thur_weekend", False))
@@ -129,6 +138,14 @@ def balance_weekends(schedule_rows, stats, target_weekend, shift_cfg_map, min_ga
                     stats[p_over][lbl]["weekend"] -= 1
                     stats[p_under][lbl]["weekend"] += 1
 
+                    cfg = shift_cfg_map[lbl]
+                    pts_wk = get_shift_points(w_date, cfg)
+                    pts_wd = get_shift_points(d_date, cfg)
+                    points_assigned[p_over] -= pts_wk
+                    points_assigned[p_over] += pts_wd
+                    points_assigned[p_under] -= pts_wd
+                    points_assigned[p_under] += pts_wk
+
                     def recompute_last(person):
                         dates = [r["Date"] for r in schedule_rows if any(r[l] == person for l in all_labels)]
                         last_assigned[person] = max(dates) if dates else None
@@ -146,7 +163,16 @@ def balance_weekends(schedule_rows, stats, target_weekend, shift_cfg_map, min_ga
         last_assigned[person] = max(dates) if dates else None
 
 
-def balance_totals(schedule_rows, stats, target_total, min_gap, shift_labels, last_assigned):
+def balance_totals(
+    schedule_rows,
+    stats,
+    target_total,
+    min_gap,
+    shift_labels,
+    last_assigned,
+    shift_cfg_map,
+    points_assigned,
+):
     """Swap over-assigned shifts to under-assigned staff keeping constraints."""
     all_labels = [lbl for lbl in schedule_rows[0] if lbl not in ("Date", "Day")]
 
@@ -182,7 +208,26 @@ def balance_totals(schedule_rows, stats, target_total, min_gap, shift_labels, la
                     row[lbl] = p_under
                     stats[p_over][lbl]["total"] -= 1
                     stats[p_under][lbl]["total"] += 1
-                    last_assigned[p_under] = dt
+
+                    cfg = shift_cfg_map[lbl]
+                    if is_weekend(dt, cfg):
+                        stats[p_over][lbl]["weekend"] -= 1
+                        stats[p_under][lbl]["weekend"] += 1
+
+                    pts = get_shift_points(dt, cfg)
+                    points_assigned[p_over] -= pts
+                    points_assigned[p_under] += pts
+
+                    def recompute_last(person):
+                        dates = [
+                            r["Date"]
+                            for r in schedule_rows
+                            if any(r[l] == person for l in all_labels)
+                        ]
+                        last_assigned[person] = max(dates) if dates else None
+
+                    recompute_last(p_over)
+                    recompute_last(p_under)
 
                     changed = True
                     break
@@ -623,6 +668,7 @@ def build_schedule(group_by: str | None = None):
         st.session_state.min_gap,
         shift_labels,
         last_assigned,
+        points_assigned,
     )
 
     balance_totals(
@@ -632,6 +678,8 @@ def build_schedule(group_by: str | None = None):
         st.session_state.min_gap,
         shift_labels,
         last_assigned,
+        {cfg["label"]: cfg for cfg in shifts_cfg if not cfg["night_float"]},
+        points_assigned,
     )
 
     balance_points(
