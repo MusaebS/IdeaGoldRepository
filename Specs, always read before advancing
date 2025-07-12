@@ -1,0 +1,140 @@
+Idea Gold Scheduler – Exact-Fairness Optimiser
+(specification rev 2025-05-xx – replaces previous heuristic / Hare-Niemeyer design)
+
+1 Project Goal
+Create a Streamlit tool that produces a provably most-balanced on-call schedule for one 4-week block.
+Balance is measured in points (each shift template carries a points value).
+
+Fairness target	Requirement
+Per-label points	Every resident’s points on each label should equal their fractional share as closely as mathematically possible.
+Weekend points	Weekend load is balanced so that residents differ by ≤ 1 weekend point whenever feasible.
+Total points	Across all labels, the difference between any two full-participation residents is minimised; ideal bound is ± 1 point.
+If perfect equality is impossible	The optimiser returns the schedule with minimum possible deviation and reports residual gaps.
+
+2 Hard Constraints
+Shift templates
+label, role (Junior / Senior), night_float flag, thu_is_weekend flag, points.
+
+Participants
+Lists of juniors and seniors; per-resident flag for night-float eligibility.
+
+Absences
+
+Leave – compensated (quota unchanged).
+
+Rotator – uncompensated (quotas scaled by active_days / block_span).
+
+Night-float blocks
+Fixed length nf_block_length; only NF-eligible residents may cover them.
+
+Rest spacing
+A resident must have ≥ min_gap days between any two shifts, regardless of label.
+
+Role match
+Juniors cannot fill senior shifts and vice-versa.
+
+One assignment per slot
+Each (day, label) must be covered by exactly one resident.
+
+3 Optimisation Model (Mixed-Integer Programming)
+Symbol	Definition
+R	residents
+D	days in block
+L	shift labels
+x[r,d,l] ∈ {0,1}	1 ⇔ resident r works label l on day d
+P[l]	points value of label l
+W[d,l]	1 ⇔ (d,l) is a weekend slot
+
+Derived sums
+Copy
+Edit
+label_pts[r,l]   = Σ_d P[l]·x[r,d,l]
+total_pts[r]     = Σ_l label_pts[r,l]
+weekend_pts[r]   = Σ_{d,l|W[d,l]=1} P[l]·x[r,d,l]
+Target values
+Fractional targets t_label[r,l], t_total, t_weekend[r] come from proportional shares (e.g. Hare-Niemeyer fractions) but are not forced; deviations are penalised.
+
+Additional variables
+less
+Copy
+Edit
+dev_label[r,l]  ≥ |label_pts[r,l]  − t_label[r,l] |
+dev_total[r]    ≥ |total_pts[r]    − t_total      |
+dev_weekend[r]  ≥ |weekend_pts[r]  − t_weekend[r]|
+max_dev         ≥ dev_total[r]     ∀ r
+Objective (lexicographic)
+Minimise max_dev (tightest overall-points spread).
+
+Then minimise Σ dev_total.
+
+Then minimise Σ dev_weekend.
+
+Then minimise Σ dev_label.
+
+Finally minimise number of dummy “Unfilled” slots (should be zero).
+
+(Implementation may instead use a single weighted sum with weights W1 ≫ W2 ≫ W3 ≫ W4 to mimic the same priority.)
+
+Solver
+Use OR-Tools CP-SAT (open-source, handles ≥ 10k binaries easily).
+Typical solve time ≤ 60 s for 40 residents × 28 days × 10 labels on Streamlit Cloud.
+
+4 Tech Stack
+Layer	Choice / Notes
+Language	Python 3.11
+Optimiser	OR-Tools 9.x CP-SAT
+UI	Streamlit ≥ 1.33 (layout="wide")
+Data	pandas 2.x (tables, CSV)
+Deployment	Any Python host (Streamlit Cloud, on-prem); multi-file repo
+
+requirements.txt
+
+shell
+Copy
+Edit
+streamlit>=1.33
+pandas>=2.0
+ortools>=9.10
+5 Recommended File Layout
+bash
+Copy
+Edit
+idea-gold/
+├─ app.py                 # Streamlit UI
+├─ model/
+│   ├─ optimiser.py       # build & solve CP-SAT model
+│   └─ data_models.py     # dataclasses or TypedDicts
+├─ docs/
+│   └─ spec.md            # ← this document
+└─ requirements.txt
+Session-state keys stay unchanged (plus any solver settings you expose: time-limit, random seed).
+
+6 User Flow
+Open web app.
+
+Configure shift templates (with points), participants, absences, min_gap, NF block length.
+
+Click “Generate Schedule”.
+
+App shows a spinner (“Optimising…”), runs the CP-SAT solver, then displays:
+
+Schedule table (st.dataframe)
+
+Per-label and total point summaries
+
+Weekend balance report
+
+Fairness deviations (should be ≤ 1 where feasible)
+
+CSV / JSON downloads.
+
+If the model is infeasible (e.g. constraints too tight), UI displays solver status and highlights which rule failed.
+
+7 Outstanding / Future Work
+UI seed control & load/save configuration JSON.
+
+Optional “soften min_gap” slider when infeasible.
+
+Unit tests: small synthetic blocks where optimal solution is known.
+
+Performance benchmark page (solve-time vs. residents).
