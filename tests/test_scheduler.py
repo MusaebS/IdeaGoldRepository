@@ -133,7 +133,7 @@ def test_weekend_filter_fallback():
     assert df._data[0]["Shift1"] == "B"
 
 
-
+=
 def test_fill_unassigned_shifts_prioritizes_deficit():
     cfg = {
         "label": "Shift1",
@@ -178,6 +178,4 @@ def test_fill_unassigned_shifts_prioritizes_deficit():
 
     assert new_unfilled == []
     assert schedule_rows[0]["Shift1"] == "B"
-
-
 

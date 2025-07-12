@@ -265,11 +265,10 @@ def fill_unassigned_shifts(
             continue
 
         def priority(p: str):
-
             return (
+                point_deficit.get(p, 0),
                 wkd_deficit.get(p, 0) if is_weekend(dt, cfg) else 0,
                 total_deficit.get(p, 0),
-                point_deficit.get(p, 0),
             )
 
         pick = max(candidates, key=priority)
@@ -280,12 +279,9 @@ def fill_unassigned_shifts(
             stats[pick][lbl]["weekend"] += 1
         points_assigned[pick] += get_shift_points(dt, cfg)
 
-        last_assigned[pick] = dt
-
         point_deficit[pick] = expected_points_total.get(pick, 0) - points_assigned.get(pick, 0)
 
     return new_unfilled
-
 
 
 
