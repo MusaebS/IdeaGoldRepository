@@ -83,11 +83,15 @@ class SchedulerSolver:
         self.shifts = data.shifts
         self.vars: Dict[Tuple[int, int, int], object] = {}
         self.build_variables()
-        # expose internals for stub solver
-        self.model.people = self.people
-        self.model.days = self.days
-        self.model.shifts = self.shifts
-        self.model.vars = self.vars
+        # expose internals for stub solver (may fail on real CpModel)
+        try:
+            self.model.people = self.people
+            self.model.days = self.days
+            self.model.shifts = self.shifts
+            self.model.vars = self.vars
+        except AttributeError:
+            # Real ortools model does not allow setting new attributes
+            pass
         self.add_constraints()
         self.build_objective()
 
