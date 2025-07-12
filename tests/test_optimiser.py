@@ -25,7 +25,7 @@ def test_simple_schedule():
         rotators=[],
         min_gap=1,
     )
-    df = build_schedule(data)
+    df, _ = build_schedule(data)
     assert len(df) == 2
     assert set(df["Shift1"]) <= {"A", "B", "Unfilled"}
 
@@ -87,7 +87,7 @@ def test_schedule_with_strict_cpmodel(monkeypatch):
         min_gap=1,
     )
 
-    df = opt.build_schedule(data)
+    df, _ = opt.build_schedule(data)
     assert len(df) == 1
 
 
@@ -105,7 +105,7 @@ def test_role_and_gap_constraints():
         min_gap=2,
     )
 
-    df = build_schedule(data)
+    df, _ = build_schedule(data)
     # Only unfilled is eligible due to NF restriction; also min_gap prevents A working both days
     assert set(df["S1"]) == {"Unfilled"}
 

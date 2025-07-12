@@ -209,7 +209,20 @@ class SchedulerSolver:
         return pd.DataFrame(rows)
 
 
-def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
+def _total_point_spread(df: pd.DataFrame, shifts: list[ShiftTemplate], people: list[str]) -> float:
+    """Return max minus min total points over ``people`` in ``df``."""
+    label_points = {s.label: s.points for s in shifts}
+    totals = {p: 0.0 for p in people}
+    for row in df.to_dict("records"):
+        for label, person in row.items():
+            if label == "Date" or person in (None, "Unfilled"):
+                continue
+            totals[person] += label_points.get(label, 0.0)
+    values = [totals[p] for p in people]
+    return max(values) - min(values) if values else 0.0
+
+
+def build_schedule(data: InputData, env: str | None = None) -> tuple[pd.DataFrame, dict]:
     """Build schedule with optional environment based time limit."""
     solver = SchedulerSolver(data)
     env = env or os.environ.get("ENV", "prod").lower()
@@ -224,7 +237,10 @@ def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
         raise RuntimeError("Schedule violates min_gap constraint")
     if not respects_nf_blocks(df, data.nf_block_length, data.shifts):
         raise RuntimeError("Schedule violates nf_block_length constraint")
-    return df
+
+    spread = _total_point_spread(df, data.shifts, data.juniors + data.seniors)
+    meta = {"max_total_dev": spread}
+    return df, meta
 
 
 def respects_min_gap(df: pd.DataFrame, gap: int) -> bool:
