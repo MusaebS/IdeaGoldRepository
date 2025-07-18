@@ -281,5 +281,5 @@ def test_fairness_log_includes_unused_resident():
     ])
     log = format_fairness_log(df, data)
     lines = log.splitlines()
-    assert any(line.startswith("A: total 2.0") for line in lines)
-    assert any(line.startswith("B: total 0.0") for line in lines)
+    assert any(line.startswith("A (Junior, NF 0.0): total 2.0") for line in lines)
+    assert any(line.startswith("B (Junior, NF 0.0): total 0.0") for line in lines)

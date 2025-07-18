@@ -16,7 +16,7 @@ __all__ = ["calculate_points", "format_fairness_log"]
 def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, float]]:
     """Return mapping of resident to total and weekend points per label."""
     summary: Dict[str, Dict[str, float]] = {
-        name: {"total": 0.0, "weekend": 0.0, "labels": {}}
+        name: {"total": 0.0, "weekend": 0.0, "labels": {}, "night_float": 0.0}
         for name in data.juniors + data.seniors
     }
     for row in df.to_dict("records"):
@@ -25,9 +25,11 @@ def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, f
             person = row.get(sh.label)
             if person in (None, "Unfilled"):
                 continue
-            info = summary.setdefault(person, {"total": 0.0, "weekend": 0.0, "labels": {}})
+            info = summary.setdefault(person, {"total": 0.0, "weekend": 0.0, "labels": {}, "night_float": 0.0})
             info["total"] += sh.points
             info["labels"][sh.label] = info["labels"].get(sh.label, 0.0) + sh.points
+            if sh.night_float:
+                info["night_float"] += sh.points
             if is_weekend(day, sh):
                 info["weekend"] += sh.points
     return summary
@@ -39,7 +41,9 @@ def format_fairness_log(df: pd.DataFrame, data: InputData) -> str:
     lines: List[str] = []
     for person in sorted(pts):
         info = pts[person]
-        line = f"{person}: total {info['total']:.1f}"
+        role = "Senior" if person in data.seniors else "Junior"
+        nf = info.get("night_float", 0.0)
+        line = f"{person} ({role}, NF {nf:.1f}): total {info['total']:.1f}"
         if data.target_total is not None:
             dev = info['total'] - data.target_total
             line += f" (dev {dev:+.1f})"

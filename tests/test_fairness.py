@@ -39,8 +39,18 @@ def test_calculate_points():
     )
     pts = calculate_points(df, data)
     assert pts == {
-        "Alice": {"total": 3.0, "weekend": 3.0, "labels": {"D": 1.0, "N": 2.0}},
-        "Bob": {"total": 3.0, "weekend": 3.0, "labels": {"D": 1.0, "N": 2.0}},
+        "Alice": {
+            "total": 3.0,
+            "weekend": 3.0,
+            "labels": {"D": 1.0, "N": 2.0},
+            "night_float": 0.0,
+        },
+        "Bob": {
+            "total": 3.0,
+            "weekend": 3.0,
+            "labels": {"D": 1.0, "N": 2.0},
+            "night_float": 0.0,
+        },
     }
 
 
@@ -61,8 +71,8 @@ def test_format_fairness_log():
     )
     log = format_fairness_log(df, data)
     expected_lines = [
-        "Alice: total 3.0 (dev +0.0), weekend 3.0, D 1.0, N 2.0",
-        "Bob: total 3.0 (dev +0.0), weekend 3.0, D 1.0, N 2.0",
+        "Alice (Junior, NF 0.0): total 3.0 (dev +0.0), weekend 3.0, D 1.0, N 2.0",
+        "Bob (Junior, NF 0.0): total 3.0 (dev +0.0), weekend 3.0, D 1.0, N 2.0",
         "Total point range: 0.0",
         "Weekend point range: 0.0",
     ]
