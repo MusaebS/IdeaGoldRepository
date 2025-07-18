@@ -247,3 +247,96 @@ def test_total_points_min_deviation(monkeypatch):
     pts = _points_by_resident(df, shifts)
     diff = abs(pts.get("A", 0) - pts.get("B", 0))
     assert diff == 1
+
+
+def test_intvar_upper_bound_multiple_shifts(monkeypatch):
+    from model import optimiser as opt
+
+    bounds = []
+
+    class RecordingModel(opt.cp_model.CpModel):
+        def NewIntVar(self, a, b, name):
+            bounds.append(b)
+            return super().NewIntVar(a, b, name)
+
+    stub_cp = type(
+        "cp_model",
+        (),
+        {
+            "CpModel": RecordingModel,
+            "CpSolver": opt.cp_model.CpSolver,
+            "OPTIMAL": 0,
+            "FEASIBLE": 0,
+        },
+    )
+    monkeypatch.setattr(opt, "cp_model", stub_cp)
+
+    shifts = [
+        ShiftTemplate(label="S1", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="S2", role="Junior", night_float=False, thu_weekend=False, points=2.0),
+    ]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 1),
+        shifts=shifts,
+        juniors=["A"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+        target_total=3.0,
+    )
+
+    opt.build_schedule(data, env="test")
+    days = (data.end_date - data.start_date).days + 1
+    expected = days * int(100 * sum(s.points for s in shifts))
+    assert expected in bounds
+
+
+def test_total_points_balanced_multiple_shifts(monkeypatch):
+    from model import optimiser as opt
+
+    class BalancedSolver(opt.cp_model.CpSolver):
+        def Solve(self, model):
+            num_res = len(model.people) - 1
+            for d_idx in range(len(model.days)):
+                for s_idx in range(len(model.shifts)):
+                    p_idx = (d_idx + s_idx) % num_res
+                    for idx in range(len(model.people)):
+                        model.vars[(idx, d_idx, s_idx)].value = int(idx == p_idx)
+            return self.OPTIMAL
+
+    stub_cp = type(
+        "cp_model",
+        (),
+        {
+            "CpModel": opt.cp_model.CpModel,
+            "CpSolver": BalancedSolver,
+            "OPTIMAL": 0,
+            "FEASIBLE": 0,
+        },
+    )
+    monkeypatch.setattr(opt, "cp_model", stub_cp)
+
+    shifts = [
+        ShiftTemplate(label="D1", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="D2", role="Junior", night_float=False, thu_weekend=False, points=2.0),
+    ]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 2),
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+    )
+
+    df = opt.build_schedule(data, env="test")
+    pts = _points_by_resident(df, shifts)
+    assert abs(pts.get("A", 0) - pts.get("B", 0)) <= 1

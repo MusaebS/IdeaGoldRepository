@@ -193,9 +193,14 @@ class SchedulerSolver:
             expr = expr + var
         return expr
 
+    def _max_points(self) -> int:
+        """Return scaled upper bound for point totals."""
+        total_points = sum(s.points for s in self.shifts)
+        return max(1, len(self.days) * int(100 * total_points))
+
     def compute_points(self) -> None:
         scale = self.SCALE
-        max_val = len(self.days) * max(1, int(100 * max((s.points for s in self.shifts), default=1)))
+        max_val = self._max_points()
         for p_idx, _ in enumerate(self.people[:-1]):
             for label in self.labels:
                 parts = []
@@ -235,7 +240,7 @@ class SchedulerSolver:
 
     def add_deviation_constraints(self) -> None:
         scale = self.SCALE
-        max_val = len(self.days) * max(1, int(100 * max((s.points for s in self.shifts), default=1)))
+        max_val = self._max_points()
 
         if self.data.target_total is not None:
             target = int(round(self.data.target_total * scale))
