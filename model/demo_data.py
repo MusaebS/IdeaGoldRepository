@@ -18,7 +18,7 @@ def sample_shifts():
 
 
 def sample_names():
-    """Return lists of 30 junior and 15 senior names."""
+    """Return demo participant lists and NF eligibility subsets."""
     juniors = [
         "Alice", "Ben", "Carla", "Derek", "Eva", "Frank", "Grace",
         "Hector", "Isla", "Jack", "Kira", "Liam", "Mia", "Noah", "Olivia",
@@ -30,4 +30,8 @@ def sample_names():
         "Leo", "Monica", "Nathan", "Opal", "Perry", "Ruth", "Simon", "Tanya",
     ]
 
-    return juniors, seniors
+    # Simple subsets to indicate night float eligibility
+    nf_juniors = juniors[:10]
+    nf_seniors = seniors[:5]
+
+    return juniors, seniors, nf_juniors, nf_seniors
