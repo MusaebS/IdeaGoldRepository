@@ -126,6 +126,7 @@ except ImportError:  # pragma: no cover - simple fallback if ortools missing
 
 from .data_models import InputData, ShiftTemplate
 from .nf_blocks import respects_nf_blocks
+from .utils import is_weekend
 
 
 class SchedulerSolver:
@@ -213,7 +214,7 @@ class SchedulerSolver:
             wk_parts = []
             for d_idx, day in enumerate(self.days):
                 for s_idx, sh in enumerate(self.shifts):
-                    if not self.is_weekend(day, sh):
+                    if not is_weekend(day, sh):
                         continue
                     coef = int(round(sh.points * scale))
                     wk_parts.append(self._mul(self.vars[(p_idx, d_idx, s_idx)], coef))
@@ -221,12 +222,6 @@ class SchedulerSolver:
             wvar = self.model.NewIntVar(0, max_val, f"weekendpts_{p_idx}")
             self.model.Add(wvar == wk_expr)
             self.weekend_pts[p_idx] = wvar
-
-    @staticmethod
-    def is_weekend(day, shift: ShiftTemplate) -> bool:
-        if day.weekday() >= 5:
-            return True
-        return shift.thu_weekend and day.weekday() == 3
 
     def add_deviation_constraints(self) -> None:
         scale = self.SCALE

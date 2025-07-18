@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import date
 from typing import Dict, List
 
 try:
@@ -9,12 +8,9 @@ except ImportError:  # pragma: no cover - fallback when pandas missing
     from .pandas_stub import pd
 
 from .data_models import ShiftTemplate, InputData
+from .utils import is_weekend
 
 __all__ = ["calculate_points", "format_fairness_log"]
-
-
-def _is_weekend(day: date, shift: ShiftTemplate) -> bool:
-    return day.weekday() >= 5 or (shift.thu_weekend and day.weekday() == 3)
 
 
 def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, float]]:
@@ -32,7 +28,7 @@ def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, f
             info = summary.setdefault(person, {"total": 0.0, "weekend": 0.0, "labels": {}})
             info["total"] += sh.points
             info["labels"][sh.label] = info["labels"].get(sh.label, 0.0) + sh.points
-            if _is_weekend(day, sh):
+            if is_weekend(day, sh):
                 info["weekend"] += sh.points
     return summary
 

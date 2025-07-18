@@ -25,7 +25,19 @@ def _sample_df_and_shifts():
 
 def test_calculate_points():
     df, shifts = _sample_df_and_shifts()
-    pts = calculate_points(df, shifts)
+    data = InputData(
+        start_date=date(2023, 1, 7),
+        end_date=date(2023, 1, 8),
+        shifts=shifts,
+        juniors=["Alice", "Bob"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=1,
+    )
+    pts = calculate_points(df, data)
     assert pts == {
         "Alice": {"total": 3.0, "weekend": 3.0, "labels": {"D": 1.0, "N": 2.0}},
         "Bob": {"total": 3.0, "weekend": 3.0, "labels": {"D": 1.0, "N": 2.0}},
