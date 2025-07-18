@@ -258,3 +258,28 @@ def test_total_points_balanced_multiple_shifts(balanced_cp):
     df = opt.build_schedule(data, env="test")
     pts = _points_by_resident(df, shifts)
     assert abs(pts.get("A", 0) - pts.get("B", 0)) <= 1
+
+
+def test_fairness_log_includes_unused_resident():
+    from model.fairness import format_fairness_log
+
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 2),
+        shifts=[ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)],
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+    )
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 1), "S": "A"},
+        {"Date": date(2023, 1, 2), "S": "A"},
+    ])
+    log = format_fairness_log(df, data)
+    lines = log.splitlines()
+    assert any(line.startswith("A: total 2.0") for line in lines)
+    assert any(line.startswith("B: total 0.0") for line in lines)

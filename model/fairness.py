@@ -17,12 +17,15 @@ def _is_weekend(day: date, shift: ShiftTemplate) -> bool:
     return day.weekday() >= 5 or (shift.thu_weekend and day.weekday() == 3)
 
 
-def calculate_points(df: pd.DataFrame, shifts: List[ShiftTemplate]) -> Dict[str, Dict[str, float]]:
+def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, float]]:
     """Return mapping of resident to total and weekend points per label."""
-    summary: Dict[str, Dict[str, float]] = {}
+    summary: Dict[str, Dict[str, float]] = {
+        name: {"total": 0.0, "weekend": 0.0, "labels": {}}
+        for name in data.juniors + data.seniors
+    }
     for row in df.to_dict("records"):
         day = row.get("Date")
-        for sh in shifts:
+        for sh in data.shifts:
             person = row.get(sh.label)
             if person in (None, "Unfilled"):
                 continue
@@ -36,7 +39,7 @@ def calculate_points(df: pd.DataFrame, shifts: List[ShiftTemplate]) -> Dict[str,
 
 def format_fairness_log(df: pd.DataFrame, data: InputData) -> str:
     """Generate a human-readable fairness log."""
-    pts = calculate_points(df, data.shifts)
+    pts = calculate_points(df, data)
     lines: List[str] = []
     for person in sorted(pts):
         info = pts[person]
