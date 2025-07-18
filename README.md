@@ -10,3 +10,6 @@ Enable the **Test mode** checkbox in the app to load example shifts and particip
 The solver supports fractional fairness targets via `InputData.target_total`, `target_label`, and `target_weekend`. It minimises the largest deviation from these targets before minimising smaller gaps and unfilled shifts. This keeps point totals balanced whenever possible.
 
 The results page includes a **Download Fairness Log** button. It saves a text file summarising each resident's role, night float points, total and weekend points, along with any deviations from the targets you entered.
+
+## Changelog
+- Removed unused `extra_oncalls` field from `InputData`.

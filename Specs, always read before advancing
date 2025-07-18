@@ -133,6 +133,7 @@ Implementation Progress (2025-07)
 - Added deviation variables for per-label, total, and weekend points
 - Objective now minimises the largest deviation before smaller gaps and unfilled shifts
 - `InputData` gained optional targets for these values
+- Removed unused `extra_oncalls` field from `InputData`
 
 
 7 Outstanding / Future Work
