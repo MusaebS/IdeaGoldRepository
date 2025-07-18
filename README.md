@@ -32,3 +32,6 @@ schedule = build_schedule(data)
 ```
 
 The results page includes a **Download Fairness Log** button. It saves a text file summarising each resident's role, night float points, total and weekend points, along with any deviations from the targets you entered.
+
+## Changelog
+- Removed unused `extra_oncalls` field from `InputData`.
