@@ -31,6 +31,43 @@ except Exception:  # pragma: no cover - simple fallback if ortools missing
 
         __radd__ = __add__
 
+        def __mul__(self, other):
+            if isinstance(other, _Var):
+                return self.value * other.value
+            return self.value * other
+
+        __rmul__ = __mul__
+
+        def __sub__(self, other):
+            if isinstance(other, _Var):
+                return self.value - other.value
+            return self.value - other
+
+        def __rsub__(self, other):
+            if isinstance(other, _Var):
+                return other.value - self.value
+            return other - self.value
+
+        def __ge__(self, other):
+            if isinstance(other, _Var):
+                return self.value >= other.value
+            return self.value >= other
+
+        def __le__(self, other):
+            if isinstance(other, _Var):
+                return self.value <= other.value
+            return self.value <= other
+
+        def __gt__(self, other):
+            if isinstance(other, _Var):
+                return self.value > other.value
+            return self.value > other
+
+        def __lt__(self, other):
+            if isinstance(other, _Var):
+                return self.value < other.value
+            return self.value < other
+
     class CpModel:
         def NewBoolVar(self, name):
             return _Var()
@@ -105,22 +142,40 @@ class SchedulerSolver:
     def __init__(self, data: InputData):
         self.data = data
         self.model = cp_model.CpModel()
+        self.SCALE = 100
         self.people = data.juniors + data.seniors + ["Unfilled"]
         self.days = [data.start_date + timedelta(days=i)
                      for i in range((data.end_date - data.start_date).days + 1)]
         self.shifts = data.shifts
+        self.labels = sorted({s.label for s in data.shifts})
         self.vars: Dict[Tuple[int, int, int], object] = {}
+        self.label_pts: Dict[Tuple[int, str], object] = {}
+        self.total_pts: Dict[int, object] = {}
+        self.weekend_pts: Dict[int, object] = {}
+        self.dev_label: Dict[Tuple[int, str], object] = {}
+        self.dev_total: Dict[int, object] = {}
+        self.dev_weekend: Dict[int, object] = {}
+        self.max_dev: object | None = None
         self.build_variables()
+        self.compute_points()
         # expose internals for stub solver (may fail on real CpModel)
         try:
             self.model.people = self.people
             self.model.days = self.days
             self.model.shifts = self.shifts
             self.model.vars = self.vars
+            self.model.label_pts = self.label_pts
+            self.model.total_pts = self.total_pts
+            self.model.weekend_pts = self.weekend_pts
+            self.model.dev_label = self.dev_label
+            self.model.dev_total = self.dev_total
+            self.model.dev_weekend = self.dev_weekend
+            self.model.max_dev = self.max_dev
         except AttributeError:
             # Real ortools model does not allow setting new attributes
             pass
         self.add_constraints()
+        self.add_deviation_constraints()
         self.build_objective()
 
     def build_variables(self) -> None:
@@ -129,6 +184,92 @@ class SchedulerSolver:
                 for s_idx in range(len(self.shifts)):
                     self.vars[(p_idx, d_idx, s_idx)] = self.model.NewBoolVar(
                         f"x_{p_idx}_{d_idx}_{s_idx}")
+
+    def _mul(self, var, coef: int):
+        if coef <= 0:
+            return 0
+        expr = var
+        for _ in range(coef - 1):
+            expr = expr + var
+        return expr
+
+    def compute_points(self) -> None:
+        scale = self.SCALE
+        max_val = len(self.days) * max(1, int(100 * max((s.points for s in self.shifts), default=1)))
+        for p_idx, _ in enumerate(self.people[:-1]):
+            for label in self.labels:
+                parts = []
+                for d_idx in range(len(self.days)):
+                    for s_idx, sh in enumerate(self.shifts):
+                        if sh.label != label:
+                            continue
+                        coef = int(round(sh.points * scale))
+                        parts.append(self._mul(self.vars[(p_idx, d_idx, s_idx)], coef))
+                expr = sum(parts) if parts else 0
+                var = self.model.NewIntVar(0, max_val, f"labelpts_{p_idx}_{label}")
+                self.model.Add(var == expr)
+                self.label_pts[(p_idx, label)] = var
+
+            tot_expr = sum(self.label_pts[(p_idx, l)] for l in self.labels)
+            tvar = self.model.NewIntVar(0, max_val, f"totalpts_{p_idx}")
+            self.model.Add(tvar == tot_expr)
+            self.total_pts[p_idx] = tvar
+
+            wk_parts = []
+            for d_idx, day in enumerate(self.days):
+                for s_idx, sh in enumerate(self.shifts):
+                    if not self.is_weekend(day, sh):
+                        continue
+                    coef = int(round(sh.points * scale))
+                    wk_parts.append(self._mul(self.vars[(p_idx, d_idx, s_idx)], coef))
+            wk_expr = sum(wk_parts) if wk_parts else 0
+            wvar = self.model.NewIntVar(0, max_val, f"weekendpts_{p_idx}")
+            self.model.Add(wvar == wk_expr)
+            self.weekend_pts[p_idx] = wvar
+
+    @staticmethod
+    def is_weekend(day, shift: ShiftTemplate) -> bool:
+        if day.weekday() >= 5:
+            return True
+        return shift.thu_weekend and day.weekday() == 3
+
+    def add_deviation_constraints(self) -> None:
+        scale = self.SCALE
+        max_val = len(self.days) * max(1, int(100 * max((s.points for s in self.shifts), default=1)))
+
+        if self.data.target_total is not None:
+            target = int(round(self.data.target_total * scale))
+            for p_idx in range(len(self.people) - 1):
+                var = self.model.NewIntVar(0, max_val, f"dev_total_{p_idx}")
+                self.model.Add(var >= self.total_pts[p_idx] - target)
+                self.model.Add(var >= target - self.total_pts[p_idx])
+                self.dev_total[p_idx] = var
+            self.max_dev = self.model.NewIntVar(0, max_val, "max_dev")
+            for var in self.dev_total.values():
+                self.model.Add(self.max_dev >= var)
+
+        if self.data.target_weekend:
+            for p_idx, person in enumerate(self.people[:-1]):
+                if person not in self.data.target_weekend:
+                    continue
+                target = int(round(self.data.target_weekend[person] * scale))
+                var = self.model.NewIntVar(0, max_val, f"dev_weekend_{p_idx}")
+                self.model.Add(var >= self.weekend_pts[p_idx] - target)
+                self.model.Add(var >= target - self.weekend_pts[p_idx])
+                self.dev_weekend[p_idx] = var
+
+        if self.data.target_label:
+            for p_idx, person in enumerate(self.people[:-1]):
+                for label in self.labels:
+                    key = (person, label)
+                    if key not in self.data.target_label:
+                        continue
+                    target = int(round(self.data.target_label[key] * scale))
+                    var = self.model.NewIntVar(0, max_val, f"dev_label_{p_idx}_{label}")
+                    lp = self.label_pts[(p_idx, label)]
+                    self.model.Add(var >= lp - target)
+                    self.model.Add(var >= target - lp)
+                    self.dev_label[(p_idx, label)] = var
 
     def add_constraints(self) -> None:
         for d_idx, day in enumerate(self.days):
@@ -193,13 +334,25 @@ class SchedulerSolver:
                             self.model.Add(first_var == self.vars[(p_idx, d_idx, s_idx)])
 
     def build_objective(self) -> None:
-        # Simplified: just minimise unfilled slots
         unfilled_vars = [
             self.vars[(len(self.people) - 1, d_idx, s_idx)]
             for d_idx in range(len(self.days))
             for s_idx in range(len(self.shifts))
         ]
-        self.model.Minimize(sum(unfilled_vars))
+
+        terms = []
+        W1, W2, W3, W4, W5 = 10**9, 10**6, 10**3, 10, 1
+        if self.max_dev is not None:
+            terms.append(W1 * self.max_dev)
+        if self.dev_total:
+            terms.append(W2 * sum(self.dev_total.values()))
+        if self.dev_weekend:
+            terms.append(W3 * sum(self.dev_weekend.values()))
+        if self.dev_label:
+            terms.append(W4 * sum(self.dev_label.values()))
+        terms.append(W5 * sum(unfilled_vars))
+
+        self.model.Minimize(sum(terms))
 
     def solve(self, time_limit_sec: int | None = None):
         solver = cp_model.CpSolver()
