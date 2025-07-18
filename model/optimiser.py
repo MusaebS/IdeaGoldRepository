@@ -4,7 +4,7 @@ from typing import Dict, Tuple
 
 try:
     import pandas as pd
-except Exception:  # pragma: no cover - fallback when pandas missing
+except ImportError:  # pragma: no cover - fallback when pandas missing
     class SimpleDataFrame(list):
         def __init__(self, data=None):
             super().__init__(data or [])
@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - fallback when pandas missing
 
 try:
     from ortools.sat.python import cp_model
-except Exception:  # pragma: no cover - simple fallback if ortools missing
+except ImportError:  # pragma: no cover - simple fallback if ortools missing
     class _Var:
         def __init__(self):
             self.value = 0
