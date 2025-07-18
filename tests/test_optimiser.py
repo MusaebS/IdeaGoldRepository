@@ -148,6 +148,28 @@ def test_respects_nf_blocks_function():
     assert not respects_nf_blocks(df, 3, shifts)
 
 
+def test_nf_blocks_exact_assignment():
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 3),
+        shifts=[ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False)],
+        juniors=["A"],
+        seniors=[],
+        nf_juniors=["A"],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+        nf_block_length=2,
+    )
+
+    df = build_schedule(data, env="test")
+    rows = df.to_dict("records")
+    assert rows[2]["NF"] == "Unfilled"
+    assert rows[0]["NF"] == rows[1]["NF"]
+    assert respects_nf_blocks(df, 2, data.shifts)
+
+
 def _points_by_resident(df: pd.DataFrame, shifts: list[ShiftTemplate]) -> dict:
     pts: dict[str, float] = {}
     for row in df.to_dict("records"):
