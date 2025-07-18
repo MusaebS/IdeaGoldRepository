@@ -268,6 +268,33 @@ def test_total_points_balanced_multiple_shifts(balanced_cp):
     assert abs(pts.get("A", 0) - pts.get("B", 0)) <= 1
 
 
+def test_default_targets_balance_points(balanced_cp):
+    from model import optimiser as opt
+    from model.fairness import calculate_points
+
+    shifts = [ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 6),
+        end_date=date(2023, 1, 8),
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+    )
+
+    df = opt.build_schedule(data, env="test")
+    pts = calculate_points(df, data)
+    totals = [v["total"] for v in pts.values()]
+    weekends = [v["weekend"] for v in pts.values()]
+
+    assert max(totals) - min(totals) <= 1
+    assert max(weekends) - min(weekends) <= 1
+
+
 def test_fairness_log_includes_unused_resident():
     from model.fairness import format_fairness_log
 
