@@ -128,6 +128,12 @@ def test_respects_min_gap_function():
         {"Date": date(2023, 1, 1), "S1": "A"},
         {"Date": date(2023, 1, 3), "S1": "A"},
     ])
+    assert not respects_min_gap(df, 2)
+
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 1), "S1": "A"},
+        {"Date": date(2023, 1, 4), "S1": "A"},
+    ])
     assert respects_min_gap(df, 2)
 
 
