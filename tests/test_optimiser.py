@@ -93,6 +93,14 @@ def test_respects_min_gap_function():
     assert respects_min_gap(df, 2)
 
 
+def test_respects_min_gap_with_day_column():
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 1), "Day": "Sunday", "S1": "A"},
+        {"Date": date(2023, 1, 4), "Day": "Wednesday", "S1": "A"},
+    ])
+    assert respects_min_gap(df, 2)
+
+
 def test_respects_nf_blocks_function():
     shifts = [ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False)]
     df = pd.DataFrame([
