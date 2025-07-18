@@ -28,6 +28,7 @@ def test_simple_schedule():
     df = build_schedule(data)
     assert len(df) == 2
     assert set(df["Shift1"]) <= {"A", "B", "Unfilled"}
+    assert list(df["Day"]) == ["Sunday", "Monday"]
 
 
 def test_schedule_with_strict_cpmodel(monkeypatch):
