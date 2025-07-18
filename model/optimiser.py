@@ -5,17 +5,7 @@ from typing import Dict, Tuple
 try:
     import pandas as pd
 except ImportError:  # pragma: no cover - fallback when pandas missing
-    class SimpleDataFrame(list):
-        def __init__(self, data=None):
-            super().__init__(data or [])
-
-        def to_dict(self, orient="records"):
-            return list(self)
-
-        def __getitem__(self, key):
-            return [row.get(key) for row in self]
-
-    pd = type("pd", (), {"DataFrame": SimpleDataFrame})()
+    from .pandas_stub import pd
 
 try:
     from ortools.sat.python import cp_model
