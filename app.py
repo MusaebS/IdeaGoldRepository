@@ -28,11 +28,11 @@ if "demo_loaded" not in st.session_state:
 test_mode = st.checkbox("Test mode (preload example data)")
 if test_mode and not st.session_state.demo_loaded:
     st.session_state.shifts = sample_shifts()
-    juniors, seniors = sample_names()
+    juniors, seniors, nf_juniors, nf_seniors = sample_names()
     st.session_state.juniors = juniors
     st.session_state.seniors = seniors
-    st.session_state.nf_juniors = juniors[:]
-    st.session_state.nf_seniors = seniors[:]
+    st.session_state.nf_juniors = nf_juniors
+    st.session_state.nf_seniors = nf_seniors
     st.session_state.demo_loaded = True
 
 st.header("Configuration")
