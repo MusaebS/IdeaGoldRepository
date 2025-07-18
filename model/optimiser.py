@@ -381,7 +381,7 @@ class SchedulerSolver:
             raise RuntimeError(f"Solver ended with status {name_func(status)}")
         rows = []
         for d_idx, day in enumerate(self.days):
-            row = {"Date": day}
+            row = {"Date": day, "Day": day.strftime("%A")}
             for s_idx, shift in enumerate(self.shifts):
                 assigned = None
                 for p_idx, person in enumerate(self.people):
