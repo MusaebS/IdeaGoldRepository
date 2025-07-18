@@ -412,7 +412,7 @@ def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
 
 
 def respects_min_gap(df: pd.DataFrame, gap: int) -> bool:
-    """Return True if no resident appears on days closer than ``gap``."""
+    """Return True if no resident appears on days ``gap`` or fewer apart."""
     if gap <= 0:
         return True
     assignments: Dict[str, list] = {}
@@ -425,7 +425,7 @@ def respects_min_gap(df: pd.DataFrame, gap: int) -> bool:
     for days in assignments.values():
         days.sort()
         for d1, d2 in zip(days, days[1:]):
-            if (d2 - d1).days < gap:
+            if (d2 - d1).days <= gap:
                 return False
     return True
 
