@@ -380,6 +380,22 @@ class SchedulerSolver:
 
 def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
     """Build schedule with optional environment based time limit."""
+    participants = data.juniors + data.seniors
+    if participants:
+        days = (data.end_date - data.start_date).days + 1
+        total_points = days * sum(s.points for s in data.shifts)
+        weekend_points = 0.0
+        for i in range(days):
+            day = data.start_date + timedelta(days=i)
+            for s in data.shifts:
+                if is_weekend(day, s):
+                    weekend_points += s.points
+        if data.target_total is None:
+            data.target_total = total_points / len(participants)
+        if data.target_weekend is None:
+            share = weekend_points / len(participants)
+            data.target_weekend = {p: share for p in participants}
+
     solver = SchedulerSolver(data)
     env = env or os.environ.get("ENV", "prod").lower()
     if env == "dev":

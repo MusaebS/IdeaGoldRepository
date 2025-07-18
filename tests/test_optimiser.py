@@ -318,3 +318,23 @@ def test_fairness_log_includes_unused_resident():
     lines = log.splitlines()
     assert any(line.startswith("A (Junior, NF 0.0): total 2.0") for line in lines)
     assert any(line.startswith("B (Junior, NF 0.0): total 0.0") for line in lines)
+
+
+def test_auto_target_computation():
+    data = InputData(
+        start_date=date(2023, 1, 2),
+        end_date=date(2023, 1, 2),
+        shifts=[ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)],
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+    )
+    assert data.target_total is None
+    assert data.target_weekend is None
+    build_schedule(data, env="test")
+    assert data.target_total == 0.5
+    assert data.target_weekend == {"A": 0.0, "B": 0.0}
