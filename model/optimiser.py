@@ -319,19 +319,31 @@ class SchedulerSolver:
                                         self.vars[(p_idx, d2_idx, s2_idx)] <= 1
                                     )
 
-        # night float blocks must be contiguous
+        # night float blocks must have exact length
         block_len = self.data.nf_block_length
         if block_len > 1:
             nf_shift_idxs = [i for i, s in enumerate(self.shifts) if s.night_float]
             for s_idx in nf_shift_idxs:
                 for block_start in range(0, len(self.days), block_len):
                     block_days = list(range(block_start, min(block_start + block_len, len(self.days))))
-                    if len(block_days) <= 1:
+                    if len(block_days) < block_len:
+                        for d_idx in block_days:
+                            for p_idx in range(len(self.people) - 1):
+                                self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
                         continue
                     for p_idx in range(len(self.people)):
                         first_var = self.vars[(p_idx, block_days[0], s_idx)]
                         for d_idx in block_days[1:]:
                             self.model.Add(first_var == self.vars[(p_idx, d_idx, s_idx)])
+                for boundary in range(block_len, len(self.days), block_len):
+                    if boundary >= len(self.days):
+                        break
+                    prev_day = boundary - 1
+                    next_day = boundary
+                    for p_idx in range(len(self.people)):
+                        self.model.Add(
+                            self.vars[(p_idx, prev_day, s_idx)] + self.vars[(p_idx, next_day, s_idx)] <= 1
+                        )
 
     def build_objective(self) -> None:
         unfilled_vars = [
