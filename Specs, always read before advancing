@@ -129,6 +129,11 @@ Fairness deviations (should be ≤ 1 where feasible)
 CSV / JSON downloads.
 
 If the model is infeasible (e.g. constraints too tight), UI displays solver status and highlights which rule failed.
+Implementation Progress (2025-07)
+- Added deviation variables for per-label, total, and weekend points
+- Objective now minimises the largest deviation before smaller gaps and unfilled shifts
+- `InputData` gained optional targets for these values
+
 
 7 Outstanding / Future Work
 UI seed control & load/save configuration JSON.

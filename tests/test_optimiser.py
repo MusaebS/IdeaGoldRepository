@@ -47,6 +47,12 @@ def test_schedule_with_strict_cpmodel(monkeypatch):
             return self.value + other
 
         __radd__ = __add__
+        __mul__ = __add__
+        __rmul__ = __mul__
+        __sub__ = __add__
+        __rsub__ = __add__
+        __ge__ = lambda self, other: True
+        __le__ = __ge__
 
     class StrictModel:
         __slots__ = ()
@@ -140,3 +146,104 @@ def test_respects_nf_blocks_function():
         {"Date": date(2023, 1, 3), "NF": "B"},
     ])
     assert not respects_nf_blocks(df, 3, shifts)
+
+
+def _points_by_resident(df: pd.DataFrame, shifts: list[ShiftTemplate]) -> dict:
+    pts: dict[str, float] = {}
+    for row in df.to_dict("records"):
+        for s in shifts:
+            p = row.get(s.label)
+            if p and p != "Unfilled":
+                pts[p] = pts.get(p, 0.0) + s.points
+    return pts
+
+
+def test_total_points_balanced(monkeypatch):
+    from model import optimiser as opt
+
+    class BalancedSolver(opt.cp_model.CpSolver):
+        def Solve(self, model):
+            num_res = len(model.people) - 1
+            for d_idx in range(len(model.days)):
+                for s_idx in range(len(model.shifts)):
+                    p_idx = (d_idx + s_idx) % num_res
+                    for idx in range(len(model.people)):
+                        model.vars[(idx, d_idx, s_idx)].value = int(idx == p_idx)
+            return self.OPTIMAL
+
+    stub_cp = type(
+        "cp_model",
+        (),
+        {
+            "CpModel": opt.cp_model.CpModel,
+            "CpSolver": BalancedSolver,
+            "OPTIMAL": 0,
+            "FEASIBLE": 0,
+        },
+    )
+    monkeypatch.setattr(opt, "cp_model", stub_cp)
+
+    shifts = [ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 2),
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+        target_total=1.0,
+    )
+
+    df = opt.build_schedule(data, env="test")
+    pts = _points_by_resident(df, shifts)
+    assert abs(pts.get("A", 0) - pts.get("B", 0)) <= 1
+
+
+def test_total_points_min_deviation(monkeypatch):
+    from model import optimiser as opt
+
+    class BalancedSolver(opt.cp_model.CpSolver):
+        def Solve(self, model):
+            num_res = len(model.people) - 1
+            for d_idx in range(len(model.days)):
+                for s_idx in range(len(model.shifts)):
+                    p_idx = (d_idx + s_idx) % num_res
+                    for idx in range(len(model.people)):
+                        model.vars[(idx, d_idx, s_idx)].value = int(idx == p_idx)
+            return self.OPTIMAL
+
+    stub_cp = type(
+        "cp_model",
+        (),
+        {
+            "CpModel": opt.cp_model.CpModel,
+            "CpSolver": BalancedSolver,
+            "OPTIMAL": 0,
+            "FEASIBLE": 0,
+        },
+    )
+    monkeypatch.setattr(opt, "cp_model", stub_cp)
+
+    shifts = [ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 3),
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+        target_total=1.5,
+    )
+
+    df = opt.build_schedule(data, env="test")
+    pts = _points_by_resident(df, shifts)
+    diff = abs(pts.get("A", 0) - pts.get("B", 0))
+    assert diff == 1
