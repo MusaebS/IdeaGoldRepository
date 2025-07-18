@@ -401,10 +401,27 @@ def respects_min_gap(df: pd.DataFrame, gap: int) -> bool:
     if gap <= 0:
         return True
     assignments: Dict[str, list] = {}
-    for row in df.to_dict("records"):
+    records = df.to_dict("records")
+    if hasattr(df, "columns"):
+        shift_cols = []
+        for c in df.columns:
+            if c in {"Date", "Day"}:
+                continue
+            try:
+                if getattr(df[c], "dtype", object) != object:
+                    continue
+            except Exception:
+                pass
+            shift_cols.append(c)
+    else:
+        first = records[0] if records else {}
+        shift_cols = [k for k in first.keys() if k not in {"Date", "Day"}]
+
+    for row in records:
         day = row.get("Date")
-        for label, person in row.items():
-            if label == "Date" or person in (None, "Unfilled"):
+        for label in shift_cols:
+            person = row.get(label)
+            if person in (None, "Unfilled") or not isinstance(person, str):
                 continue
             assignments.setdefault(person, []).append(day)
     for days in assignments.values():
