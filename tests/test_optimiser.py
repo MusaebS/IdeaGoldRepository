@@ -31,55 +31,10 @@ def test_simple_schedule():
     assert list(df["Day"]) == ["Sunday", "Monday"]
 
 
-def test_schedule_with_strict_cpmodel(monkeypatch):
+def test_schedule_with_strict_cpmodel(strict_cp):
     """Scheduler should not fail if CpModel disallows new attributes."""
 
     from model import optimiser as opt
-
-    class _Var:
-        __slots__ = ("value",)
-
-        def __init__(self):
-            self.value = 0
-
-        def __add__(self, other):
-            if isinstance(other, _Var):
-                return self.value + other.value
-            return self.value + other
-
-        __radd__ = __add__
-        __mul__ = __add__
-        __rmul__ = __mul__
-        __sub__ = __add__
-        __rsub__ = __add__
-        __ge__ = lambda self, other: True
-        __le__ = __ge__
-
-    class StrictModel:
-        __slots__ = ()
-
-        def NewBoolVar(self, name):
-            return _Var()
-
-        def Add(self, constraint):
-            pass
-
-        def NewIntVar(self, a, b, name):
-            return _Var()
-
-        def Minimize(self, expr):
-            pass
-
-    class StubSolver(opt.cp_model.CpSolver):
-        pass
-
-    stub_cp_model = type(
-        "cp_model",
-        (),
-        {"CpModel": StrictModel, "CpSolver": StubSolver, "OPTIMAL": 0, "FEASIBLE": 0},
-    )
-
-    monkeypatch.setattr(opt, "cp_model", stub_cp_model)
 
     data = InputData(
         start_date=date(2023, 1, 1),
@@ -187,30 +142,8 @@ def _points_by_resident(df: pd.DataFrame, shifts: list[ShiftTemplate]) -> dict:
     return pts
 
 
-def test_total_points_balanced(monkeypatch):
+def test_total_points_balanced(balanced_cp):
     from model import optimiser as opt
-
-    class BalancedSolver(opt.cp_model.CpSolver):
-        def Solve(self, model):
-            num_res = len(model.people) - 1
-            for d_idx in range(len(model.days)):
-                for s_idx in range(len(model.shifts)):
-                    p_idx = (d_idx + s_idx) % num_res
-                    for idx in range(len(model.people)):
-                        model.vars[(idx, d_idx, s_idx)].value = int(idx == p_idx)
-            return self.OPTIMAL
-
-    stub_cp = type(
-        "cp_model",
-        (),
-        {
-            "CpModel": opt.cp_model.CpModel,
-            "CpSolver": BalancedSolver,
-            "OPTIMAL": 0,
-            "FEASIBLE": 0,
-        },
-    )
-    monkeypatch.setattr(opt, "cp_model", stub_cp)
 
     shifts = [ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
     data = InputData(
@@ -232,30 +165,8 @@ def test_total_points_balanced(monkeypatch):
     assert abs(pts.get("A", 0) - pts.get("B", 0)) <= 1
 
 
-def test_total_points_min_deviation(monkeypatch):
+def test_total_points_min_deviation(balanced_cp):
     from model import optimiser as opt
-
-    class BalancedSolver(opt.cp_model.CpSolver):
-        def Solve(self, model):
-            num_res = len(model.people) - 1
-            for d_idx in range(len(model.days)):
-                for s_idx in range(len(model.shifts)):
-                    p_idx = (d_idx + s_idx) % num_res
-                    for idx in range(len(model.people)):
-                        model.vars[(idx, d_idx, s_idx)].value = int(idx == p_idx)
-            return self.OPTIMAL
-
-    stub_cp = type(
-        "cp_model",
-        (),
-        {
-            "CpModel": opt.cp_model.CpModel,
-            "CpSolver": BalancedSolver,
-            "OPTIMAL": 0,
-            "FEASIBLE": 0,
-        },
-    )
-    monkeypatch.setattr(opt, "cp_model", stub_cp)
 
     shifts = [ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
     data = InputData(
@@ -324,30 +235,8 @@ def test_intvar_upper_bound_multiple_shifts(monkeypatch):
     assert expected in bounds
 
 
-def test_total_points_balanced_multiple_shifts(monkeypatch):
+def test_total_points_balanced_multiple_shifts(balanced_cp):
     from model import optimiser as opt
-
-    class BalancedSolver(opt.cp_model.CpSolver):
-        def Solve(self, model):
-            num_res = len(model.people) - 1
-            for d_idx in range(len(model.days)):
-                for s_idx in range(len(model.shifts)):
-                    p_idx = (d_idx + s_idx) % num_res
-                    for idx in range(len(model.people)):
-                        model.vars[(idx, d_idx, s_idx)].value = int(idx == p_idx)
-            return self.OPTIMAL
-
-    stub_cp = type(
-        "cp_model",
-        (),
-        {
-            "CpModel": opt.cp_model.CpModel,
-            "CpSolver": BalancedSolver,
-            "OPTIMAL": 0,
-            "FEASIBLE": 0,
-        },
-    )
-    monkeypatch.setattr(opt, "cp_model", stub_cp)
 
     shifts = [
         ShiftTemplate(label="D1", role="Junior", night_float=False, thu_weekend=False, points=1.0),
