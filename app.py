@@ -97,7 +97,7 @@ if st.button("Generate Schedule"):
         nf_block_length=nf_block_len,
     )
     try:
-        env = os.getenv("ENV", "dev")
+        env = os.getenv("ENV", "prod")
         df = build_schedule(data, env=env)
         st.dataframe(df)
     except Exception as e:
