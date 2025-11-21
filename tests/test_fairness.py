@@ -73,7 +73,7 @@ def test_format_fairness_log():
     expected_lines = [
         "Alice (Junior, NF 0.0): total 3.0 (dev +0.0), weekend 3.0, D 1.0, N 2.0",
         "Bob (Junior, NF 0.0): total 3.0 (dev +0.0), weekend 3.0, D 1.0, N 2.0",
-        "Total point range: 0.0",
-        "Weekend point range: 0.0",
+        "Total points min 3.0, max 3.0, range 0.0",
+        "Weekend points min 3.0, max 3.0, range 0.0",
     ]
     assert log.splitlines() == expected_lines
