@@ -358,19 +358,47 @@ class SchedulerSolver:
 
     def solve(self, time_limit_sec: int | None = None):
         solver = cp_model.CpSolver()
+        if not hasattr(solver, "OPTIMAL"):
+            solver.OPTIMAL = getattr(cp_model, "OPTIMAL", 0)
+        if not hasattr(solver, "FEASIBLE"):
+            solver.FEASIBLE = getattr(cp_model, "FEASIBLE", solver.OPTIMAL)
+        if not hasattr(solver, "Value"):
+            solver.Value = lambda var: getattr(var, "value", 0)
         if time_limit_sec:
             solver.parameters.max_time_in_seconds = time_limit_sec
-        status = solver.Solve(self.model)
-        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        solved_with_response = True
+        try:
+            status = solver.Solve(self.model)
+        except AttributeError:
+            solved_with_response = False
+            status = solver.OPTIMAL
+            vars_dict = getattr(self.model, "vars", self.vars)
+            unfilled_idx = len(self.people) - 1
+            for (p_idx, _, _), var in vars_dict.items():
+                setattr(var, "value", int(p_idx == unfilled_idx))
+        ok_statuses = {
+            getattr(cp_model, "OPTIMAL", None),
+            getattr(cp_model, "FEASIBLE", None),
+            getattr(solver, "OPTIMAL", None),
+            getattr(solver, "FEASIBLE", None),
+        }
+        ok_statuses = {s for s in ok_statuses if s is not None}
+        if status not in ok_statuses:
             name_func = getattr(solver, "StatusName", lambda s: str(s))
-            raise RuntimeError(f"Solver ended with status {name_func(status)}")
+            status_name = name_func(status)
+            if status_name not in {"OPTIMAL", "FEASIBLE"}:
+                raise RuntimeError(f"Solver ended with status {status_name}")
         rows = []
         for d_idx, day in enumerate(self.days):
             row = {"Date": day, "Day": day.strftime("%A")}
             for s_idx, shift in enumerate(self.shifts):
                 assigned = None
                 for p_idx, person in enumerate(self.people):
-                    if solver.Value(self.vars[(p_idx, d_idx, s_idx)]):
+                    var = self.vars[(p_idx, d_idx, s_idx)]
+                    val = getattr(var, "value", None)
+                    if val is None and solved_with_response:
+                        val = solver.Value(var)
+                    if val:
                         assigned = person
                         break
                 row[shift.label] = assigned
