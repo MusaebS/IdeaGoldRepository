@@ -36,3 +36,4 @@ The results page includes a **Download Fairness Log** button. It saves a text fi
 ## Changelog
 - Removed unused `extra_oncalls` field from `InputData`.
 - Added `docs/archive.txt` containing a read-only snapshot of all code and documentation.
+- Hardened the scheduler against stubbed CP-SAT implementations to keep tests and fallbacks working.
