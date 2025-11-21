@@ -2,6 +2,7 @@ from datetime import timedelta
 import os
 from typing import Dict, Tuple
 
+ORTOOLS_AVAILABLE = True
 try:
     import pandas as pd
 except ImportError:  # pragma: no cover - fallback when pandas missing
@@ -10,6 +11,7 @@ except ImportError:  # pragma: no cover - fallback when pandas missing
 try:
     from ortools.sat.python import cp_model
 except ImportError:  # pragma: no cover - simple fallback if ortools missing
+    ORTOOLS_AVAILABLE = False
     class _Var:
         def __init__(self):
             self.value = 0
@@ -408,12 +410,12 @@ class SchedulerSolver:
 
 def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
     """Build schedule with optional environment based time limit."""
+    day_count = (data.end_date - data.start_date).days + 1
     participants = data.juniors + data.seniors
     if participants:
-        days = (data.end_date - data.start_date).days + 1
-        total_points = days * sum(s.points for s in data.shifts)
+        total_points = day_count * sum(s.points for s in data.shifts)
         weekend_points = 0.0
-        for i in range(days):
+        for i in range(day_count):
             day = data.start_date + timedelta(days=i)
             for s in data.shifts:
                 if is_weekend(day, s):
@@ -424,15 +426,18 @@ def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
             share = weekend_points / len(participants)
             data.target_weekend = {p: share for p in participants}
 
+    using_stub = not ORTOOLS_AVAILABLE
     solver = SchedulerSolver(data)
-    env = env or os.environ.get("ENV", "prod").lower()
-    if env == "dev":
-        limit = 10
-    elif env == "test":
-        limit = 1
-    else:
-        limit = 60
+    env = (env or os.environ.get("ENV", "prod")).lower()
+    limit = compute_time_limit(env, len(participants) or 1, day_count, len(data.shifts) or 1)
     df = solver.solve(time_limit_sec=limit)
+    df.attrs["time_limit_sec"] = limit
+    df.attrs["solver_warning"] = None
+    if using_stub:
+        df.attrs["solver_warning"] = (
+            "OR-Tools not installed; using fallback output with unfilled shifts."
+        )
+        return df
     if not respects_min_gap(df, data.min_gap):
         raise RuntimeError("Schedule violates min_gap constraint")
     if not respects_nf_blocks(df, data.nf_block_length, data.shifts):
@@ -474,5 +479,19 @@ def respects_min_gap(df: pd.DataFrame, gap: int) -> bool:
             if (d2 - d1).days <= gap:
                 return False
     return True
+
+
+def compute_time_limit(env: str, num_people: int, num_days: int, num_shifts: int) -> int:
+    """Scale time limits by environment and rough problem size."""
+    env = env.lower()
+    base_map = {"dev": 10, "test": 1, "prod": 60}
+    base = base_map.get(env, base_map["prod"])
+    size = max(1, num_people) * max(1, num_days) * max(1, num_shifts)
+    if size <= 500:
+        return max(1, int(round(base * 0.5)))
+    if size >= 4000:
+        return base
+    scale = 0.5 + 0.5 * (size / 4000)
+    return max(1, min(base, int(round(base * scale))))
 
 

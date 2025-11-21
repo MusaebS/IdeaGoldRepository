@@ -10,7 +10,7 @@ except ImportError:  # pragma: no cover - fallback when pandas missing
 from .data_models import ShiftTemplate, InputData
 from .utils import is_weekend
 
-__all__ = ["calculate_points", "format_fairness_log"]
+__all__ = ["calculate_points", "format_fairness_log", "fairness_range_lines"]
 
 
 def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, float]]:
@@ -35,9 +35,33 @@ def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, f
     return summary
 
 
-def format_fairness_log(df: pd.DataFrame, data: InputData) -> str:
+def fairness_range_lines(points: Dict[str, Dict[str, float]]) -> List[str]:
+    """Return human-readable range summaries for totals and weekends."""
+    lines: List[str] = []
+    totals = [v["total"] for v in points.values()]
+    if totals:
+        total_min = min(totals)
+        total_max = max(totals)
+        lines.append(
+            f"Total points min {total_min:.1f}, max {total_max:.1f}, range {total_max - total_min:.1f}"
+        )
+
+    wk_totals = [v["weekend"] for v in points.values()]
+    if wk_totals:
+        wk_min = min(wk_totals)
+        wk_max = max(wk_totals)
+        lines.append(
+            f"Weekend points min {wk_min:.1f}, max {wk_max:.1f}, range {wk_max - wk_min:.1f}"
+        )
+
+    return lines
+
+
+def format_fairness_log(
+    df: pd.DataFrame, data: InputData, points: Dict[str, Dict[str, float]] | None = None
+) -> str:
     """Generate a human-readable fairness log."""
-    pts = calculate_points(df, data)
+    pts = points or calculate_points(df, data)
     lines: List[str] = []
     for person in sorted(pts):
         info = pts[person]
@@ -58,10 +82,5 @@ def format_fairness_log(df: pd.DataFrame, data: InputData) -> str:
                 ldev = val - data.target_label[(person, label)]
                 line += f" (dev {ldev:+.1f})"
         lines.append(line)
-    totals = [v['total'] for v in pts.values()]
-    if totals:
-        lines.append(f"Total point range: {max(totals) - min(totals):.1f}")
-    wk_totals = [v['weekend'] for v in pts.values()]
-    if wk_totals:
-        lines.append(f"Weekend point range: {max(wk_totals) - min(wk_totals):.1f}")
+    lines.extend(fairness_range_lines(pts))
     return "\n".join(lines)
