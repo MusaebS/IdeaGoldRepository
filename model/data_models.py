@@ -25,7 +25,6 @@ class InputData:
     rotators: List[Tuple[str, date, date]]
     min_gap: int = 1
     nf_block_length: int = 5
-    extra_oncalls: Dict[str, int] | None = None
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None
     target_weekend: Dict[str, float] | None = None

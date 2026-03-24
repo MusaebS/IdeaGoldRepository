@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 from model.data_models import ShiftTemplate, InputData
 from model.optimiser import build_schedule
-from model.fairness import format_fairness_log
+from model.fairness import calculate_points, fairness_range_lines, format_fairness_log
 from model.demo_data import sample_shifts, sample_names
 import os
 
@@ -100,8 +100,17 @@ if st.button("Generate Schedule"):
     try:
         env = os.getenv("ENV", "prod")
         df = build_schedule(data, env=env)
+        warning = df.attrs.get("solver_warning") if hasattr(df, "attrs") else None
+        if warning:
+            st.warning(warning)
+        points = calculate_points(df, data)
         st.dataframe(df)
-        log_text = format_fairness_log(df, data)
+        ranges = fairness_range_lines(points)
+        if ranges:
+            st.subheader("Fairness summary")
+            for line in ranges:
+                st.write(line)
+        log_text = format_fairness_log(df, data, points=points)
         st.download_button("Download Fairness Log", log_text, file_name="fairness_log.txt")
         if st.checkbox("Show Fairness Log"):
             st.text(log_text)

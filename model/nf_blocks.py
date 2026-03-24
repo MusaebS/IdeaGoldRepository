@@ -6,8 +6,7 @@ from typing import Dict, List
 try:
     import pandas as pd
 except ImportError:  # pragma: no cover - fallback when pandas missing
-    from . import optimiser as opt
-    pd = opt.pd
+    from .pandas_stub import pd
 
 from .data_models import ShiftTemplate
 

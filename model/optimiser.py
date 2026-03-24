@@ -2,24 +2,16 @@ from datetime import timedelta
 import os
 from typing import Dict, Tuple
 
+ORTOOLS_AVAILABLE = True
 try:
     import pandas as pd
 except ImportError:  # pragma: no cover - fallback when pandas missing
-    class SimpleDataFrame(list):
-        def __init__(self, data=None):
-            super().__init__(data or [])
-
-        def to_dict(self, orient="records"):
-            return list(self)
-
-        def __getitem__(self, key):
-            return [row.get(key) for row in self]
-
-    pd = type("pd", (), {"DataFrame": SimpleDataFrame})()
+    from .pandas_stub import pd
 
 try:
     from ortools.sat.python import cp_model
 except ImportError:  # pragma: no cover - simple fallback if ortools missing
+    ORTOOLS_AVAILABLE = False
     class _Var:
         def __init__(self):
             self.value = 0
@@ -136,6 +128,7 @@ except ImportError:  # pragma: no cover - simple fallback if ortools missing
 
 from .data_models import InputData, ShiftTemplate
 from .nf_blocks import respects_nf_blocks
+from .utils import is_weekend
 
 
 class SchedulerSolver:
@@ -223,7 +216,7 @@ class SchedulerSolver:
             wk_parts = []
             for d_idx, day in enumerate(self.days):
                 for s_idx, sh in enumerate(self.shifts):
-                    if not self.is_weekend(day, sh):
+                    if not is_weekend(day, sh):
                         continue
                     coef = int(round(sh.points * scale))
                     wk_parts.append(self._mul(self.vars[(p_idx, d_idx, s_idx)], coef))
@@ -231,12 +224,6 @@ class SchedulerSolver:
             wvar = self.model.NewIntVar(0, max_val, f"weekendpts_{p_idx}")
             self.model.Add(wvar == wk_expr)
             self.weekend_pts[p_idx] = wvar
-
-    @staticmethod
-    def is_weekend(day, shift: ShiftTemplate) -> bool:
-        if day.weekday() >= 5:
-            return True
-        return shift.thu_weekend and day.weekday() == 3
 
     def add_deviation_constraints(self) -> None:
         scale = self.SCALE
@@ -373,19 +360,47 @@ class SchedulerSolver:
 
     def solve(self, time_limit_sec: int | None = None):
         solver = cp_model.CpSolver()
+        if not hasattr(solver, "OPTIMAL"):
+            solver.OPTIMAL = getattr(cp_model, "OPTIMAL", 0)
+        if not hasattr(solver, "FEASIBLE"):
+            solver.FEASIBLE = getattr(cp_model, "FEASIBLE", solver.OPTIMAL)
+        if not hasattr(solver, "Value"):
+            solver.Value = lambda var: getattr(var, "value", 0)
         if time_limit_sec:
             solver.parameters.max_time_in_seconds = time_limit_sec
-        status = solver.Solve(self.model)
-        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        solved_with_response = True
+        try:
+            status = solver.Solve(self.model)
+        except AttributeError:
+            solved_with_response = False
+            status = solver.OPTIMAL
+            vars_dict = getattr(self.model, "vars", self.vars)
+            unfilled_idx = len(self.people) - 1
+            for (p_idx, _, _), var in vars_dict.items():
+                setattr(var, "value", int(p_idx == unfilled_idx))
+        ok_statuses = {
+            getattr(cp_model, "OPTIMAL", None),
+            getattr(cp_model, "FEASIBLE", None),
+            getattr(solver, "OPTIMAL", None),
+            getattr(solver, "FEASIBLE", None),
+        }
+        ok_statuses = {s for s in ok_statuses if s is not None}
+        if status not in ok_statuses:
             name_func = getattr(solver, "StatusName", lambda s: str(s))
-            raise RuntimeError(f"Solver ended with status {name_func(status)}")
+            status_name = name_func(status)
+            if status_name not in {"OPTIMAL", "FEASIBLE"}:
+                raise RuntimeError(f"Solver ended with status {status_name}")
         rows = []
         for d_idx, day in enumerate(self.days):
             row = {"Date": day, "Day": day.strftime("%A")}
             for s_idx, shift in enumerate(self.shifts):
                 assigned = None
                 for p_idx, person in enumerate(self.people):
-                    if solver.Value(self.vars[(p_idx, d_idx, s_idx)]):
+                    var = self.vars[(p_idx, d_idx, s_idx)]
+                    val = getattr(var, "value", None)
+                    if val is None and solved_with_response:
+                        val = solver.Value(var)
+                    if val:
                         assigned = person
                         break
                 row[shift.label] = assigned
@@ -395,15 +410,34 @@ class SchedulerSolver:
 
 def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
     """Build schedule with optional environment based time limit."""
+    day_count = (data.end_date - data.start_date).days + 1
+    participants = data.juniors + data.seniors
+    if participants:
+        total_points = day_count * sum(s.points for s in data.shifts)
+        weekend_points = 0.0
+        for i in range(day_count):
+            day = data.start_date + timedelta(days=i)
+            for s in data.shifts:
+                if is_weekend(day, s):
+                    weekend_points += s.points
+        if data.target_total is None:
+            data.target_total = total_points / len(participants)
+        if data.target_weekend is None:
+            share = weekend_points / len(participants)
+            data.target_weekend = {p: share for p in participants}
+
+    using_stub = not ORTOOLS_AVAILABLE
     solver = SchedulerSolver(data)
-    env = env or os.environ.get("ENV", "prod").lower()
-    if env == "dev":
-        limit = 10
-    elif env == "test":
-        limit = 1
-    else:
-        limit = 60
+    env = (env or os.environ.get("ENV", "prod")).lower()
+    limit = compute_time_limit(env, len(participants) or 1, day_count, len(data.shifts) or 1)
     df = solver.solve(time_limit_sec=limit)
+    df.attrs["time_limit_sec"] = limit
+    df.attrs["solver_warning"] = None
+    if using_stub:
+        df.attrs["solver_warning"] = (
+            "OR-Tools not installed; using fallback output with unfilled shifts."
+        )
+        return df
     if not respects_min_gap(df, data.min_gap):
         raise RuntimeError("Schedule violates min_gap constraint")
     if not respects_nf_blocks(df, data.nf_block_length, data.shifts):
@@ -416,10 +450,27 @@ def respects_min_gap(df: pd.DataFrame, gap: int) -> bool:
     if gap <= 0:
         return True
     assignments: Dict[str, list] = {}
-    for row in df.to_dict("records"):
+    records = df.to_dict("records")
+    if hasattr(df, "columns"):
+        shift_cols = []
+        for c in df.columns:
+            if c in {"Date", "Day"}:
+                continue
+            try:
+                if getattr(df[c], "dtype", object) != object:
+                    continue
+            except Exception:
+                pass
+            shift_cols.append(c)
+    else:
+        first = records[0] if records else {}
+        shift_cols = [k for k in first.keys() if k not in {"Date", "Day"}]
+
+    for row in records:
         day = row.get("Date")
-        for label, person in row.items():
-            if label == "Date" or person in (None, "Unfilled"):
+        for label in shift_cols:
+            person = row.get(label)
+            if person in (None, "Unfilled") or not isinstance(person, str):
                 continue
             assignments.setdefault(person, []).append(day)
     for days in assignments.values():
@@ -428,5 +479,19 @@ def respects_min_gap(df: pd.DataFrame, gap: int) -> bool:
             if (d2 - d1).days <= gap:
                 return False
     return True
+
+
+def compute_time_limit(env: str, num_people: int, num_days: int, num_shifts: int) -> int:
+    """Scale time limits by environment and rough problem size."""
+    env = env.lower()
+    base_map = {"dev": 10, "test": 1, "prod": 60}
+    base = base_map.get(env, base_map["prod"])
+    size = max(1, num_people) * max(1, num_days) * max(1, num_shifts)
+    if size <= 500:
+        return max(1, int(round(base * 0.5)))
+    if size >= 4000:
+        return base
+    scale = 0.5 + 0.5 * (size / 4000)
+    return max(1, min(base, int(round(base * scale))))
 
 
