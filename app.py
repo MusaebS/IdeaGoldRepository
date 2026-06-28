@@ -4,6 +4,7 @@ from datetime import date, timedelta
 
 from model.data_models import ShiftTemplate, InputData
 from model.optimiser import build_schedule
+from model.config_io import input_data_to_json, input_data_from_json
 from model.fairness import (
     calculate_points,
     fairness_range_lines,
@@ -134,20 +135,42 @@ with date_cols[1]:
 min_gap = st.slider("Minimum Gap", 0, 7, 1)
 nf_block_len = st.number_input("NF Block Length", 1, 7, 5)
 
-if st.button("Generate Schedule"):
-    data = InputData(
-        start_date=start_date,
-        end_date=end_date,
-        shifts=st.session_state.shifts,
-        juniors=st.session_state.juniors,
-        seniors=st.session_state.seniors,
-        nf_juniors=st.session_state.nf_juniors,
-        nf_seniors=st.session_state.nf_seniors,
-        leaves=st.session_state.leaves,
-        rotators=st.session_state.rotators,
-        min_gap=min_gap,
-        nf_block_length=nf_block_len,
+session_config = InputData(
+    start_date=start_date,
+    end_date=end_date,
+    shifts=st.session_state.shifts,
+    juniors=st.session_state.juniors,
+    seniors=st.session_state.seniors,
+    nf_juniors=st.session_state.nf_juniors,
+    nf_seniors=st.session_state.nf_seniors,
+    leaves=st.session_state.leaves,
+    rotators=st.session_state.rotators,
+    min_gap=min_gap,
+    nf_block_length=nf_block_len,
+)
+
+with st.expander("Save / Load configuration", expanded=False):
+    st.download_button(
+        "Download config (JSON)",
+        input_data_to_json(session_config),
+        file_name="idea_gold_config.json",
+        mime="application/json",
     )
+    uploaded_config = st.file_uploader("Load config (JSON), then click Generate", type="json")
+
+generate_clicked = st.button("Generate Schedule")
+
+data = None
+if generate_clicked:
+    if uploaded_config is not None:
+        try:
+            data = input_data_from_json(uploaded_config.getvalue().decode("utf-8"))
+        except Exception as exc:
+            st.error(f"Could not read config: {exc}")
+    else:
+        data = session_config
+
+if data is not None:
     try:
         env = os.getenv("ENV", "prod")
         df = build_schedule(data, env=env)
