@@ -6,10 +6,44 @@ from model.data_models import ShiftTemplate, InputData
 from model.optimiser import build_schedule
 from model.fairness import calculate_points, fairness_range_lines, format_fairness_log
 from model.demo_data import sample_shifts, sample_names
+from model.exporters import schedule_to_excel_bytes
 import os
 
 st.set_page_config(page_title="Idea Gold Scheduler", layout="wide")
 st.title("Idea Gold Scheduler – CP-SAT")
+
+
+def _date_range_editor(title: str, key: str, people: list) -> None:
+    """Inline editor for (resident, start, end) windows kept in session state."""
+    st.markdown(f"**{title}**")
+    if not people:
+        st.caption("Add participants first to configure this.")
+        return
+    c = st.columns([3, 2, 2, 1])
+    with c[0]:
+        who = st.selectbox("Resident", people, key=f"{key}_who")
+    with c[1]:
+        start = st.date_input("Start", date.today(), key=f"{key}_start")
+    with c[2]:
+        end = st.date_input("End", date.today(), key=f"{key}_end")
+    with c[3]:
+        st.markdown("&nbsp;")
+        if st.button("Add", key=f"{key}_add"):
+            st.session_state[key].append((who, start, end))
+    rows = st.session_state[key]
+    if rows:
+        st.table(
+            pd.DataFrame([{"Resident": r, "Start": s, "End": e} for r, s, e in rows])
+        )
+        idx = st.selectbox(
+            "Remove entry",
+            list(range(len(rows))),
+            format_func=lambda i: f"{rows[i][0]}: {rows[i][1]} → {rows[i][2]}",
+            key=f"{key}_del_idx",
+        )
+        if st.button("Remove", key=f"{key}_del"):
+            st.session_state[key].pop(idx)
+
 
 # Session defaults
 if "shifts" not in st.session_state:
@@ -22,6 +56,10 @@ if "nf_juniors" not in st.session_state:
     st.session_state.nf_juniors = []
 if "nf_seniors" not in st.session_state:
     st.session_state.nf_seniors = []
+if "leaves" not in st.session_state:
+    st.session_state.leaves = []
+if "rotators" not in st.session_state:
+    st.session_state.rotators = []
 if "demo_loaded" not in st.session_state:
     st.session_state.demo_loaded = False
 
@@ -75,6 +113,14 @@ with cols[1]:
         "Seniors", st.session_state.seniors, default=st.session_state.nf_seniors
     )
 
+with st.expander("Leaves & Rotators", expanded=False):
+    _people = st.session_state.juniors + st.session_state.seniors
+    _date_range_editor("Leaves — resident unavailable during window", "leaves", _people)
+    st.divider()
+    _date_range_editor(
+        "Rotators — resident only available during window", "rotators", _people
+    )
+
 date_cols = st.columns(2)
 with date_cols[0]:
     start_date = st.date_input("Start Date", date.today())
@@ -92,8 +138,8 @@ if st.button("Generate Schedule"):
         seniors=st.session_state.seniors,
         nf_juniors=st.session_state.nf_juniors,
         nf_seniors=st.session_state.nf_seniors,
-        leaves=[],
-        rotators=[],
+        leaves=st.session_state.leaves,
+        rotators=st.session_state.rotators,
         min_gap=min_gap,
         nf_block_length=nf_block_len,
     )
@@ -112,6 +158,16 @@ if st.button("Generate Schedule"):
                 st.write(line)
         log_text = format_fairness_log(df, data, points=points)
         st.download_button("Download Fairness Log", log_text, file_name="fairness_log.txt")
+        try:
+            excel_bytes = schedule_to_excel_bytes(df, data, points=points)
+            st.download_button(
+                "Download Excel (schedule + fairness)",
+                excel_bytes,
+                file_name="schedule.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        except Exception as exc:  # pragma: no cover - e.g. openpyxl not installed
+            st.info(f"Excel export unavailable: {exc}")
         if st.checkbox("Show Fairness Log"):
             st.text(log_text)
     except Exception as e:

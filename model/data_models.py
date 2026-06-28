@@ -28,4 +28,5 @@ class InputData:
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None
     target_weekend: Dict[str, float] | None = None
+    target_total_map: Dict[str, float] | None = None
 

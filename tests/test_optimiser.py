@@ -7,6 +7,8 @@ except Exception:
     from model import optimiser as opt
     pd = opt.pd
 
+import pytest
+
 from model.data_models import ShiftTemplate, InputData
 from model.optimiser import build_schedule, respects_min_gap
 from model.nf_blocks import respects_nf_blocks
@@ -338,3 +340,68 @@ def test_auto_target_computation():
     build_schedule(data, env="test")
     assert data.target_total == 0.5
     assert data.target_weekend == {"A": 0.0, "B": 0.0}
+
+
+def test_rotator_targets_scaled_by_availability():
+    shifts = [ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 4),  # 4-day block
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[("A", date(2023, 1, 1), date(2023, 1, 2))],  # A present 2 of 4 days
+        min_gap=0,
+    )
+    build_schedule(data, env="test")
+    # total points = 4 days * 1.0; weights A=2, B=4 -> A carries 1/3, B carries 2/3
+    assert data.target_total_map is not None
+    assert abs(data.target_total_map["A"] - 4 * 2 / 6) < 1e-6
+    assert abs(data.target_total_map["B"] - 4 * 4 / 6) < 1e-6
+    # weekend targets follow the same availability ratio (2 : 4)
+    assert abs(data.target_weekend["A"] * 4 - data.target_weekend["B"] * 2) < 1e-6
+
+
+def test_rotator_excluded_outside_window():
+    pytest.importorskip("ortools")
+    shifts = [ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 2),
+        shifts=shifts,
+        juniors=["A"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[("A", date(2023, 1, 1), date(2023, 1, 1))],  # only day 0
+        min_gap=0,
+        nf_block_length=1,
+    )
+    rows = build_schedule(data, env="test").to_dict("records")
+    assert rows[0]["S"] == "A"          # available and only eligible resident
+    assert rows[1]["S"] == "Unfilled"   # outside rotator window -> cannot work
+
+
+def test_leave_excluded_inside_window():
+    pytest.importorskip("ortools")
+    shifts = [ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 2),
+        shifts=shifts,
+        juniors=["A"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[("A", date(2023, 1, 1), date(2023, 1, 1))],  # leave on day 0
+        rotators=[],
+        min_gap=0,
+        nf_block_length=1,
+    )
+    rows = build_schedule(data, env="test").to_dict("records")
+    assert rows[0]["S"] == "Unfilled"   # on leave -> cannot work
+    assert rows[1]["S"] == "A"          # available the next day

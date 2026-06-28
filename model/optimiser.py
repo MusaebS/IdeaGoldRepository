@@ -221,16 +221,24 @@ class SchedulerSolver:
         scale = self.SCALE
         max_val = self._max_points()
 
-        if self.data.target_total is not None:
-            target = int(round(self.data.target_total * scale))
-            for p_idx in range(len(self.people) - 1):
+        target_total_map = self.data.target_total_map
+        if self.data.target_total is not None or target_total_map:
+            for p_idx, person in enumerate(self.people[:-1]):
+                if target_total_map and person in target_total_map:
+                    person_target = target_total_map[person]
+                else:
+                    person_target = self.data.target_total
+                if person_target is None:
+                    continue
+                target = int(round(person_target * scale))
                 var = self.model.NewIntVar(0, max_val, f"dev_total_{p_idx}")
                 self.model.Add(var >= self.total_pts[p_idx] - target)
                 self.model.Add(var >= target - self.total_pts[p_idx])
                 self.dev_total[p_idx] = var
-            self.max_dev = self.model.NewIntVar(0, max_val, "max_dev")
-            for var in self.dev_total.values():
-                self.model.Add(self.max_dev >= var)
+            if self.dev_total:
+                self.max_dev = self.model.NewIntVar(0, max_val, "max_dev")
+                for var in self.dev_total.values():
+                    self.model.Add(self.max_dev >= var)
 
         if self.data.target_weekend:
             for p_idx, person in enumerate(self.people[:-1]):
@@ -256,6 +264,10 @@ class SchedulerSolver:
                     self.dev_label[(p_idx, label)] = var
 
     def add_constraints(self) -> None:
+        rotator_windows: Dict[str, list] = {}
+        for res, start, end in self.data.rotators:
+            rotator_windows.setdefault(res, []).append((start, end))
+
         for d_idx, day in enumerate(self.days):
             for s_idx, shift in enumerate(self.shifts):
                 # exactly one assignment per slot
@@ -279,6 +291,12 @@ class SchedulerSolver:
                     for res, start, end in self.data.leaves:
                         if res == person and start <= day <= end:
                             self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
+                    # rotators: only available within their active window(s);
+                    # this is the inverse of a leave (force 0 *outside* the span)
+                    if person in rotator_windows and not any(
+                        start <= day <= end for start, end in rotator_windows[person]
+                    ):
+                        self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
 
         # min_gap spacing: in any window of (gap + 1) consecutive days a
         # resident works at most one shift. Block days are consecutive, so the
@@ -409,11 +427,41 @@ def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
             for s in data.shifts:
                 if is_weekend(day, s):
                     weekend_points += s.points
+        # Availability weights: a rotator is only present within their active
+        # window(s), so they fairly carry a proportionally smaller share of the
+        # workload while the other residents absorb the rest. With no rotators
+        # every weight equals ``day_count`` and the targets reduce to an equal
+        # split (preserving previous behaviour).
+        rotator_windows: Dict[str, list] = {}
+        for res, start, end in data.rotators:
+            rotator_windows.setdefault(res, []).append((start, end))
+
+        def _active_days(person: str) -> int:
+            windows = rotator_windows.get(person)
+            if not windows:
+                return day_count
+            return sum(
+                1
+                for i in range(day_count)
+                if any(s <= data.start_date + timedelta(days=i) <= e for s, e in windows)
+            )
+
+        availability = {p: _active_days(p) for p in participants}
+        weight_sum = sum(availability.values())
+
         if data.target_total is None:
             data.target_total = total_points / len(participants)
+            if weight_sum > 0:
+                data.target_total_map = {
+                    p: total_points * availability[p] / weight_sum for p in participants
+                }
         if data.target_weekend is None:
-            share = weekend_points / len(participants)
-            data.target_weekend = {p: share for p in participants}
+            if weight_sum > 0:
+                data.target_weekend = {
+                    p: weekend_points * availability[p] / weight_sum for p in participants
+                }
+            else:
+                data.target_weekend = {p: 0.0 for p in participants}
 
     using_stub = not ORTOOLS_AVAILABLE
     solver = SchedulerSolver(data)
