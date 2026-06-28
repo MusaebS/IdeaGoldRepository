@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from model.data_models import ShiftTemplate, InputData
 from model.optimiser import build_schedule
 from model.config_io import input_data_to_json, input_data_from_json
+from model.validation import validate_schedule
 from model.fairness import (
     calculate_points,
     fairness_range_lines,
@@ -66,6 +67,10 @@ if "leaves" not in st.session_state:
     st.session_state.leaves = []
 if "rotators" not in st.session_state:
     st.session_state.rotators = []
+if "result_df" not in st.session_state:
+    st.session_state.result_df = None
+if "result_data" not in st.session_state:
+    st.session_state.result_data = None
 if "demo_loaded" not in st.session_state:
     st.session_state.demo_loaded = False
 
@@ -174,6 +179,8 @@ if data is not None:
     try:
         env = os.getenv("ENV", "prod")
         df = build_schedule(data, env=env)
+        st.session_state.result_df = df
+        st.session_state.result_data = data
         warning = df.attrs.get("solver_warning") if hasattr(df, "attrs") else None
         if warning:
             st.warning(warning)
@@ -207,3 +214,23 @@ if data is not None:
             st.text(log_text)
     except Exception as e:
         st.error(str(e))
+
+if st.session_state.result_df is not None:
+    with st.expander("Manual edit & revalidate", expanded=False):
+        st.caption("Edit the shift assignments below, then review any constraint issues.")
+        edited = st.data_editor(
+            st.session_state.result_df,
+            key="schedule_editor",
+            disabled=["Date", "Day"],
+        )
+        result_data = st.session_state.result_data
+        issues = validate_schedule(edited, result_data)
+        if issues:
+            st.error(f"{len(issues)} constraint issue(s):")
+            for issue in issues:
+                st.write(f"- {issue}")
+        else:
+            st.success("No constraint violations.")
+        edited_points = calculate_points(edited, result_data)
+        edited_quality = schedule_quality(edited, result_data, points=edited_points)
+        st.caption(f"Edited schedule quality: {edited_quality['score']} / 100")
