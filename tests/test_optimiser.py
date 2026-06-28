@@ -435,7 +435,7 @@ def test_nf_blocks_rejects_short_non_trailing_run():
     assert not respects_nf_blocks(df, 3, shifts)
 
 
-def test_diagnose_infeasibility_lists_nf_pool_and_gap():
+def test_diagnose_infeasibility_lists_nf_pool():
     from model.optimiser import diagnose_infeasibility
 
     data = InputData(
@@ -448,12 +448,11 @@ def test_diagnose_infeasibility_lists_nf_pool_and_gap():
         nf_seniors=[],
         leaves=[],
         rotators=[],
-        min_gap=2,              # also conflicts with NF blocks
+        min_gap=0,
         nf_block_length=2,
     )
     text = " ".join(diagnose_infeasibility(data)).lower()
     assert "no eligible" in text
-    assert "minimum gap" in text
 
 
 def test_infeasible_schedule_raises_with_hints():
@@ -475,3 +474,27 @@ def test_infeasible_schedule_raises_with_hints():
         build_schedule(data, env="test")
     message = str(exc.value).lower()
     assert "night-float" in message or "no eligible" in message
+
+
+def test_nf_block_feasible_with_positive_min_gap():
+    pytest.importorskip("ortools")
+    shifts = [
+        ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="Day", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+    ]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 10),  # 10 days, two NF blocks of 5
+        shifts=shifts,
+        juniors=["A", "B", "C", "D"],
+        seniors=[],
+        nf_juniors=["A", "B", "C", "D"],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=1,            # previously forced NF blocks infeasible
+        nf_block_length=5,
+    )
+    rows = build_schedule(data, env="dev").to_dict("records")  # must not raise
+    # NF block integrity preserved (and no INFEASIBLE error -> the fix)
+    assert rows[0]["NF"] == rows[1]["NF"] == rows[2]["NF"] == rows[3]["NF"] == rows[4]["NF"]

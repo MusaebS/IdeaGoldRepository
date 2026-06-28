@@ -68,7 +68,7 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
         for person in {p for p in assigned_today if assigned_today.count(p) > 1}:
             issues.append(f"{day}: {person} is assigned to more than one shift")
 
-    if not respects_min_gap(df, data.min_gap):
+    if not respects_min_gap(df, data.min_gap, data.shifts):
         issues.append(f"Minimum gap of {data.min_gap} day(s) is violated")
     if not respects_nf_blocks(df, data.nf_block_length, data.shifts):
         issues.append(

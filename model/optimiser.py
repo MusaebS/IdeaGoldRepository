@@ -298,14 +298,25 @@ class SchedulerSolver:
                     ):
                         self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
 
-        # min_gap spacing: in any window of (gap + 1) consecutive days a
-        # resident works at most one shift. Block days are consecutive, so the
-        # day-index distance equals the calendar distance. This single window
-        # constraint subsumes the per-day "at most one shift" rule and is
-        # O(residents x days) instead of the previous O(residents x days^2 x
-        # shifts^2) pairwise encoding.
+        # At most one shift per resident per day (night-float or regular).
+        for p_idx in range(len(self.people) - 1):  # exclude Unfilled
+            for d_idx in range(len(self.days)):
+                self.model.Add(
+                    sum(
+                        self.vars[(p_idx, d_idx, s_idx)]
+                        for s_idx in range(len(self.shifts))
+                    )
+                    <= 1
+                )
+
+        # min_gap spacing applies to non-night-float shifts only. Night-float
+        # blocks are intentionally consecutive (governed by the NF-block
+        # constraints), so counting them here would make any NF block longer
+        # than the gap infeasible. In any window of (gap + 1) consecutive days a
+        # resident works at most one regular shift. O(residents x days).
         gap = self.data.min_gap
-        if gap > 0:
+        non_nf_idxs = [i for i, sh in enumerate(self.shifts) if not sh.night_float]
+        if gap > 0 and non_nf_idxs:
             for p_idx in range(len(self.people) - 1):  # exclude Unfilled
                 for d_idx in range(len(self.days)):
                     window = range(d_idx, min(d_idx + gap + 1, len(self.days)))
@@ -313,7 +324,7 @@ class SchedulerSolver:
                         sum(
                             self.vars[(p_idx, dd, s_idx)]
                             for dd in window
-                            for s_idx in range(len(self.shifts))
+                            for s_idx in non_nf_idxs
                         )
                         <= 1
                     )
@@ -486,17 +497,24 @@ def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
             "OR-Tools not installed; using fallback output with unfilled shifts."
         )
         return df
-    if not respects_min_gap(df, data.min_gap):
+    if not respects_min_gap(df, data.min_gap, data.shifts):
         raise RuntimeError("Schedule violates min_gap constraint")
     if not respects_nf_blocks(df, data.nf_block_length, data.shifts):
         raise RuntimeError("Schedule violates nf_block_length constraint")
     return df
 
 
-def respects_min_gap(df: pd.DataFrame, gap: int) -> bool:
-    """Return True if no resident appears on days ``gap`` or fewer apart."""
+def respects_min_gap(df: pd.DataFrame, gap: int, shifts=None) -> bool:
+    """Return True if no resident works non-night-float shifts ``gap`` or fewer
+    days apart.
+
+    Night-float shifts are excluded from the check when ``shifts`` is provided,
+    because NF blocks are intentionally consecutive. When ``shifts`` is omitted
+    every column is checked (backwards-compatible behaviour).
+    """
     if gap <= 0:
         return True
+    nf_labels = {s.label for s in shifts if s.night_float} if shifts else set()
     assignments: Dict[str, list] = {}
     records = df.to_dict("records")
     if hasattr(df, "columns"):
@@ -513,6 +531,8 @@ def respects_min_gap(df: pd.DataFrame, gap: int) -> bool:
     for row in records:
         day = row.get("Date")
         for label in shift_cols:
+            if label in nf_labels:
+                continue
             person = row.get(label)
             if person in (None, "Unfilled") or not isinstance(person, str):
                 continue
@@ -558,15 +578,10 @@ def diagnose_infeasibility(data: InputData) -> list:
                 f"residents; add NF-eligible {s.role.lower()}s or turn off Night "
                 f"Float for it."
             )
-    if nf_shifts and data.nf_block_length > 1 and data.min_gap > 0:
-        hints.append(
-            f"Minimum Gap ({data.min_gap}) conflicts with night-float blocks of "
-            f"length {data.nf_block_length}, which require consecutive days; set "
-            f"Minimum Gap to 0 when using night-float blocks."
-        )
     if not hints:
         hints.append(
-            "Constraints are jointly unsatisfiable. Try lowering Minimum Gap, "
-            "shortening NF Block Length, or reducing overlapping leaves/rotators."
+            "Constraints are jointly unsatisfiable. Try shortening NF Block "
+            "Length, reducing overlapping leaves/rotators, or adding more "
+            "eligible residents."
         )
     return hints
