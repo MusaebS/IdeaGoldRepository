@@ -199,27 +199,10 @@ def test_total_points_min_deviation(balanced_cp):
     assert diff == 1
 
 
-def test_intvar_upper_bound_multiple_shifts(monkeypatch):
+def test_intvar_upper_bound_multiple_shifts(recording_cp):
     from model import optimiser as opt
 
-    bounds = []
-
-    class RecordingModel(opt.cp_model.CpModel):
-        def NewIntVar(self, a, b, name):
-            bounds.append(b)
-            return super().NewIntVar(a, b, name)
-
-    stub_cp = type(
-        "cp_model",
-        (),
-        {
-            "CpModel": RecordingModel,
-            "CpSolver": opt.cp_model.CpSolver,
-            "OPTIMAL": 0,
-            "FEASIBLE": 0,
-        },
-    )
-    monkeypatch.setattr(opt, "cp_model", stub_cp)
+    bounds = recording_cp
 
     shifts = [
         ShiftTemplate(label="S1", role="Junior", night_float=False, thu_weekend=False, points=1.0),
