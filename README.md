@@ -1,4 +1,5 @@
 # Idea Gold Scheduler
+<!-- repo access test: edit confirmed -->
 
 This project builds on OR-Tools to generate fair on-call schedules. Install `ortools` from the requirements file to enable the CP-SAT optimiser.
 
