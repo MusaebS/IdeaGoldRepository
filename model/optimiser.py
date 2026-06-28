@@ -178,14 +178,6 @@ class SchedulerSolver:
                     self.vars[(p_idx, d_idx, s_idx)] = self.model.NewBoolVar(
                         f"x_{p_idx}_{d_idx}_{s_idx}")
 
-    def _mul(self, var, coef: int):
-        if coef <= 0:
-            return 0
-        expr = var
-        for _ in range(coef - 1):
-            expr = expr + var
-        return expr
-
     def _max_points(self) -> int:
         """Return scaled upper bound for point totals."""
         total_points = sum(s.points for s in self.shifts)
@@ -202,7 +194,7 @@ class SchedulerSolver:
                         if sh.label != label:
                             continue
                         coef = int(round(sh.points * scale))
-                        parts.append(self._mul(self.vars[(p_idx, d_idx, s_idx)], coef))
+                        parts.append(coef * self.vars[(p_idx, d_idx, s_idx)])
                 expr = sum(parts) if parts else 0
                 var = self.model.NewIntVar(0, max_val, f"labelpts_{p_idx}_{label}")
                 self.model.Add(var == expr)
@@ -219,7 +211,7 @@ class SchedulerSolver:
                     if not is_weekend(day, sh):
                         continue
                     coef = int(round(sh.points * scale))
-                    wk_parts.append(self._mul(self.vars[(p_idx, d_idx, s_idx)], coef))
+                    wk_parts.append(coef * self.vars[(p_idx, d_idx, s_idx)])
             wk_expr = sum(wk_parts) if wk_parts else 0
             wvar = self.model.NewIntVar(0, max_val, f"weekendpts_{p_idx}")
             self.model.Add(wvar == wk_expr)
@@ -288,28 +280,25 @@ class SchedulerSolver:
                         if res == person and start <= day <= end:
                             self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
 
-        # min_gap spacing
+        # min_gap spacing: in any window of (gap + 1) consecutive days a
+        # resident works at most one shift. Block days are consecutive, so the
+        # day-index distance equals the calendar distance. This single window
+        # constraint subsumes the per-day "at most one shift" rule and is
+        # O(residents x days) instead of the previous O(residents x days^2 x
+        # shifts^2) pairwise encoding.
         gap = self.data.min_gap
         if gap > 0:
-            for p_idx, _ in enumerate(self.people[:-1]):  # exclude Unfilled
-                # no more than one shift per day
+            for p_idx in range(len(self.people) - 1):  # exclude Unfilled
                 for d_idx in range(len(self.days)):
+                    window = range(d_idx, min(d_idx + gap + 1, len(self.days)))
                     self.model.Add(
                         sum(
-                            self.vars[(p_idx, d_idx, s_idx)]
+                            self.vars[(p_idx, dd, s_idx)]
+                            for dd in window
                             for s_idx in range(len(self.shifts))
                         )
                         <= 1
                     )
-                for d1_idx, day1 in enumerate(self.days):
-                    for d2_idx in range(d1_idx + 1, len(self.days)):
-                        if (self.days[d2_idx] - day1).days <= gap:
-                            for s1_idx in range(len(self.shifts)):
-                                for s2_idx in range(len(self.shifts)):
-                                    self.model.Add(
-                                        self.vars[(p_idx, d1_idx, s1_idx)] +
-                                        self.vars[(p_idx, d2_idx, s2_idx)] <= 1
-                                    )
 
         # night float blocks must have exact length
         block_len = self.data.nf_block_length
@@ -452,16 +441,12 @@ def respects_min_gap(df: pd.DataFrame, gap: int) -> bool:
     assignments: Dict[str, list] = {}
     records = df.to_dict("records")
     if hasattr(df, "columns"):
-        shift_cols = []
-        for c in df.columns:
-            if c in {"Date", "Day"}:
-                continue
-            try:
-                if getattr(df[c], "dtype", object) != object:
-                    continue
-            except Exception:
-                pass
-            shift_cols.append(c)
+        # Every column except the date/day labels holds resident names. Do not
+        # filter by dtype: pandas >= 3.0 stores string columns as the "str"
+        # dtype rather than "object", which previously caused these columns to
+        # be skipped so that violations went undetected. The per-cell isinstance
+        # check below already ignores non-name values.
+        shift_cols = [c for c in df.columns if c not in {"Date", "Day"}]
     else:
         first = records[0] if records else {}
         shift_cols = [k for k in first.keys() if k not in {"Date", "Day"}]
@@ -493,5 +478,3 @@ def compute_time_limit(env: str, num_people: int, num_days: int, num_shifts: int
         return base
     scale = 0.5 + 0.5 * (size / 4000)
     return max(1, min(base, int(round(base * scale))))
-
-
