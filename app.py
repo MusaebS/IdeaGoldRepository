@@ -4,7 +4,12 @@ from datetime import date, timedelta
 
 from model.data_models import ShiftTemplate, InputData
 from model.optimiser import build_schedule
-from model.fairness import calculate_points, fairness_range_lines, format_fairness_log
+from model.fairness import (
+    calculate_points,
+    fairness_range_lines,
+    format_fairness_log,
+    schedule_quality,
+)
 from model.demo_data import sample_shifts, sample_names
 from model.exporters import schedule_to_excel_bytes
 import os
@@ -151,6 +156,13 @@ if st.button("Generate Schedule"):
             st.warning(warning)
         points = calculate_points(df, data)
         st.dataframe(df)
+        quality = schedule_quality(df, data, points=points)
+        st.metric("Schedule quality", f"{quality['score']} / 100")
+        st.caption(
+            f"Coverage {quality['filled']}/{quality['total_slots']} slots filled "
+            f"({quality['unfilled']} unfilled) · total range {quality['total_range']:.1f} "
+            f"· weekend range {quality['weekend_range']:.1f}"
+        )
         ranges = fairness_range_lines(points)
         if ranges:
             st.subheader("Fairness summary")
