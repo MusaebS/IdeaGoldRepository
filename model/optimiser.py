@@ -402,7 +402,12 @@ class SchedulerSolver:
             name_func = getattr(solver, "StatusName", lambda s: str(s))
             status_name = name_func(status)
             if status_name not in {"OPTIMAL", "FEASIBLE"}:
-                raise RuntimeError(f"Solver ended with status {status_name}")
+                hints = diagnose_infeasibility(self.data)
+                detail = "\n".join(f"- {h}" for h in hints)
+                raise RuntimeError(
+                    "No schedule satisfies the current constraints "
+                    f"(solver status: {status_name}).\n{detail}"
+                )
         rows = []
         for d_idx, day in enumerate(self.days):
             row = {"Date": day, "Day": day.strftime("%A")}
@@ -532,3 +537,36 @@ def compute_time_limit(env: str, num_people: int, num_days: int, num_shifts: int
         return base
     scale = 0.5 + 0.5 * (size / 4000)
     return max(1, min(base, int(round(base * scale))))
+
+
+def diagnose_infeasibility(data: InputData) -> list:
+    """Return human-readable, actionable hints for why no feasible schedule
+    exists.
+
+    Uses cheap configuration checks (no solving) and focuses on the constraints
+    that can actually make the model infeasible: night-float eligibility and the
+    min_gap / NF-block conflict. Coverage of ordinary shifts is always absorbed
+    by the implicit ``Unfilled`` resident, so it is never a hard failure.
+    """
+    hints = []
+    nf_shifts = [s for s in data.shifts if s.night_float]
+    for s in nf_shifts:
+        pool = data.nf_juniors if s.role == "Junior" else data.nf_seniors
+        if not pool:
+            hints.append(
+                f"Night-float shift '{s.label}' ({s.role}) has no eligible "
+                f"residents; add NF-eligible {s.role.lower()}s or turn off Night "
+                f"Float for it."
+            )
+    if nf_shifts and data.nf_block_length > 1 and data.min_gap > 0:
+        hints.append(
+            f"Minimum Gap ({data.min_gap}) conflicts with night-float blocks of "
+            f"length {data.nf_block_length}, which require consecutive days; set "
+            f"Minimum Gap to 0 when using night-float blocks."
+        )
+    if not hints:
+        hints.append(
+            "Constraints are jointly unsatisfiable. Try lowering Minimum Gap, "
+            "shortening NF Block Length, or reducing overlapping leaves/rotators."
+        )
+    return hints

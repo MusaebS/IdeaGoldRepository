@@ -433,3 +433,45 @@ def test_nf_blocks_rejects_short_non_trailing_run():
         {"Date": date(2023, 1, 5), "NF": "B"},  # B: run of 3 == block_length
     ])
     assert not respects_nf_blocks(df, 3, shifts)
+
+
+def test_diagnose_infeasibility_lists_nf_pool_and_gap():
+    from model.optimiser import diagnose_infeasibility
+
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 3),
+        shifts=[ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False)],
+        juniors=["A"],
+        seniors=[],
+        nf_juniors=[],          # no eligible NF residents
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=2,              # also conflicts with NF blocks
+        nf_block_length=2,
+    )
+    text = " ".join(diagnose_infeasibility(data)).lower()
+    assert "no eligible" in text
+    assert "minimum gap" in text
+
+
+def test_infeasible_schedule_raises_with_hints():
+    pytest.importorskip("ortools")
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 3),
+        shifts=[ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False)],
+        juniors=["A"],
+        seniors=[],
+        nf_juniors=[],          # NF shift cannot be covered -> infeasible
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+        nf_block_length=2,
+    )
+    with pytest.raises(RuntimeError) as exc:
+        build_schedule(data, env="test")
+    message = str(exc.value).lower()
+    assert "night-float" in message or "no eligible" in message
