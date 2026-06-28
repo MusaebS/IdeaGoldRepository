@@ -25,8 +25,12 @@ def respects_nf_blocks(
     if not nf_labels:
         return True
 
+    records = df.to_dict("records")
+    all_dates = [row.get("Date") for row in records if row.get("Date") is not None]
+    last_date = max(all_dates) if all_dates else None
+
     assignments: Dict[str, Dict[str, List[date]]] = {}
-    for row in df.to_dict("records"):
+    for row in records:
         day = row.get("Date")
         for label in nf_labels:
             person = row.get(label)
@@ -47,6 +51,11 @@ def respects_nf_blocks(
                         return False
                     run_len = 1
                 prev = d
-            if run_len != nf_block_length:
+            # The final run may be a short trailing block: the day-0-aligned
+            # partition leaves a remainder when the horizon isn't a multiple of
+            # the block length. Allow it only when it ends on the last day.
+            if run_len != nf_block_length and not (
+                prev == last_date and run_len < nf_block_length
+            ):
                 return False
     return True

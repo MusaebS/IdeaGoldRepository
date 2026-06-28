@@ -326,9 +326,15 @@ class SchedulerSolver:
                 for block_start in range(0, len(self.days), block_len):
                     block_days = list(range(block_start, min(block_start + block_len, len(self.days))))
                     if len(block_days) < block_len:
-                        for d_idx in block_days:
-                            for p_idx in range(len(self.people) - 1):
-                                self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
+                        # Trailing partial block: cover it with a single resident
+                        # for the remaining days instead of forcing the nights
+                        # unfilled (which previously dropped coverage at the end
+                        # of the horizon). The post-solve validator allows this
+                        # short final run.
+                        for p_idx in range(len(self.people)):
+                            first_var = self.vars[(p_idx, block_days[0], s_idx)]
+                            for d_idx in block_days[1:]:
+                                self.model.Add(first_var == self.vars[(p_idx, d_idx, s_idx)])
                         continue
                     for p_idx in range(len(self.people)):
                         first_var = self.vars[(p_idx, block_days[0], s_idx)]

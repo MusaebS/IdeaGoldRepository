@@ -388,3 +388,48 @@ def test_leave_excluded_inside_window():
     rows = build_schedule(data, env="test").to_dict("records")
     assert rows[0]["S"] == "Unfilled"   # on leave -> cannot work
     assert rows[1]["S"] == "A"          # available the next day
+
+
+def test_nf_trailing_partial_block_is_covered():
+    pytest.importorskip("ortools")
+    shifts = [ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 3),  # 3 days, block_length 2 -> 1-day trailing block
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=["A", "B"],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+        nf_block_length=2,
+    )
+    rows = build_schedule(data, env="test").to_dict("records")
+    assert rows[0]["NF"] == rows[1]["NF"]      # the full 2-day block
+    assert rows[0]["NF"] != "Unfilled"
+    assert rows[2]["NF"] != "Unfilled"         # trailing night now covered, not dropped
+
+
+def test_nf_blocks_allows_short_trailing_run():
+    shifts = [ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False)]
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 1), "NF": "A"},
+        {"Date": date(2023, 1, 2), "NF": "A"},
+        {"Date": date(2023, 1, 3), "NF": "A"},  # A: run of 3 == block_length
+        {"Date": date(2023, 1, 4), "NF": "B"},  # B: run of 1, ends on last day -> allowed
+    ])
+    assert respects_nf_blocks(df, 3, shifts)
+
+
+def test_nf_blocks_rejects_short_non_trailing_run():
+    shifts = [ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False)]
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 1), "NF": "A"},
+        {"Date": date(2023, 1, 2), "NF": "A"},  # A: run of 2, NOT on last day -> invalid
+        {"Date": date(2023, 1, 3), "NF": "B"},
+        {"Date": date(2023, 1, 4), "NF": "B"},
+        {"Date": date(2023, 1, 5), "NF": "B"},  # B: run of 3 == block_length
+    ])
+    assert not respects_nf_blocks(df, 3, shifts)
