@@ -11,6 +11,7 @@ from model.fairness import (
     fairness_range_lines,
     format_fairness_log,
     schedule_quality,
+    assignment_rationale,
 )
 from model.demo_data import sample_shifts, sample_names
 from model.exporters import schedule_to_excel_bytes
@@ -234,3 +235,16 @@ if st.session_state.result_df is not None:
         edited_points = calculate_points(edited, result_data)
         edited_quality = schedule_quality(edited, result_data, points=edited_points)
         st.caption(f"Edited schedule quality: {edited_quality['score']} / 100")
+
+    with st.expander("Why was a slot assigned?", expanded=False):
+        rdf = st.session_state.result_df
+        result_data = st.session_state.result_data
+        labels = [s.label for s in result_data.shifts]
+        dates = [row.get("Date") for row in rdf.to_dict("records")]
+        if labels and dates:
+            why_date = st.selectbox("Date", dates, key="why_date")
+            why_label = st.selectbox("Shift", labels, key="why_label")
+            for line in assignment_rationale(rdf, result_data, why_date, why_label):
+                st.write(f"- {line}")
+        else:
+            st.caption("Generate a schedule with at least one shift to use this.")

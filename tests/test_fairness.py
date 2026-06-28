@@ -8,7 +8,12 @@ except Exception:
     pd = opt.pd
 
 from model.data_models import ShiftTemplate, InputData
-from model.fairness import calculate_points, format_fairness_log, schedule_quality
+from model.fairness import (
+    calculate_points,
+    format_fairness_log,
+    schedule_quality,
+    assignment_rationale,
+)
 
 
 def _sample_df_and_shifts():
@@ -121,3 +126,41 @@ def test_schedule_quality_penalizes_unfilled_and_imbalance():
     assert q["unfilled"] == 1
     assert q["coverage"] == 0.5
     assert q["score"] < 100.0
+
+
+def test_assignment_rationale_for_assigned_person():
+    df, shifts = _sample_df_and_shifts()
+    data = InputData(
+        start_date=date(2023, 1, 7),
+        end_date=date(2023, 1, 8),
+        shifts=shifts,
+        juniors=["Alice", "Bob"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=1,
+    )
+    text = " ".join(assignment_rationale(df, data, date(2023, 1, 7), "D"))
+    assert "Alice" in text
+    assert "Junior" in text
+
+
+def test_assignment_rationale_for_unfilled():
+    shifts = [ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 1),
+        shifts=shifts,
+        juniors=["A"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+    )
+    df = pd.DataFrame([{"Date": date(2023, 1, 1), "S": "Unfilled"}])
+    text = " ".join(assignment_rationale(df, data, date(2023, 1, 1), "S")).lower()
+    assert "unfilled" in text or "eligible" in text

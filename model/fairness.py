@@ -15,6 +15,7 @@ __all__ = [
     "format_fairness_log",
     "fairness_range_lines",
     "schedule_quality",
+    "assignment_rationale",
 ]
 
 
@@ -135,3 +136,67 @@ def schedule_quality(
         "total_range": total_range,
         "weekend_range": weekend_range,
     }
+
+
+def _eligible_pool(data: InputData, shift: ShiftTemplate) -> set:
+    if shift.role == "Junior":
+        pool = set(data.juniors)
+        if shift.night_float:
+            pool &= set(data.nf_juniors)
+    else:
+        pool = set(data.seniors)
+        if shift.night_float:
+            pool &= set(data.nf_seniors)
+    return pool
+
+
+def assignment_rationale(
+    df: pd.DataFrame,
+    data: InputData,
+    day,
+    label: str,
+    points: Dict[str, Dict[str, float]] | None = None,
+) -> List[str]:
+    """Return a heuristic explanation of why a slot holds its current value.
+
+    This is a post-hoc rationale (eligibility + load standing), not a formal
+    sensitivity analysis of the optimiser.
+    """
+    shift = next((s for s in data.shifts if s.label == label), None)
+    if shift is None:
+        return [f"No shift labelled '{label}'."]
+
+    person = None
+    for row in df.to_dict("records"):
+        if row.get("Date") == day:
+            person = row.get(label)
+            break
+
+    if person in (None, "Unfilled"):
+        nf_note = " night-float" if shift.night_float else ""
+        if not _eligible_pool(data, shift):
+            return [f"No resident is eligible for '{label}' ({shift.role}{nf_note})."]
+        return [
+            f"'{label}' is unfilled on {day}: every eligible resident was "
+            "unavailable (leave, rotator window, min-gap spacing or NF-block "
+            "rules) or assigning one would have worsened fairness."
+        ]
+
+    pts = points if points is not None else calculate_points(df, data)
+    role = "Senior" if person in set(data.seniors) else "Junior"
+    nf_elig = " (night-float eligible)" if shift.night_float else ""
+    lines = [f"{person} is a {role} eligible for '{label}'{nf_elig}."]
+
+    totals = {p: v["total"] for p, v in pts.items()}
+    if person in totals:
+        fewer = sum(1 for v in totals.values() if v < totals[person])
+        lines.append(
+            f"{person} carries {totals[person]:.1f} total points; {fewer} of "
+            f"{len(totals)} residents carry fewer — load balancing favoured this "
+            "assignment."
+        )
+    if is_weekend(day, shift) and person in pts:
+        lines.append(
+            f"Weekend slot: {person} has {pts[person]['weekend']:.1f} weekend points."
+        )
+    return lines
