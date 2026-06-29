@@ -48,6 +48,7 @@ def input_data_to_json(data: InputData) -> str:
         "min_gap": data.min_gap,
         "nf_block_length": data.nf_block_length,
         "seed": data.seed,
+        "weekend_days": data.weekend_days,
     }
     return json.dumps(payload, indent=2)
 
@@ -79,4 +80,9 @@ def input_data_from_json(text: str) -> InputData:
         min_gap=int(raw.get("min_gap", 1)),
         nf_block_length=int(raw.get("nf_block_length", 5)),
         seed=int(raw.get("seed", 0)),
+        weekend_days=(
+            [int(d) for d in raw["weekend_days"]]
+            if raw.get("weekend_days") is not None
+            else None
+        ),
     )

@@ -26,6 +26,10 @@ class InputData:
     min_gap: int = 1
     nf_block_length: int = 5
     seed: int = 0
+    # Weekday numbers (Mon=0 .. Sun=6) that count as the weekend. ``None`` keeps
+    # the default Saturday/Sunday. The per-shift ``thu_weekend`` flag still adds
+    # Thursday for individual shifts on top of this.
+    weekend_days: List[int] | None = None
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None
     target_weekend: Dict[str, float] | None = None

@@ -146,10 +146,8 @@ Implementation Progress (2026-06)
 
 
 7 Outstanding / Future Work
-Performance benchmark page (solve-time vs. residents).
-
 Flexible night-float block start (blocks may currently only begin on a day-0-aligned boundary).
 
-Configurable weekend definition (e.g. Friday/Saturday weekends).
+Performance benchmark *page* in the UI (a CLI benchmark now lives at `scripts/benchmark.py`).
 
-Done: UI seed control; load/save configuration JSON; “soften min_gap” retry when infeasible; unit tests on small synthetic blocks with a known optimum.
+Done: UI seed control; load/save configuration JSON; “soften min_gap” retry when infeasible; unit tests on small synthetic blocks with a known optimum; configurable weekend definition (`weekend_days`); CLI solve-time benchmark.

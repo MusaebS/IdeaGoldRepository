@@ -62,7 +62,21 @@ resolved fairness targets and solver status are returned on the DataFrame's `att
 (`target_total`, `target_total_map`, `target_weekend`, `solver_status`,
 `wall_time_sec`).
 
+## Weekend definition
+
+Weekend fairness defaults to Saturday/Sunday. Set **Weekend days** in the app (or
+`InputData.weekend_days`, a list of weekday numbers Mon=0..Sun=6) to use a different
+weekend, e.g. `[4, 5]` for Friday/Saturday. The per-shift "Thu counts as weekend"
+flag still adds Thursday for individual shifts on top of this.
+
+## Benchmarking
+
+`python scripts/benchmark.py` times `build_schedule` across a few sizes against the
+spec's ≤60s target for 40 residents × 28 days × 10 shifts; pass `people days shifts`
+for a single custom run.
+
 ## Changelog
+- Added a configurable weekend definition (`weekend_days`) and a `scripts/benchmark.py` solve-time benchmark.
 - Added pre-solve configuration validation (`validate_input`) surfaced in the app and enforced by `build_schedule`.
 - Enforced rest before/after night-float blocks and split solver-timeout from true infeasibility, with a one-click relax-and-retry recovery.
 - Added a solver random seed, CSV export, and solver status / wall-time reporting; `build_schedule` no longer mutates its `InputData` (targets are returned on `df.attrs`).

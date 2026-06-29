@@ -209,7 +209,7 @@ class SchedulerSolver:
             wk_parts = []
             for d_idx, day in enumerate(self.days):
                 for s_idx, sh in enumerate(self.shifts):
-                    if not is_weekend(day, sh):
+                    if not is_weekend(day, sh, self.data.weekend_days):
                         continue
                     coef = int(round(sh.points * scale))
                     wk_parts.append(coef * self.vars[(p_idx, d_idx, s_idx)])
@@ -526,7 +526,7 @@ def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
         for i in range(day_count):
             day = data.start_date + timedelta(days=i)
             for s in data.shifts:
-                if is_weekend(day, s):
+                if is_weekend(day, s, data.weekend_days):
                     weekend_points += s.points
         # Availability weights: a rotator is only present within their active
         # window(s), so they fairly carry a proportionally smaller share of the

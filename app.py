@@ -147,6 +147,16 @@ seed = st.number_input(
     "when the solver finishes; under a tight time limit results may still vary.",
 )
 
+_WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+weekend_labels = st.multiselect(
+    "Weekend days",
+    _WEEKDAY_NAMES,
+    default=["Sat", "Sun"],
+    help="Days that count as weekend for fairness. A shift's 'Thu counts as "
+    "weekend' flag still adds Thursday for that shift.",
+)
+weekend_days = [_WEEKDAY_NAMES.index(name) for name in weekend_labels]
+
 session_config = InputData(
     start_date=start_date,
     end_date=end_date,
@@ -160,6 +170,7 @@ session_config = InputData(
     min_gap=min_gap,
     nf_block_length=nf_block_len,
     seed=int(seed),
+    weekend_days=weekend_days,
 )
 
 with st.expander("Save / Load configuration", expanded=False):
