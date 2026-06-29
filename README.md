@@ -68,7 +68,7 @@ resolved fairness targets and solver status are returned on the DataFrame's `att
 - Added a solver random seed, CSV export, and solver status / wall-time reporting; `build_schedule` no longer mutates its `InputData` (targets are returned on `df.attrs`).
 - Added continuous integration (pytest with and without OR-Tools/pandas) and a `ruff` lint configuration.
 - Removed unused `extra_oncalls` field from `InputData`.
-- Added `docs/archive.txt` containing a read-only snapshot of all code and documentation.
+- Removed the stale `docs/archive.txt` source snapshot (git history is the source of truth).
 - Hardened the scheduler against stubbed CP-SAT implementations to keep tests and fallbacks working.
 - Added UI fairness summaries and stub-solver warning banner.
 - Scaled solver time limits by rough problem size to balance dev responsiveness with larger runs.
