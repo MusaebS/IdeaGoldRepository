@@ -14,7 +14,7 @@ from model.fairness import (
     assignment_rationale,
 )
 from model.demo_data import sample_shifts, sample_names
-from model.exporters import schedule_to_excel_bytes
+from model.exporters import schedule_to_excel_bytes, schedule_to_pdf_bytes
 import os
 
 st.set_page_config(page_title="Idea Gold Scheduler", layout="wide")
@@ -211,6 +211,16 @@ if data is not None:
             )
         except Exception as exc:  # pragma: no cover - e.g. openpyxl not installed
             st.info(f"Excel export unavailable: {exc}")
+        try:
+            pdf_bytes = schedule_to_pdf_bytes(df, data, points=points)
+            st.download_button(
+                "Download PDF (schedule + fairness)",
+                pdf_bytes,
+                file_name="schedule.pdf",
+                mime="application/pdf",
+            )
+        except Exception as exc:  # pragma: no cover - e.g. reportlab not installed
+            st.info(f"PDF export unavailable: {exc}")
         if st.checkbox("Show Fairness Log"):
             st.text(log_text)
     except Exception as e:

@@ -12,7 +12,11 @@ except Exception:  # pragma: no cover - fallback when pandas missing
 
 from model.data_models import ShiftTemplate, InputData
 from model.fairness import calculate_points
-from model.exporters import build_fairness_frame, schedule_to_excel_bytes
+from model.exporters import (
+    build_fairness_frame,
+    schedule_to_excel_bytes,
+    schedule_to_pdf_bytes,
+)
 
 
 def _sample():
@@ -58,3 +62,11 @@ def test_schedule_to_excel_bytes():
     blob = schedule_to_excel_bytes(df, data)
     assert isinstance(blob, (bytes, bytearray))
     assert blob[:2] == b"PK"  # .xlsx is a zip archive
+
+
+def test_schedule_to_pdf_bytes():
+    pytest.importorskip("reportlab")
+    df, data = _sample()
+    blob = schedule_to_pdf_bytes(df, data)
+    assert isinstance(blob, (bytes, bytearray))
+    assert blob[:4] == b"%PDF"  # PDF magic number
