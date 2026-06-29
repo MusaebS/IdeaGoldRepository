@@ -47,6 +47,7 @@ def input_data_to_json(data: InputData) -> str:
         "rotators": _windows_to_json(data.rotators),
         "min_gap": data.min_gap,
         "nf_block_length": data.nf_block_length,
+        "seed": data.seed,
     }
     return json.dumps(payload, indent=2)
 
@@ -77,4 +78,5 @@ def input_data_from_json(text: str) -> InputData:
         rotators=_windows_from_json(raw.get("rotators")),
         min_gap=int(raw.get("min_gap", 1)),
         nf_block_length=int(raw.get("nf_block_length", 5)),
+        seed=int(raw.get("seed", 0)),
     )

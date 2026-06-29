@@ -1,0 +1,13 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# Keep ruff's default rule set (pyflakes `F` + the high-signal pycodestyle
+# `E` rules); it flags real problems without nitpicking line length.
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use the `import sys, os` + sys.path bootstrap idiom and stub lambdas.
+"tests/*" = ["E401", "E402", "E731"]
+# optimiser.py imports its own modules after the OR-Tools fallback shim block.
+"model/optimiser.py" = ["E402"]

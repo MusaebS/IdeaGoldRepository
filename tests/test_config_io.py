@@ -23,6 +23,7 @@ def _sample_data():
         rotators=[("B", date(2023, 1, 1), date(2023, 1, 14))],
         min_gap=2,
         nf_block_length=5,
+        seed=99,
     )
 
 
@@ -41,6 +42,7 @@ def test_config_round_trip():
     assert restored.rotators == data.rotators
     assert restored.min_gap == data.min_gap
     assert restored.nf_block_length == data.nf_block_length
+    assert restored.seed == data.seed
 
 
 def test_config_from_minimal_json():

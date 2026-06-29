@@ -11,7 +11,86 @@ from .data_models import InputData
 from .nf_blocks import respects_nf_blocks
 from .optimiser import respects_min_gap
 
-__all__ = ["validate_schedule"]
+__all__ = ["validate_input", "validate_schedule"]
+
+
+def validate_input(data: InputData) -> List[str]:
+    """Return human-readable problems with a configuration *before* solving.
+
+    An empty list means the configuration is well-formed. These checks catch the
+    silent misconfigurations that otherwise produce confusing or wrong output: an
+    empty/backwards date range, no shifts, duplicate shift labels (which collapse
+    to a single schedule column and drop assignments), night-float eligibility
+    listing people who are not in the roster, a name in both the junior and senior
+    lists, and leave/rotator windows that reference unknown people or run
+    backwards.
+    """
+    issues: List[str] = []
+
+    if data.end_date < data.start_date:
+        issues.append(
+            f"End date ({data.end_date}) is before start date ({data.start_date})."
+        )
+
+    if not data.shifts:
+        issues.append("Add at least one shift template.")
+
+    seen_labels = set()
+    for sh in data.shifts:
+        if sh.label in seen_labels:
+            issues.append(
+                f"Duplicate shift label '{sh.label}': labels must be unique "
+                "(two shifts sharing a label would overwrite each other)."
+            )
+        if sh.label in {"Date", "Day"}:
+            issues.append(
+                f"Shift label '{sh.label}' is reserved (the schedule grid uses "
+                "'Date' and 'Day' columns); rename the shift."
+            )
+        if not sh.label.strip():
+            issues.append("A shift has a blank label; give every shift a name.")
+        seen_labels.add(sh.label)
+
+    juniors = set(data.juniors)
+    seniors = set(data.seniors)
+    roster = juniors | seniors
+
+    for name in juniors & seniors:
+        issues.append(f"'{name}' is listed as both a Junior and a Senior.")
+
+    for label, names in (("Junior", data.juniors), ("Senior", data.seniors)):
+        for name in sorted({n for n in names if names.count(n) > 1}):
+            issues.append(f"'{name}' is listed more than once in {label}s.")
+
+    for name in data.nf_juniors:
+        if name not in juniors:
+            issues.append(
+                f"Night-float-eligible junior '{name}' is not in the Juniors list."
+            )
+    for name in data.nf_seniors:
+        if name not in seniors:
+            issues.append(
+                f"Night-float-eligible senior '{name}' is not in the Seniors list."
+            )
+
+    for kind, windows in (("leave", data.leaves), ("rotator", data.rotators)):
+        for name, start, end in windows:
+            if name not in roster:
+                issues.append(
+                    f"{kind.capitalize()} window references unknown resident '{name}'."
+                )
+            if end < start:
+                issues.append(
+                    f"{kind.capitalize()} window for '{name}' ends ({end}) before it "
+                    f"starts ({start})."
+                )
+
+    if data.min_gap < 0:
+        issues.append("Minimum gap cannot be negative.")
+    if data.nf_block_length < 1:
+        issues.append("Night-float block length must be at least 1.")
+
+    return issues
 
 
 def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:

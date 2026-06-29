@@ -320,9 +320,13 @@ def test_auto_target_computation():
     )
     assert data.target_total is None
     assert data.target_weekend is None
-    build_schedule(data, env="test")
-    assert data.target_total == 0.5
-    assert data.target_weekend == {"A": 0.0, "B": 0.0}
+    df = build_schedule(data, env="test")
+    # build_schedule must not mutate the caller's InputData; the resolved
+    # auto-targets are exposed on df.attrs instead.
+    assert data.target_total is None
+    assert data.target_weekend is None
+    assert df.attrs["target_total"] == 0.5
+    assert df.attrs["target_weekend"] == {"A": 0.0, "B": 0.0}
 
 
 def test_rotator_targets_scaled_by_availability():
@@ -339,13 +343,18 @@ def test_rotator_targets_scaled_by_availability():
         rotators=[("A", date(2023, 1, 1), date(2023, 1, 2))],  # A present 2 of 4 days
         min_gap=0,
     )
-    build_schedule(data, env="test")
+    df = build_schedule(data, env="test")
     # total points = 4 days * 1.0; weights A=2, B=4 -> A carries 1/3, B carries 2/3
-    assert data.target_total_map is not None
-    assert abs(data.target_total_map["A"] - 4 * 2 / 6) < 1e-6
-    assert abs(data.target_total_map["B"] - 4 * 4 / 6) < 1e-6
+    total_map = df.attrs["target_total_map"]
+    target_weekend = df.attrs["target_weekend"]
+    assert total_map is not None
+    assert abs(total_map["A"] - 4 * 2 / 6) < 1e-6
+    assert abs(total_map["B"] - 4 * 4 / 6) < 1e-6
     # weekend targets follow the same availability ratio (2 : 4)
-    assert abs(data.target_weekend["A"] * 4 - data.target_weekend["B"] * 2) < 1e-6
+    assert abs(target_weekend["A"] * 4 - target_weekend["B"] * 2) < 1e-6
+    # caller's InputData is left untouched
+    assert data.target_total_map is None
+    assert data.target_weekend is None
 
 
 def test_rotator_excluded_outside_window():
@@ -480,7 +489,7 @@ def test_nf_block_feasible_with_positive_min_gap():
     pytest.importorskip("ortools")
     shifts = [
         ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False, points=1.0),
-        ShiftTemplate(label="Day", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="DayShift", role="Junior", night_float=False, thu_weekend=False, points=1.0),
     ]
     data = InputData(
         start_date=date(2023, 1, 1),
@@ -498,3 +507,82 @@ def test_nf_block_feasible_with_positive_min_gap():
     rows = build_schedule(data, env="dev").to_dict("records")  # must not raise
     # NF block integrity preserved (and no INFEASIBLE error -> the fix)
     assert rows[0]["NF"] == rows[1]["NF"] == rows[2]["NF"] == rows[3]["NF"] == rows[4]["NF"]
+
+
+def test_respects_min_gap_rejects_shift_right_after_nf_block():
+    shifts = [
+        ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False),
+        ShiftTemplate(label="Reg", role="Junior", night_float=False, thu_weekend=False),
+    ]
+    # A finishes a 2-night NF block (Jan 1-2) and works a regular shift Jan 3 -> no rest
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 1), "Day": "Sun", "NF": "A", "Reg": "B"},
+        {"Date": date(2023, 1, 2), "Day": "Mon", "NF": "A", "Reg": "B"},
+        {"Date": date(2023, 1, 3), "Day": "Tue", "NF": "B", "Reg": "A"},
+    ])
+    assert not respects_min_gap(df, 1, shifts)
+
+
+def test_respects_min_gap_allows_rest_around_nf_block():
+    shifts = [
+        ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False),
+        ShiftTemplate(label="Reg", role="Junior", night_float=False, thu_weekend=False),
+    ]
+    # A: NF block Jan 1-2, rests Jan 3, regular Jan 4 (2 days after block end -> ok)
+    # E: NF block Jan 3-4 (Jan 2 idle -> pre-rest ok); C/D regulars spaced
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 1), "Day": "Sun", "NF": "A", "Reg": "C"},
+        {"Date": date(2023, 1, 2), "Day": "Mon", "NF": "A", "Reg": "D"},
+        {"Date": date(2023, 1, 3), "Day": "Tue", "NF": "E", "Reg": "C"},
+        {"Date": date(2023, 1, 4), "Day": "Wed", "NF": "E", "Reg": "A"},
+    ])
+    assert respects_min_gap(df, 1, shifts)
+
+
+def test_solver_enforces_rest_after_nf_block():
+    pytest.importorskip("ortools")
+    shifts = [
+        ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="Reg", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+    ]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 10),
+        shifts=shifts,
+        juniors=["A", "B", "C", "D", "E"],
+        seniors=[],
+        nf_juniors=["A", "B", "C", "D", "E"],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=1,
+        nf_block_length=5,
+    )
+    df = build_schedule(data, env="dev")  # build_schedule raises if rest is violated
+    assert respects_min_gap(df, data.min_gap, data.shifts)
+
+
+def test_known_optimal_block_is_perfectly_balanced():
+    """Two residents over an even number of identical single-point days: the
+    optimal schedule splits the load exactly, so the total range must be 0."""
+    pytest.importorskip("ortools")
+    from model.fairness import calculate_points
+
+    shifts = [ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 2),  # Monday
+        end_date=date(2023, 1, 5),    # 4 days
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+    )
+    df = build_schedule(data, env="prod")
+    pts = calculate_points(df, data)
+    totals = [v["total"] for v in pts.values()]
+    assert max(totals) - min(totals) == 0  # 2 points each, perfectly balanced
+    assert all(row["S"] != "Unfilled" for row in df.to_dict("records"))
