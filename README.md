@@ -7,7 +7,9 @@ If `ortools` is missing, the stub solver marks all shifts as **Unfilled** and th
 The time limit for solving depends on the environment and problem size. Set the `ENV` variable to
 `dev`, `test`, or `prod` (default) for base limits of 10s, 1s or 60s; the code scales these based on the number of participants, days, and shift templates to keep small runs quick.
 Enable the **Test mode** checkbox in the app to load example shifts and participant names automatically.
-The solver supports fractional fairness targets via `InputData.target_total`, `target_label`, and `target_weekend`. It minimises the largest deviation from these targets before minimising smaller gaps and unfilled shifts. This keeps point totals balanced whenever possible.
+The solver supports fractional fairness targets via `InputData.target_total`, `target_label`, `target_weekend`, and `target_night_float`. It minimises the largest deviation from these targets before minimising smaller gaps and unfilled shifts. This keeps point totals balanced whenever possible.
+
+Night-float load is balanced as a first-class fairness dimension: the burdensome night shifts are spread evenly across the eligible pool (per role, availability-weighted for rotators) rather than only being balanced indirectly through total points. The fairness log and summary report each resident's night-float points, deviation, and min/max range.
 
 If `target_total` or `target_weekend` are not provided, `build_schedule` calculates
 them automatically. It divides the total points and weekend points for the block
@@ -90,6 +92,8 @@ the validation-error path, and the infeasible relax-and-retry recovery. It needs
 of the `pytest` run.
 
 ## Changelog
+- Balanced night-float load as a first-class fairness objective (`target_night_float`), with deviation/range reporting; fairness deviations now read solver-resolved targets from `df.attrs`.
+- Added non-blocking pre-solve configuration warnings (`config_warnings`).
 - Added a configurable weekend definition (`weekend_days`) and a `scripts/benchmark.py` solve-time benchmark.
 - Added pre-solve configuration validation (`validate_input`) surfaced in the app and enforced by `build_schedule`.
 - Enforced rest before/after night-float blocks and split solver-timeout from true infeasibility, with a one-click relax-and-retry recovery.

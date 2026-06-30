@@ -60,7 +60,26 @@ def fairness_range_lines(points: Dict[str, Dict[str, float]]) -> List[str]:
             f"Weekend points min {wk_min:.1f}, max {wk_max:.1f}, range {wk_max - wk_min:.1f}"
         )
 
+    nf_totals = [v.get("night_float", 0.0) for v in points.values()]
+    if any(nf_totals):  # only report when night-float shifts are in play
+        nf_min = min(nf_totals)
+        nf_max = max(nf_totals)
+        lines.append(
+            f"Night-float points min {nf_min:.1f}, max {nf_max:.1f}, range {nf_max - nf_min:.1f}"
+        )
+
     return lines
+
+
+def _resolved_target(df, key: str, fallback):
+    """Prefer a solver-resolved target stashed on ``df.attrs`` over the input.
+
+    ``build_schedule`` no longer mutates the caller's ``InputData``; it exposes the
+    auto-computed targets on the frame instead, so deviation reporting reads them
+    from there and falls back to any target the caller set explicitly.
+    """
+    attrs = getattr(df, "attrs", {}) or {}
+    return attrs[key] if key in attrs and attrs[key] is not None else fallback
 
 
 def format_fairness_log(
@@ -68,18 +87,26 @@ def format_fairness_log(
 ) -> str:
     """Generate a human-readable fairness log."""
     pts = points or calculate_points(df, data)
+    target_total = _resolved_target(df, "target_total", data.target_total)
+    target_total_map = _resolved_target(df, "target_total_map", data.target_total_map)
+    target_weekend = _resolved_target(df, "target_weekend", data.target_weekend)
+    target_nf = _resolved_target(df, "target_night_float", data.target_night_float)
     lines: List[str] = []
     for person in sorted(pts):
         info = pts[person]
         role = "Senior" if person in data.seniors else "Junior"
         nf = info.get("night_float", 0.0)
-        line = f"{person} ({role}, NF {nf:.1f}): total {info['total']:.1f}"
-        if data.target_total is not None:
-            dev = info['total'] - data.target_total
+        line = f"{person} ({role}, NF {nf:.1f}"
+        if target_nf and person in target_nf:
+            line += f" (dev {nf - target_nf[person]:+.1f})"
+        line += f"): total {info['total']:.1f}"
+        person_total_target = (target_total_map or {}).get(person, target_total)
+        if person_total_target is not None:
+            dev = info['total'] - person_total_target
             line += f" (dev {dev:+.1f})"
         line += f", weekend {info['weekend']:.1f}"
-        if data.target_weekend and person in data.target_weekend:
-            wdev = info['weekend'] - data.target_weekend[person]
+        if target_weekend and person in target_weekend:
+            wdev = info['weekend'] - target_weekend[person]
             line += f" (dev {wdev:+.1f})"
         for label in sorted(info['labels']):
             val = info['labels'][label]

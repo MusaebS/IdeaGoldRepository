@@ -83,7 +83,11 @@ def _run_checks() -> list[str]:
             timeout=120000,
         )
         check(True, "Test mode + Generate renders a schedule")
-        check(page.get_by_text("Schedule quality").count() > 0, "quality metric shown")
+        try:
+            page.get_by_text("Schedule quality").wait_for(timeout=15000)
+            check(True, "quality metric shown")
+        except Exception:
+            check(False, "quality metric shown")
         for label in [
             "Download CSV (schedule)",
             "Download Excel (schedule + fairness)",

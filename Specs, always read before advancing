@@ -137,6 +137,7 @@ Implementation Progress (2025-07)
 - `build_schedule` computes default total and weekend targets when left unset
 
 Implementation Progress (2026-06)
+- Night-float load is now balanced as an explicit objective dimension (`target_night_float`), per role and availability-weighted, so the fairness model is total + weekend + nights (+ optional per-label).
 - Pre-solve configuration validation (`model/validation.py:validate_input`) rejects bad date ranges, duplicate/reserved shift labels, off-roster night-float eligibility, and malformed leave/rotator windows.
 - Rest is enforced before and after night-float blocks (not just between regular shifts); solver timeout is reported distinctly from proven infeasibility.
 - Added load/save config JSON, a solver random seed, CSV/Excel/PDF export, a 0-100 quality score, manual-edit revalidation, and an infeasibility relax-and-retry path.

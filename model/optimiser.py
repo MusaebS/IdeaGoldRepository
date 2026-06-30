@@ -146,9 +146,11 @@ class SchedulerSolver:
         self.label_pts: Dict[Tuple[int, str], object] = {}
         self.total_pts: Dict[int, object] = {}
         self.weekend_pts: Dict[int, object] = {}
+        self.nf_pts: Dict[int, object] = {}
         self.dev_label: Dict[Tuple[int, str], object] = {}
         self.dev_total: Dict[int, object] = {}
         self.dev_weekend: Dict[int, object] = {}
+        self.dev_night_float: Dict[int, object] = {}
         self.max_dev: object | None = None
         self.build_variables()
         self.compute_points()
@@ -161,9 +163,11 @@ class SchedulerSolver:
             self.model.label_pts = self.label_pts
             self.model.total_pts = self.total_pts
             self.model.weekend_pts = self.weekend_pts
+            self.model.nf_pts = self.nf_pts
             self.model.dev_label = self.dev_label
             self.model.dev_total = self.dev_total
             self.model.dev_weekend = self.dev_weekend
+            self.model.dev_night_float = self.dev_night_float
             self.model.max_dev = self.max_dev
         except AttributeError:
             # Real ortools model does not allow setting new attributes
@@ -218,6 +222,18 @@ class SchedulerSolver:
             self.model.Add(wvar == wk_expr)
             self.weekend_pts[p_idx] = wvar
 
+            nf_parts = []
+            for d_idx in range(len(self.days)):
+                for s_idx, sh in enumerate(self.shifts):
+                    if not sh.night_float:
+                        continue
+                    coef = int(round(sh.points * scale))
+                    nf_parts.append(coef * self.vars[(p_idx, d_idx, s_idx)])
+            nf_expr = sum(nf_parts) if nf_parts else 0
+            nfvar = self.model.NewIntVar(0, max_val, f"nfpts_{p_idx}")
+            self.model.Add(nfvar == nf_expr)
+            self.nf_pts[p_idx] = nfvar
+
     def add_deviation_constraints(self) -> None:
         scale = self.SCALE
         max_val = self._max_points()
@@ -250,6 +266,16 @@ class SchedulerSolver:
                 self.model.Add(var >= self.weekend_pts[p_idx] - target)
                 self.model.Add(var >= target - self.weekend_pts[p_idx])
                 self.dev_weekend[p_idx] = var
+
+        if self.data.target_night_float:
+            for p_idx, person in enumerate(self.people[:-1]):
+                if person not in self.data.target_night_float:
+                    continue
+                target = int(round(self.data.target_night_float[person] * scale))
+                var = self.model.NewIntVar(0, max_val, f"dev_nf_{p_idx}")
+                self.model.Add(var >= self.nf_pts[p_idx] - target)
+                self.model.Add(var >= target - self.nf_pts[p_idx])
+                self.dev_night_float[p_idx] = var
 
         if self.data.target_label:
             for p_idx, person in enumerate(self.people[:-1]):
@@ -402,16 +428,22 @@ class SchedulerSolver:
         ]
 
         terms = []
-        W1, W2, W3, W4, W5 = 10**9, 10**6, 10**3, 10, 1
+        # Lexicographic-style weights: overall-points spread first, then total,
+        # weekend, night-float, per-label deviations, and finally unfilled slots.
+        W_MAXDEV, W_TOTAL, W_WEEKEND, W_NIGHTS, W_LABEL, W_UNFILLED = (
+            10**9, 10**6, 10**3, 10**2, 10, 1,
+        )
         if self.max_dev is not None:
-            terms.append(W1 * self.max_dev)
+            terms.append(W_MAXDEV * self.max_dev)
         if self.dev_total:
-            terms.append(W2 * sum(self.dev_total.values()))
+            terms.append(W_TOTAL * sum(self.dev_total.values()))
         if self.dev_weekend:
-            terms.append(W3 * sum(self.dev_weekend.values()))
+            terms.append(W_WEEKEND * sum(self.dev_weekend.values()))
+        if self.dev_night_float:
+            terms.append(W_NIGHTS * sum(self.dev_night_float.values()))
         if self.dev_label:
-            terms.append(W4 * sum(self.dev_label.values()))
-        terms.append(W5 * sum(unfilled_vars))
+            terms.append(W_LABEL * sum(self.dev_label.values()))
+        terms.append(W_UNFILLED * sum(unfilled_vars))
 
         self.model.Minimize(sum(terms))
 
@@ -520,6 +552,7 @@ def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
     target_total = data.target_total
     target_total_map = data.target_total_map
     target_weekend = data.target_weekend
+    target_night_float = data.target_night_float
     if participants:
         total_points = day_count * sum(s.points for s in data.shifts)
         weekend_points = 0.0
@@ -564,6 +597,22 @@ def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
             else:
                 target_weekend = {p: 0.0 for p in participants}
 
+        if target_night_float is None:
+            # Night-float load is balanced per role among the eligible pool only
+            # (non-eligible residents never work nights), availability-weighted so
+            # rotators carry a proportionally smaller share.
+            per_day_nf = {"Junior": 0.0, "Senior": 0.0}
+            for s in data.shifts:
+                if s.night_float:
+                    per_day_nf[s.role] = per_day_nf.get(s.role, 0.0) + s.points
+            target_night_float = {}
+            for role, pool in (("Junior", data.nf_juniors), ("Senior", data.nf_seniors)):
+                role_points = per_day_nf.get(role, 0.0) * day_count
+                pool_weight = sum(availability.get(p, 0) for p in pool)
+                if pool_weight > 0:
+                    for p in pool:
+                        target_night_float[p] = role_points * availability[p] / pool_weight
+
     # Solve against a copy carrying the resolved targets so the caller's
     # ``InputData`` is never mutated (re-running with changed dates previously
     # reused stale auto-targets). The resolved targets are exposed on ``df.attrs``.
@@ -572,6 +621,7 @@ def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
         target_total=target_total,
         target_total_map=target_total_map,
         target_weekend=target_weekend,
+        target_night_float=target_night_float,
     )
     using_stub = not ORTOOLS_AVAILABLE
     solver = SchedulerSolver(solve_data)
@@ -583,6 +633,7 @@ def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
     df.attrs["target_total"] = target_total
     df.attrs["target_total_map"] = target_total_map
     df.attrs["target_weekend"] = target_weekend
+    df.attrs["target_night_float"] = target_night_float
     if using_stub:
         df.attrs["solver_warning"] = (
             "OR-Tools not installed; using fallback output with unfilled shifts."

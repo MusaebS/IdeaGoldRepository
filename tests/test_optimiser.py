@@ -586,3 +586,54 @@ def test_known_optimal_block_is_perfectly_balanced():
     totals = [v["total"] for v in pts.values()]
     assert max(totals) - min(totals) == 0  # 2 points each, perfectly balanced
     assert all(row["S"] != "Unfilled" for row in df.to_dict("records"))
+
+
+def test_night_float_target_computed_per_eligible_pool():
+    # Target computation runs even on the stub path (no ortools needed).
+    shifts = [ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 4),  # 4 days -> 4 night-float points
+        shifts=shifts,
+        juniors=["A", "B", "C"],
+        seniors=[],
+        nf_juniors=["A", "B"],  # C is a junior but not NF-eligible
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+        nf_block_length=1,
+    )
+    df = build_schedule(data, env="test")
+    tnf = df.attrs["target_night_float"]
+    assert tnf == {"A": 2.0, "B": 2.0}  # split among the eligible pool only
+    assert "C" not in tnf
+
+
+def test_night_float_load_is_balanced():
+    pytest.importorskip("ortools")
+    shifts = [
+        ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="DayShift", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+    ]
+    # Totals can be balanced by dumping all nights on one resident; the night-float
+    # objective should instead split the nights evenly.
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 4),
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=["A", "B"],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+        nf_block_length=1,
+    )
+    df = build_schedule(data, env="test")
+    from model.fairness import calculate_points
+
+    pts = calculate_points(df, data)
+    nf = [pts["A"]["night_float"], pts["B"]["night_float"]]
+    assert max(nf) - min(nf) <= 1  # nights shared, not dumped on one resident
