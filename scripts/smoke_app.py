@@ -92,6 +92,7 @@ def _run_checks() -> list[str]:
             "Download CSV (schedule)",
             "Download Excel (schedule + fairness)",
             "Download PDF (schedule + fairness)",
+            "Download updated ledger (for next block)",
         ]:
             try:
                 page.get_by_role("button", name=label).wait_for(timeout=20000)

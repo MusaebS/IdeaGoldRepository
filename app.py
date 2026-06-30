@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from model.data_models import ShiftTemplate, InputData
 from model.optimiser import build_schedule
 from model.config_io import input_data_to_json, input_data_from_json
+from model.ledger import ledger_from_json, ledger_to_json, update_ledger
 from model.validation import validate_input, config_warnings, validate_schedule
 from model.fairness import (
     calculate_points,
@@ -233,6 +234,21 @@ with st.expander("Save / Load configuration", expanded=False):
     )
     uploaded_config = st.file_uploader("Load config (JSON), then click Generate", type="json")
 
+with st.expander("Carryover fairness (cumulative across blocks)", expanded=False):
+    st.caption(
+        "Upload the fairness ledger from your previous block to balance cumulative "
+        "load: residents who carried extra before get lighter targets now. After "
+        "generating, download the updated ledger to use for the next block."
+    )
+    uploaded_ledger = st.file_uploader("Load fairness ledger (JSON)", type="json", key="ledger_upload")
+
+carryover_ledger = None
+if uploaded_ledger is not None:
+    try:
+        carryover_ledger = ledger_from_json(uploaded_ledger.getvalue().decode("utf-8"))
+    except Exception as exc:
+        st.error(f"Could not read ledger: {exc}")
+
 generate_clicked = st.button("Generate Schedule")
 
 # A relaxed-constraint retry queued by the recovery buttons takes precedence
@@ -262,10 +278,12 @@ if data is not None:
         for warning in config_warnings(data):
             st.warning(warning)
         env = os.getenv("ENV", "prod")
+        if carryover_ledger:
+            st.info("Carryover fairness active: balancing cumulative load from the uploaded ledger.")
         df = None
         try:
             with st.spinner("Optimising…"):
-                df = build_schedule(data, env=env)
+                df = build_schedule(data, env=env, ledger=carryover_ledger)
         except RuntimeError as exc:
             st.error(str(exc))
             st.caption("No feasible schedule — relax a constraint and try again:")
@@ -331,6 +349,12 @@ if data is not None:
                 mime="text/csv",
             )
             st.download_button("Download Fairness Log", log_text, file_name="fairness_log.txt")
+            st.download_button(
+                "Download updated ledger (for next block)",
+                ledger_to_json(update_ledger(carryover_ledger, df, data)),
+                file_name="fairness_ledger.json",
+                mime="application/json",
+            )
             try:
                 excel_bytes = schedule_to_excel_bytes(df, data, points=points)
                 st.download_button(

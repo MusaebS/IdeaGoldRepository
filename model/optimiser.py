@@ -554,8 +554,30 @@ class SchedulerSolver:
         return df
 
 
-def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
-    """Build schedule with optional environment based time limit."""
+def _carryover_targets(prior, block_points, members, weights, weight_sum, clamp_max):
+    """Per-member this-block target that balances *cumulative* load.
+
+    Each member's cumulative fair share (prior + this block, weighted) minus what
+    they already carry, clamped to ``[0, clamp_max]`` so the value stays within a
+    single block's range (an extreme prior imbalance is corrected over several
+    blocks rather than all at once).
+    """
+    if weight_sum <= 0:
+        return {m: 0.0 for m in members}
+    cumulative = block_points + sum(prior.get(m, 0.0) for m in members)
+    return {
+        m: min(clamp_max, max(0.0, cumulative * weights[m] / weight_sum - prior.get(m, 0.0)))
+        for m in members
+    }
+
+
+def build_schedule(data: InputData, env: str | None = None, ledger=None) -> pd.DataFrame:
+    """Build schedule with optional environment based time limit.
+
+    ``ledger`` (resident -> accumulated total/weekend/night_float points from
+    prior blocks) switches fairness from per-block to cumulative: residents who
+    carried extra previously get lighter targets this block.
+    """
     # Lazy import avoids a module-level cycle (validation imports this module).
     from .validation import validate_input
 
@@ -629,6 +651,30 @@ def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
                 if pool_weight > 0:
                     for p in pool:
                         target_night_float[p] = role_points * availability[p] / pool_weight
+
+        if ledger:
+            # Carryover fairness: targets balance cumulative load (prior + this
+            # block) rather than this block alone. Overrides the per-block maps.
+            prior_total = {p: ledger.get(p, {}).get("total", 0.0) for p in participants}
+            prior_wk = {p: ledger.get(p, {}).get("weekend", 0.0) for p in participants}
+            target_total_map = _carryover_targets(
+                prior_total, total_points, participants, availability, weight_sum, total_points
+            )
+            target_weekend = _carryover_targets(
+                prior_wk, weekend_points, participants, availability, weight_sum, weekend_points
+            )
+            per_day_nf = {"Junior": 0.0, "Senior": 0.0}
+            for s in data.shifts:
+                if s.night_float:
+                    per_day_nf[s.role] = per_day_nf.get(s.role, 0.0) + s.points
+            target_night_float = {}
+            for role, pool in (("Junior", data.nf_juniors), ("Senior", data.nf_seniors)):
+                role_points = per_day_nf.get(role, 0.0) * day_count
+                pool_weight = sum(availability.get(p, 0) for p in pool)
+                prior_nf = {p: ledger.get(p, {}).get("night_float", 0.0) for p in pool}
+                target_night_float.update(
+                    _carryover_targets(prior_nf, role_points, pool, availability, pool_weight, role_points)
+                )
 
     # Solve against a copy carrying the resolved targets so the caller's
     # ``InputData`` is never mutated (re-running with changed dates previously

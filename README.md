@@ -69,6 +69,16 @@ resolved fairness targets and solver status are returned on the DataFrame's `att
 (`target_total`, `target_total_map`, `target_weekend`, `solver_status`,
 `wall_time_sec`).
 
+## Carryover fairness (cumulative across blocks)
+
+Fairness can span multiple blocks. After generating a schedule, download the
+**fairness ledger** (each resident's accumulated total / weekend / night-float
+points); upload it before the next block and the optimiser balances *cumulative*
+load — whoever carried extra last time gets lighter targets now. `build_schedule`
+takes an optional `ledger` argument; `model/ledger.py` handles save/load
+(`ledger_to_json` / `ledger_from_json`) and accumulation (`update_ledger`). A large
+prior imbalance is corrected over several blocks rather than all at once.
+
 ## Per-resident caps
 
 `InputData.max_total` and `InputData.max_nights` (maps of resident → points) put a
@@ -100,6 +110,7 @@ the validation-error path, and the infeasible relax-and-retry recovery. It needs
 of the `pytest` run.
 
 ## Changelog
+- Added cumulative carryover fairness via a save/load fairness ledger (`model/ledger.py`, `build_schedule(..., ledger=...)`).
 - Added per-resident hard caps on total and night-float load (`max_total`, `max_nights`).
 - Balanced night-float load as a first-class fairness objective (`target_night_float`), with deviation/range reporting; fairness deviations now read solver-resolved targets from `df.attrs`.
 - Added non-blocking pre-solve configuration warnings (`config_warnings`).
