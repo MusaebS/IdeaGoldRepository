@@ -36,7 +36,7 @@ def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, f
             info["labels"][sh.label] = info["labels"].get(sh.label, 0.0) + sh.points
             if sh.night_float:
                 info["night_float"] += sh.points
-            if is_weekend(day, sh):
+            if is_weekend(day, sh, data.weekend_days):
                 info["weekend"] += sh.points
     return summary
 
@@ -195,7 +195,7 @@ def assignment_rationale(
             f"{len(totals)} residents carry fewer — load balancing favoured this "
             "assignment."
         )
-    if is_weekend(day, shift) and person in pts:
+    if is_weekend(day, shift, data.weekend_days) and person in pts:
         lines.append(
             f"Weekend slot: {person} has {pts[person]['weekend']:.1f} weekend points."
         )

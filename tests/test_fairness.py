@@ -164,3 +164,29 @@ def test_assignment_rationale_for_unfilled():
     df = pd.DataFrame([{"Date": date(2023, 1, 1), "S": "Unfilled"}])
     text = " ".join(assignment_rationale(df, data, date(2023, 1, 1), "S")).lower()
     assert "unfilled" in text or "eligible" in text
+
+
+def test_weekend_days_configures_is_weekend():
+    from model.utils import is_weekend
+
+    shift = ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)
+    friday = date(2023, 1, 6)  # a Friday (Jan 1 2023 is a Sunday)
+    assert not is_weekend(friday, shift)            # default Sat/Sun
+    assert is_weekend(friday, shift, [4, 5])        # Fri/Sat weekend -> Friday counts
+
+
+def test_calculate_points_uses_configured_weekend():
+    shifts = [ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 6), "S": "A"},  # Friday
+        {"Date": date(2023, 1, 7), "S": "A"},  # Saturday
+    ])
+    common = dict(
+        start_date=date(2023, 1, 6), end_date=date(2023, 1, 7), shifts=shifts,
+        juniors=["A"], seniors=[], nf_juniors=[], nf_seniors=[], leaves=[], rotators=[], min_gap=0,
+    )
+    default = InputData(**common)
+    assert calculate_points(df, default)["A"]["weekend"] == 1.0  # only Saturday
+
+    fri_sat = InputData(weekend_days=[4, 5], **common)
+    assert calculate_points(df, fri_sat)["A"]["weekend"] == 2.0  # Friday + Saturday

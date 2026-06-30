@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
+from dataclasses import replace
 from datetime import date, timedelta
 
 from model.data_models import ShiftTemplate, InputData
 from model.optimiser import build_schedule
 from model.config_io import input_data_to_json, input_data_from_json
-from model.validation import validate_schedule
+from model.validation import validate_input, validate_schedule
 from model.fairness import (
     calculate_points,
     fairness_range_lines,
@@ -140,6 +141,21 @@ with date_cols[1]:
     end_date = st.date_input("End Date", date.today() + timedelta(days=27))
 min_gap = st.slider("Minimum Gap", 0, 7, 1)
 nf_block_len = st.number_input("NF Block Length", 1, 7, 5)
+seed = st.number_input(
+    "Random seed", 0, 1_000_000, 0, 1,
+    help="Seeds the solver's search. The same seed reproduces the same schedule "
+    "when the solver finishes; under a tight time limit results may still vary.",
+)
+
+_WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+weekend_labels = st.multiselect(
+    "Weekend days",
+    _WEEKDAY_NAMES,
+    default=["Sat", "Sun"],
+    help="Days that count as weekend for fairness. A shift's 'Thu counts as "
+    "weekend' flag still adds Thursday for that shift.",
+)
+weekend_days = [_WEEKDAY_NAMES.index(name) for name in weekend_labels]
 
 session_config = InputData(
     start_date=start_date,
@@ -153,6 +169,8 @@ session_config = InputData(
     rotators=st.session_state.rotators,
     min_gap=min_gap,
     nf_block_length=nf_block_len,
+    seed=int(seed),
+    weekend_days=weekend_days,
 )
 
 with st.expander("Save / Load configuration", expanded=False):
@@ -166,8 +184,13 @@ with st.expander("Save / Load configuration", expanded=False):
 
 generate_clicked = st.button("Generate Schedule")
 
+# A relaxed-constraint retry queued by the recovery buttons takes precedence
+# over a fresh click so the chosen relaxation is actually applied.
 data = None
-if generate_clicked:
+relaxation_note = None
+if st.session_state.get("retry_config") is not None:
+    data, relaxation_note = st.session_state.pop("retry_config")
+elif generate_clicked:
     if uploaded_config is not None:
         try:
             data = input_data_from_json(uploaded_config.getvalue().decode("utf-8"))
@@ -177,54 +200,99 @@ if generate_clicked:
         data = session_config
 
 if data is not None:
-    try:
+    problems = validate_input(data)
+    if problems:
+        st.error("Fix the configuration before generating:")
+        for problem in problems:
+            st.write(f"- {problem}")
+    else:
+        if relaxation_note:
+            st.info(relaxation_note)
         env = os.getenv("ENV", "prod")
-        df = build_schedule(data, env=env)
-        st.session_state.result_df = df
-        st.session_state.result_data = data
-        warning = df.attrs.get("solver_warning") if hasattr(df, "attrs") else None
-        if warning:
-            st.warning(warning)
-        points = calculate_points(df, data)
-        st.dataframe(df)
-        quality = schedule_quality(df, data, points=points)
-        st.metric("Schedule quality", f"{quality['score']} / 100")
-        st.caption(
-            f"Coverage {quality['filled']}/{quality['total_slots']} slots filled "
-            f"({quality['unfilled']} unfilled) · total range {quality['total_range']:.1f} "
-            f"· weekend range {quality['weekend_range']:.1f}"
-        )
-        ranges = fairness_range_lines(points)
-        if ranges:
-            st.subheader("Fairness summary")
-            for line in ranges:
-                st.write(line)
-        log_text = format_fairness_log(df, data, points=points)
-        st.download_button("Download Fairness Log", log_text, file_name="fairness_log.txt")
+        df = None
         try:
-            excel_bytes = schedule_to_excel_bytes(df, data, points=points)
-            st.download_button(
-                "Download Excel (schedule + fairness)",
-                excel_bytes,
-                file_name="schedule.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            with st.spinner("Optimising…"):
+                df = build_schedule(data, env=env)
+        except RuntimeError as exc:
+            st.error(str(exc))
+            st.caption("No feasible schedule — relax a constraint and try again:")
+            rcols = st.columns(2)
+            if data.min_gap > 0 and rcols[0].button(
+                f"Retry with min_gap {data.min_gap - 1}"
+            ):
+                st.session_state.retry_config = (
+                    replace(data, min_gap=data.min_gap - 1),
+                    f"Relaxed minimum gap to {data.min_gap - 1} to find a feasible schedule.",
+                )
+                st.rerun()
+            if data.nf_block_length > 1 and rcols[1].button(
+                f"Retry with NF block length {data.nf_block_length - 1}"
+            ):
+                st.session_state.retry_config = (
+                    replace(data, nf_block_length=data.nf_block_length - 1),
+                    f"Relaxed NF block length to {data.nf_block_length - 1} to find a feasible schedule.",
+                )
+                st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
+
+        if df is not None:
+            st.session_state.result_df = df
+            st.session_state.result_data = data
+            warning = df.attrs.get("solver_warning") if hasattr(df, "attrs") else None
+            if warning:
+                st.warning(warning)
+            status = df.attrs.get("solver_status")
+            wall = df.attrs.get("wall_time_sec")
+            if status:
+                detail = f"Solver status: {status} · seed {data.seed}"
+                if wall is not None:
+                    detail += f" · {wall:.2f}s"
+                st.caption(detail)
+            points = calculate_points(df, data)
+            st.dataframe(df)
+            quality = schedule_quality(df, data, points=points)
+            st.metric("Schedule quality", f"{quality['score']} / 100")
+            st.caption(
+                f"Coverage {quality['filled']}/{quality['total_slots']} slots filled "
+                f"({quality['unfilled']} unfilled) · total range {quality['total_range']:.1f} "
+                f"· weekend range {quality['weekend_range']:.1f}"
             )
-        except Exception as exc:  # pragma: no cover - e.g. openpyxl not installed
-            st.info(f"Excel export unavailable: {exc}")
-        try:
-            pdf_bytes = schedule_to_pdf_bytes(df, data, points=points)
+            ranges = fairness_range_lines(points)
+            if ranges:
+                st.subheader("Fairness summary")
+                for line in ranges:
+                    st.write(line)
+            log_text = format_fairness_log(df, data, points=points)
             st.download_button(
-                "Download PDF (schedule + fairness)",
-                pdf_bytes,
-                file_name="schedule.pdf",
-                mime="application/pdf",
+                "Download CSV (schedule)",
+                df.to_csv(index=False),
+                file_name="schedule.csv",
+                mime="text/csv",
             )
-        except Exception as exc:  # pragma: no cover - e.g. reportlab not installed
-            st.info(f"PDF export unavailable: {exc}")
-        if st.checkbox("Show Fairness Log"):
-            st.text(log_text)
-    except Exception as e:
-        st.error(str(e))
+            st.download_button("Download Fairness Log", log_text, file_name="fairness_log.txt")
+            try:
+                excel_bytes = schedule_to_excel_bytes(df, data, points=points)
+                st.download_button(
+                    "Download Excel (schedule + fairness)",
+                    excel_bytes,
+                    file_name="schedule.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            except Exception as exc:  # pragma: no cover - e.g. openpyxl not installed
+                st.info(f"Excel export unavailable: {exc}")
+            try:
+                pdf_bytes = schedule_to_pdf_bytes(df, data, points=points)
+                st.download_button(
+                    "Download PDF (schedule + fairness)",
+                    pdf_bytes,
+                    file_name="schedule.pdf",
+                    mime="application/pdf",
+                )
+            except Exception as exc:  # pragma: no cover - e.g. reportlab not installed
+                st.info(f"PDF export unavailable: {exc}")
+            if st.checkbox("Show Fairness Log"):
+                st.text(log_text)
 
 if st.session_state.result_df is not None:
     with st.expander("Manual edit & revalidate", expanded=False):

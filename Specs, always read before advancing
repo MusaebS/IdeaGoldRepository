@@ -136,13 +136,18 @@ Implementation Progress (2025-07)
 - Removed unused `extra_oncalls` field from `InputData`
 - `build_schedule` computes default total and weekend targets when left unset
 
+Implementation Progress (2026-06)
+- Pre-solve configuration validation (`model/validation.py:validate_input`) rejects bad date ranges, duplicate/reserved shift labels, off-roster night-float eligibility, and malformed leave/rotator windows.
+- Rest is enforced before and after night-float blocks (not just between regular shifts); solver timeout is reported distinctly from proven infeasibility.
+- Added load/save config JSON, a solver random seed, CSV/Excel/PDF export, a 0-100 quality score, manual-edit revalidation, and an infeasibility relax-and-retry path.
+- `build_schedule` no longer mutates the caller's `InputData`; resolved targets and solver status ride on `df.attrs`.
+- Continuous integration runs pytest with and without OR-Tools/pandas, plus a `ruff` lint pass.
+
 
 
 7 Outstanding / Future Work
-UI seed control & load/save configuration JSON.
+Flexible night-float block start (blocks may currently only begin on a day-0-aligned boundary).
 
-Optional “soften min_gap” slider when infeasible.
+Performance benchmark *page* in the UI (a CLI benchmark now lives at `scripts/benchmark.py`).
 
-Unit tests: small synthetic blocks where optimal solution is known.
-
-Performance benchmark page (solve-time vs. residents).
+Done: UI seed control; load/save configuration JSON; “soften min_gap” retry when infeasible; unit tests on small synthetic blocks with a known optimum; configurable weekend definition (`weekend_days`); CLI solve-time benchmark.

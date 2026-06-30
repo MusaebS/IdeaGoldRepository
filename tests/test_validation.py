@@ -10,7 +10,7 @@ except Exception:  # pragma: no cover
     pd = opt.pd
 
 from model.data_models import ShiftTemplate, InputData
-from model.validation import validate_schedule
+from model.validation import validate_input, validate_schedule
 
 
 def _data(**over):
@@ -78,3 +78,58 @@ def test_double_booking_detected():
     )
     df = pd.DataFrame([{"Date": date(2023, 1, 1), "D1": "A", "D2": "A"}])  # A twice in one day
     assert any("more than one shift" in i for i in validate_schedule(df, data))
+
+
+# --- validate_input (pre-solve configuration checks) ---------------------------
+
+def test_valid_config_has_no_input_issues():
+    assert validate_input(_data()) == []
+
+
+def test_backwards_date_range_rejected():
+    data = _data(start_date=date(2023, 1, 10), end_date=date(2023, 1, 1))
+    assert any("before start date" in i for i in validate_input(data))
+
+
+def test_no_shifts_rejected():
+    assert any("at least one shift" in i for i in validate_input(_data(shifts=[])))
+
+
+def test_duplicate_shift_label_rejected():
+    data = _data(
+        shifts=[
+            ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+            ShiftTemplate(label="D", role="Senior", night_float=False, thu_weekend=False, points=1.0),
+        ]
+    )
+    assert any("Duplicate shift label" in i for i in validate_input(data))
+
+
+def test_reserved_shift_label_rejected():
+    data = _data(
+        shifts=[ShiftTemplate(label="Day", role="Junior", night_float=False, thu_weekend=False)]
+    )
+    assert any("reserved" in i for i in validate_input(data))
+
+
+def test_nf_eligible_not_in_roster_rejected():
+    data = _data(nf_juniors=["Z"])  # Z is not a listed junior
+    assert any("not in the Juniors list" in i for i in validate_input(data))
+
+
+def test_person_in_both_roles_rejected():
+    data = _data(juniors=["A"], seniors=["A"])
+    assert any("both a Junior and a Senior" in i for i in validate_input(data))
+
+
+def test_leave_for_unknown_resident_rejected():
+    data = _data(leaves=[("Nobody", date(2023, 1, 1), date(2023, 1, 2))])
+    assert any("unknown resident" in i for i in validate_input(data))
+
+
+def test_build_schedule_rejects_invalid_config():
+    import pytest
+    from model.optimiser import build_schedule
+
+    with pytest.raises(ValueError):
+        build_schedule(_data(shifts=[]), env="test")

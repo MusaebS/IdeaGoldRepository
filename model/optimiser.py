@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import timedelta
 import os
 from typing import Dict, Tuple
@@ -126,7 +127,7 @@ except ImportError:  # pragma: no cover - simple fallback if ortools missing
         },
     )
 
-from .data_models import InputData, ShiftTemplate
+from .data_models import InputData
 from .nf_blocks import respects_nf_blocks
 from .utils import is_weekend
 
@@ -200,7 +201,7 @@ class SchedulerSolver:
                 self.model.Add(var == expr)
                 self.label_pts[(p_idx, label)] = var
 
-            tot_expr = sum(self.label_pts[(p_idx, l)] for l in self.labels)
+            tot_expr = sum(self.label_pts[(p_idx, lbl)] for lbl in self.labels)
             tvar = self.model.NewIntVar(0, max_val, f"totalpts_{p_idx}")
             self.model.Add(tvar == tot_expr)
             self.total_pts[p_idx] = tvar
@@ -208,7 +209,7 @@ class SchedulerSolver:
             wk_parts = []
             for d_idx, day in enumerate(self.days):
                 for s_idx, sh in enumerate(self.shifts):
-                    if not is_weekend(day, sh):
+                    if not is_weekend(day, sh, self.data.weekend_days):
                         continue
                     coef = int(round(sh.points * scale))
                     wk_parts.append(coef * self.vars[(p_idx, d_idx, s_idx)])
@@ -309,11 +310,12 @@ class SchedulerSolver:
                     <= 1
                 )
 
-        # min_gap spacing applies to non-night-float shifts only. Night-float
-        # blocks are intentionally consecutive (governed by the NF-block
-        # constraints), so counting them here would make any NF block longer
-        # than the gap infeasible. In any window of (gap + 1) consecutive days a
-        # resident works at most one regular shift. O(residents x days).
+        # Regular-shift spacing: in any window of (gap + 1) consecutive days a
+        # resident works at most one non-night-float shift. Night-float shifts
+        # are excluded *here* because nights within a block are intentionally
+        # consecutive; rest *around* NF blocks is enforced separately below so a
+        # block is still spaced from adjacent regular shifts and other blocks.
+        # O(residents x days).
         gap = self.data.min_gap
         non_nf_idxs = [i for i, sh in enumerate(self.shifts) if not sh.night_float]
         if gap > 0 and non_nf_idxs:
@@ -361,6 +363,37 @@ class SchedulerSolver:
                             self.vars[(p_idx, prev_day, s_idx)] + self.vars[(p_idx, next_day, s_idx)] <= 1
                         )
 
+        # Rest around night-float blocks. A resident who works the first/last
+        # night of a block gets ``gap`` idle days before/after that block versus
+        # *any* shift (NF or regular), matching the spec's "min_gap between any
+        # two shifts" intent. Nights stay consecutive within a block (above);
+        # this only spaces a block from adjacent regular shifts and other blocks.
+        # Block boundaries are deterministic from the day-0-aligned partition, so
+        # this also covers block_len == 1 (each NF night is its own block).
+        nf_shift_idxs = [i for i, s in enumerate(self.shifts) if s.night_float]
+        n_days = len(self.days)
+        block_span = max(1, block_len)
+        if gap > 0 and nf_shift_idxs:
+            for s_idx in nf_shift_idxs:
+                for bs in range(0, n_days, block_span):
+                    be = min(bs + block_span, n_days) - 1  # block-end day index
+                    for p_idx in range(len(self.people) - 1):  # exclude Unfilled
+                        start_var = self.vars[(p_idx, bs, s_idx)]
+                        end_var = self.vars[(p_idx, be, s_idx)]
+                        for k in range(1, gap + 1):
+                            after = be + k
+                            if after < n_days:
+                                for ss in range(len(self.shifts)):
+                                    self.model.Add(
+                                        end_var + self.vars[(p_idx, after, ss)] <= 1
+                                    )
+                            before = bs - k
+                            if before >= 0:
+                                for ss in range(len(self.shifts)):
+                                    self.model.Add(
+                                        start_var + self.vars[(p_idx, before, ss)] <= 1
+                                    )
+
     def build_objective(self) -> None:
         unfilled_vars = [
             self.vars[(len(self.people) - 1, d_idx, s_idx)]
@@ -392,6 +425,17 @@ class SchedulerSolver:
             solver.Value = lambda var: getattr(var, "value", 0)
         if time_limit_sec:
             solver.parameters.max_time_in_seconds = time_limit_sec
+        # Seed the search. With the default multi-worker search a fixed seed
+        # makes runs reproducible whenever the solver proves optimality; under a
+        # wall-time limit the parallel workers may still differ, so this is
+        # best-effort rather than a guarantee (kept multi-worker because a single
+        # deterministic worker is too slow to stay feasible under tight limits).
+        # Guarded so the lightweight test stubs (whose ``parameters`` is a bare
+        # object) don't fail.
+        try:
+            solver.parameters.random_seed = int(getattr(self.data, "seed", 0))
+        except (AttributeError, ValueError, TypeError):
+            pass
         solved_with_response = True
         try:
             status = solver.Solve(self.model)
@@ -413,6 +457,14 @@ class SchedulerSolver:
             name_func = getattr(solver, "StatusName", lambda s: str(s))
             status_name = name_func(status)
             if status_name not in {"OPTIMAL", "FEASIBLE"}:
+                if status_name == "UNKNOWN":
+                    # The solver hit the time limit before finding any feasible
+                    # schedule; this is a budget problem, not proven infeasibility.
+                    raise RuntimeError(
+                        "The solver ran out of time before finding a schedule "
+                        "(status: UNKNOWN). Allow more time (set ENV=prod), or "
+                        "reduce the problem size / constraints, then try again."
+                    )
                 hints = diagnose_infeasibility(self.data)
                 detail = "\n".join(f"- {h}" for h in hints)
                 raise RuntimeError(
@@ -434,20 +486,47 @@ class SchedulerSolver:
                         break
                 row[shift.label] = assigned
             rows.append(row)
-        return pd.DataFrame(rows)
+        df = pd.DataFrame(rows)
+        # Only a real solver response carries a meaningful status / wall time;
+        # the stub fallback above sets variable values by hand.
+        status_name = None
+        wall_time = None
+        if solved_with_response:
+            try:
+                status_name = getattr(solver, "StatusName", lambda s: str(s))(status)
+                wall_time = getattr(solver, "WallTime", lambda: None)()
+            except (AttributeError, TypeError, ValueError):  # pragma: no cover
+                status_name = None
+        try:
+            df.attrs["solver_status"] = status_name
+            df.attrs["wall_time_sec"] = wall_time
+        except (AttributeError, TypeError):  # pragma: no cover - stub frames
+            pass
+        return df
 
 
 def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
     """Build schedule with optional environment based time limit."""
+    # Lazy import avoids a module-level cycle (validation imports this module).
+    from .validation import validate_input
+
+    problems = validate_input(data)
+    if problems:
+        detail = "\n".join(f"- {p}" for p in problems)
+        raise ValueError(f"Invalid configuration:\n{detail}")
+
     day_count = (data.end_date - data.start_date).days + 1
     participants = data.juniors + data.seniors
+    target_total = data.target_total
+    target_total_map = data.target_total_map
+    target_weekend = data.target_weekend
     if participants:
         total_points = day_count * sum(s.points for s in data.shifts)
         weekend_points = 0.0
         for i in range(day_count):
             day = data.start_date + timedelta(days=i)
             for s in data.shifts:
-                if is_weekend(day, s):
+                if is_weekend(day, s, data.weekend_days):
                     weekend_points += s.points
         # Availability weights: a rotator is only present within their active
         # window(s), so they fairly carry a proportionally smaller share of the
@@ -471,27 +550,39 @@ def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
         availability = {p: _active_days(p) for p in participants}
         weight_sum = sum(availability.values())
 
-        if data.target_total is None:
-            data.target_total = total_points / len(participants)
+        if target_total is None:
+            target_total = total_points / len(participants)
             if weight_sum > 0:
-                data.target_total_map = {
+                target_total_map = {
                     p: total_points * availability[p] / weight_sum for p in participants
                 }
-        if data.target_weekend is None:
+        if target_weekend is None:
             if weight_sum > 0:
-                data.target_weekend = {
+                target_weekend = {
                     p: weekend_points * availability[p] / weight_sum for p in participants
                 }
             else:
-                data.target_weekend = {p: 0.0 for p in participants}
+                target_weekend = {p: 0.0 for p in participants}
 
+    # Solve against a copy carrying the resolved targets so the caller's
+    # ``InputData`` is never mutated (re-running with changed dates previously
+    # reused stale auto-targets). The resolved targets are exposed on ``df.attrs``.
+    solve_data = replace(
+        data,
+        target_total=target_total,
+        target_total_map=target_total_map,
+        target_weekend=target_weekend,
+    )
     using_stub = not ORTOOLS_AVAILABLE
-    solver = SchedulerSolver(data)
+    solver = SchedulerSolver(solve_data)
     env = (env or os.environ.get("ENV", "prod")).lower()
     limit = compute_time_limit(env, len(participants) or 1, day_count, len(data.shifts) or 1)
     df = solver.solve(time_limit_sec=limit)
     df.attrs["time_limit_sec"] = limit
     df.attrs["solver_warning"] = None
+    df.attrs["target_total"] = target_total
+    df.attrs["target_total_map"] = target_total_map
+    df.attrs["target_weekend"] = target_weekend
     if using_stub:
         df.attrs["solver_warning"] = (
             "OR-Tools not installed; using fallback output with unfilled shifts."
@@ -505,17 +596,22 @@ def build_schedule(data: InputData, env: str | None = None) -> pd.DataFrame:
 
 
 def respects_min_gap(df: pd.DataFrame, gap: int, shifts=None) -> bool:
-    """Return True if no resident works non-night-float shifts ``gap`` or fewer
-    days apart.
+    """Return True if the schedule respects ``gap`` days of rest between shifts.
 
-    Night-float shifts are excluded from the check when ``shifts`` is provided,
-    because NF blocks are intentionally consecutive. When ``shifts`` is omitted
-    every column is checked (backwards-compatible behaviour).
+    Two rules, mirroring the solver:
+
+    * Regular (non-night-float) shifts for a resident must be more than ``gap``
+      days apart.
+    * A night-float block (a maximal run of consecutive NF days for a resident)
+      must have at least ``gap`` idle days before it starts and after it ends,
+      versus *any* shift. Nights within a block stay consecutive.
+
+    When ``shifts`` is omitted, every column is treated as a regular shift
+    (backwards-compatible behaviour).
     """
     if gap <= 0:
         return True
     nf_labels = {s.label for s in shifts if s.night_float} if shifts else set()
-    assignments: Dict[str, list] = {}
     records = df.to_dict("records")
     if hasattr(df, "columns"):
         # Every column except the date/day labels holds resident names. Do not
@@ -528,20 +624,49 @@ def respects_min_gap(df: pd.DataFrame, gap: int, shifts=None) -> bool:
         first = records[0] if records else {}
         shift_cols = [k for k in first.keys() if k not in {"Date", "Day"}]
 
+    regular_days: Dict[str, list] = {}
+    nf_days: Dict[str, set] = {}
+    all_days: Dict[str, set] = {}
     for row in records:
         day = row.get("Date")
+        if day is None:
+            continue
         for label in shift_cols:
-            if label in nf_labels:
-                continue
             person = row.get(label)
             if person in (None, "Unfilled") or not isinstance(person, str):
                 continue
-            assignments.setdefault(person, []).append(day)
-    for days in assignments.values():
+            all_days.setdefault(person, set()).add(day)
+            if label in nf_labels:
+                nf_days.setdefault(person, set()).add(day)
+            else:
+                regular_days.setdefault(person, []).append(day)
+
+    # Rule 1: regular-to-regular spacing.
+    for days in regular_days.values():
         days.sort()
         for d1, d2 in zip(days, days[1:]):
             if (d2 - d1).days <= gap:
                 return False
+
+    # Rule 2: rest around each night-float block.
+    for person, days_set in nf_days.items():
+        days = sorted(days_set)
+        worked = all_days.get(person, set())
+        run_start = run_prev = days[0]
+        runs = []
+        for d in days[1:]:
+            if (d - run_prev).days == 1:
+                run_prev = d
+            else:
+                runs.append((run_start, run_prev))
+                run_start = run_prev = d
+        runs.append((run_start, run_prev))
+        for start, end in runs:
+            for k in range(1, gap + 1):
+                if (end + timedelta(days=k)) in worked:
+                    return False
+                if (start - timedelta(days=k)) in worked:
+                    return False
     return True
 
 
