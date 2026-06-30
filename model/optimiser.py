@@ -175,6 +175,7 @@ class SchedulerSolver:
         self.add_constraints()
         self.add_deviation_constraints()
         self.add_cap_constraints()
+        self.add_extra_point_constraints()
         self.build_objective()
 
     def build_variables(self) -> None:
@@ -306,6 +307,23 @@ class SchedulerSolver:
             if self.data.max_nights and person in self.data.max_nights:
                 cap = int(round(self.data.max_nights[person] * scale))
                 self.model.Add(self.nf_pts[p_idx] <= cap)
+
+    def add_extra_point_constraints(self) -> None:
+        """Hard floor enforcing mandatory extra points on punished residents.
+
+        Their total must reach the (already raised) target, so the extra is
+        actually carried, not merely aimed at. If a resident cannot reach it
+        (availability / min_gap), the model is infeasible and the diagnostics say
+        so — i.e. you learn the penalty can't be applied rather than it silently
+        being skipped.
+        """
+        scale = self.SCALE
+        extra = self.data.extra_points or {}
+        tmap = self.data.target_total_map or {}
+        for p_idx, person in enumerate(self.people[:-1]):
+            if extra.get(person, 0.0) > 0 and person in tmap:
+                floor = int(round(tmap[person] * scale))
+                self.model.Add(self.total_pts[p_idx] >= floor)
 
     def add_constraints(self) -> None:
         rotator_windows: Dict[str, list] = {}
@@ -683,6 +701,22 @@ def build_schedule(data: InputData, env: str | None = None, ledger=None) -> pd.D
                 target_night_float.update(
                     _carryover_targets(prior_nf, role_points, pool, availability, pool_weight, role_points)
                 )
+
+        if data.extra_points and target_total_map:
+            # Mandatory extra points (e.g. a penalty): raise the punished
+            # residents' total target by their extra and lower everyone else's
+            # proportionally so the targets still sum to the work available. A
+            # hard floor in the solver then enforces it.
+            extra = {p: data.extra_points.get(p, 0.0) for p in participants}
+            extra_sum = sum(extra.values())
+            base_sum = sum(target_total_map.values())
+            if base_sum > 0 and extra_sum < base_sum:
+                factor = (base_sum - extra_sum) / base_sum
+                target_total_map = {
+                    p: target_total_map[p] * factor + extra[p] for p in participants
+                }
+            else:  # extreme: the extras alone exceed the available work
+                target_total_map = {p: extra[p] for p in participants}
 
     # Solve against a copy carrying the resolved targets so the caller's
     # ``InputData`` is never mutated (re-running with changed dates previously

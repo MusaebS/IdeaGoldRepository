@@ -102,6 +102,35 @@ def _caps_editor(people: list) -> None:
             st.session_state.caps.pop(rm, None)
 
 
+def _extra_points_editor(people: list) -> None:
+    """Inline editor for mandatory per-resident extra points (e.g. a penalty)."""
+    st.markdown(
+        "**Extra points — mandatory points a resident must carry above their "
+        "fair share (e.g. a penalty). Enforced, not just preferred.**"
+    )
+    if not people:
+        st.caption("Add participants first to configure this.")
+        return
+    c = st.columns([3, 2, 1])
+    with c[0]:
+        who = st.selectbox("Resident", people, key="extra_who")
+    with c[1]:
+        pts = st.number_input("Extra points", 0.0, 999.0, 0.0, 0.5, key="extra_pts")
+    with c[2]:
+        st.markdown("&nbsp;")
+        if st.button("Add", key="extra_add"):
+            if pts > 0:
+                st.session_state.extra_points[who] = pts
+            else:
+                st.session_state.extra_points.pop(who, None)
+    ep = st.session_state.extra_points
+    if ep:
+        st.table(pd.DataFrame([{"Resident": p, "Extra points": v} for p, v in ep.items()]))
+        rm = st.selectbox("Remove extra", list(ep.keys()), key="extra_del")
+        if st.button("Remove", key="extra_del_btn"):
+            st.session_state.extra_points.pop(rm, None)
+
+
 # Session defaults
 if "shifts" not in st.session_state:
     st.session_state.shifts = []
@@ -119,6 +148,8 @@ if "rotators" not in st.session_state:
     st.session_state.rotators = []
 if "caps" not in st.session_state:
     st.session_state.caps = {}
+if "extra_points" not in st.session_state:
+    st.session_state.extra_points = {}
 if "result_df" not in st.session_state:
     st.session_state.result_df = None
 if "result_data" not in st.session_state:
@@ -193,8 +224,10 @@ with st.expander("Leaves & Rotators", expanded=False):
         "Rotators — resident only available during window", "rotators", _people
     )
 
-with st.expander("Per-resident caps", expanded=False):
+with st.expander("Per-resident caps & extra points", expanded=False):
     _caps_editor(st.session_state.juniors + st.session_state.seniors)
+    st.divider()
+    _extra_points_editor(st.session_state.juniors + st.session_state.seniors)
 
 date_cols = st.columns(2)
 with date_cols[0]:
@@ -230,6 +263,11 @@ max_nights = {
     for p, v in st.session_state.caps.items()
     if p in _active_people and v.get("nights")
 }
+extra_points = {
+    p: v
+    for p, v in st.session_state.extra_points.items()
+    if p in _active_people and v
+}
 
 session_config = InputData(
     start_date=start_date,
@@ -247,6 +285,7 @@ session_config = InputData(
     weekend_days=weekend_days,
     max_total=max_total or None,
     max_nights=max_nights or None,
+    extra_points=extra_points or None,
 )
 
 with st.expander("Save / Load configuration", expanded=False):

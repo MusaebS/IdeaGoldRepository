@@ -27,6 +27,7 @@ def _sample_data():
         weekend_days=[4, 5],
         max_total={"A": 12.0},
         max_nights={"A": 4.0},
+        extra_points={"B": 2.0},
     )
 
 
@@ -49,6 +50,7 @@ def test_config_round_trip():
     assert restored.weekend_days == data.weekend_days
     assert restored.max_total == data.max_total
     assert restored.max_nights == data.max_nights
+    assert restored.extra_points == data.extra_points
 
 
 def test_config_from_minimal_json():

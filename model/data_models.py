@@ -49,6 +49,10 @@ class InputData:
     # many total / night-float points; uncovered slots fall to ``Unfilled``.
     max_total: Dict[str, float] | None = None
     max_nights: Dict[str, float] | None = None
+    # Per-resident mandatory extra points (e.g. a penalty). A resident in the map
+    # must carry this many points above their share: their total target is raised
+    # by it (others' lowered to reconcile) and a hard floor enforces it.
+    extra_points: Dict[str, float] | None = None
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None
     target_weekend: Dict[str, float] | None = None

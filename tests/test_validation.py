@@ -211,3 +211,19 @@ def test_no_spurious_leave_rotator_warnings():
         for w in config_warnings(data)
         for kw in ("outside the schedule", "no active days", "whole block")
     )
+
+
+def test_extra_points_for_unknown_resident_rejected():
+    data = _data(extra_points={"Nobody": 3.0})
+    assert any("unknown resident" in i for i in validate_input(data))
+
+
+def test_negative_extra_points_rejected():
+    data = _data(extra_points={"A": -1.0})
+    assert any("cannot be negative" in i for i in validate_input(data))
+
+
+def test_warns_extra_points_exceed_cap():
+    from model.validation import config_warnings
+    data = _data(extra_points={"A": 5.0}, max_total={"A": 3.0})
+    assert any("can't fit under the cap" in w for w in config_warnings(data))

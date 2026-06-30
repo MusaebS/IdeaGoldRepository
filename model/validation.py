@@ -52,6 +52,15 @@ def config_warnings(data: InputData) -> List[str]:
                 "be unfilled each day."
             )
 
+    max_total = data.max_total or {}
+    for name, extra in (data.extra_points or {}).items():
+        if extra > 0 and name in max_total and max_total[name] < extra:
+            warnings.append(
+                f"'{name}' has {extra:g} extra points but a max-total cap of "
+                f"{max_total[name]:g}; the penalty can't fit under the cap and the "
+                "schedule will be infeasible."
+            )
+
     warnings.extend(_leave_rotator_warnings(data))
     return warnings
 
@@ -213,6 +222,12 @@ def validate_input(data: InputData) -> List[str]:
                 issues.append(f"Max {label} cap references unknown resident '{name}'.")
             if value < 0:
                 issues.append(f"Max {label} cap for '{name}' cannot be negative.")
+
+    for name, value in (data.extra_points or {}).items():
+        if name not in roster:
+            issues.append(f"Extra points reference unknown resident '{name}'.")
+        if value < 0:
+            issues.append(f"Extra points for '{name}' cannot be negative.")
 
     return issues
 

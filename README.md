@@ -114,6 +114,18 @@ in the app's "Per-resident caps" panel. A capped resident simply works less and 
 slack falls to `Unfilled`, so a cap never makes the schedule infeasible; the cap
 overrides fairness for that resident.
 
+## Extra points (mandatory penalties)
+
+`InputData.extra_points` (resident → points) imposes mandatory extra workload on a
+resident, e.g. as a penalty. The resident's total fairness target is raised by the
+amount (everyone else's lowered proportionally so the totals still reconcile) and a
+hard floor forces the solver to actually assign them at least that much — so a
+resident given `+2` ends up two points above their peers' fair share. It is
+enforced, not merely preferred: if it can't fit (availability / min-gap, or a
+conflicting `max_total` cap), the schedule is reported infeasible with diagnostics
+rather than silently dropping the penalty. Configure it in the app's "Per-resident
+caps & extra points" panel.
+
 ## Weekend definition
 
 Weekend fairness defaults to Saturday/Sunday. Set **Weekend days** in the app (or
@@ -137,6 +149,7 @@ the validation-error path, and the infeasible relax-and-retry recovery. It needs
 of the `pytest` run.
 
 ## Changelog
+- Added mandatory per-resident extra points (`extra_points`, e.g. a penalty): the target is raised and a hard floor enforces it.
 - Fairness log shows targets inline + a points checksum, sorts worst-deviation-first, and folds in constraint violations; Excel/PDF gain matching `Total dev`/`NF dev` columns.
 - Hardened the fairness log into a verification artifact: a coverage-health header, `[OVER]`/`[UNDER]` outlier flags, and an explicit unfilled-slots list.
 - Added a per-leave compensated/uncompensated toggle (uncompensated leave scales the resident's quota down like a rotator).

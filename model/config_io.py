@@ -67,6 +67,7 @@ def input_data_to_json(data: InputData) -> str:
         "weekend_days": data.weekend_days,
         "max_total": data.max_total,
         "max_nights": data.max_nights,
+        "extra_points": data.extra_points,
     }
     return json.dumps(payload, indent=2)
 
@@ -111,6 +112,11 @@ def input_data_from_json(text: str) -> InputData:
         max_nights=(
             {str(k): float(v) for k, v in raw["max_nights"].items()}
             if raw.get("max_nights")
+            else None
+        ),
+        extra_points=(
+            {str(k): float(v) for k, v in raw["extra_points"].items()}
+            if raw.get("extra_points")
             else None
         ),
     )

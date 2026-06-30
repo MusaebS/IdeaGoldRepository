@@ -729,3 +729,29 @@ def test_compensated_leave_keeps_full_quota():
     # compensated -> equal weights -> equal targets (2.0 each)
     assert abs(tmap["A"] - 2.0) < 1e-6
     assert abs(tmap["B"] - 2.0) < 1e-6
+
+
+def test_extra_points_are_enforced():
+    pytest.importorskip("ortools")
+    shifts = [ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 30),  # 30 points across 3 residents
+        shifts=shifts,
+        juniors=["A", "B", "C"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+        extra_points={"A": 3.0},
+    )
+    df = build_schedule(data, env="test")
+    from model.fairness import calculate_points
+
+    pts = calculate_points(df, data)
+    # A must carry ~3 points above peers, and at least the raised target.
+    assert pts["A"]["total"] >= pts["B"]["total"] + 2
+    assert pts["A"]["total"] >= pts["C"]["total"] + 2
+    assert df.attrs["target_total_map"]["A"] > df.attrs["target_total_map"]["B"]
