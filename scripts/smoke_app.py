@@ -98,6 +98,12 @@ def _run_checks() -> list[str]:
                 check(True, f"export button {label!r}")
             except Exception:
                 check(False, f"export button {label!r}")
+        try:
+            page.get_by_text("Workload by resident").wait_for(timeout=10000)
+            check(page.locator('[data-testid="stVegaLiteChart"], [data-testid="stArrowVegaLiteChart"]').count() > 0,
+                  "fairness bar chart renders")
+        except Exception:
+            check(False, "fairness bar chart renders")
         check(page.locator('[data-testid="stException"]').count() == 0,
               "no uncaught exception on the page")
         page.close()
