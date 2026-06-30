@@ -33,7 +33,7 @@ schedule = build_schedule(data)
 # data.target_total and data.target_weekend now hold the computed shares
 ```
 
-The results page includes a **Download Fairness Log** button. It saves a text file summarising each resident's role, night float points, total and weekend points, along with any deviations from the targets you entered. A Fairness summary also shows the min/max/range for total and weekend points directly in the UI. The schedule and fairness summary can also be exported as **CSV**, **Excel** (`.xlsx`, schedule + fairness sheets) and **PDF**.
+The results page includes a **Download Fairness Log** button. It is built to be a verification artifact: it opens with a health line (slots filled / unfilled), shows each resident's role, night-float / total / weekend points and deviations from target, flags anyone more than a point off their total target as `[OVER]` / `[UNDER]`, and ends with an explicit list of unfilled slots — so coverage gaps and unfair outliers can't be missed. A Fairness summary and a per-resident bar chart also show the min/max/range directly in the UI. The schedule and fairness summary can also be exported as **CSV**, **Excel** (`.xlsx`, schedule + fairness sheets) and **PDF**.
 
 ## Configuration validation
 
@@ -121,6 +121,7 @@ the validation-error path, and the infeasible relax-and-retry recovery. It needs
 of the `pytest` run.
 
 ## Changelog
+- Hardened the fairness log into a verification artifact: a coverage-health header, `[OVER]`/`[UNDER]` outlier flags, and an explicit unfilled-slots list.
 - Added a per-leave compensated/uncompensated toggle (uncompensated leave scales the resident's quota down like a rotator).
 - Added leave/rotator sanity advisories (out-of-range windows, fully-excluded rotators, whole-block leave, redundant leave).
 - Added cumulative carryover fairness via a save/load fairness ledger (`model/ledger.py`, `build_schedule(..., ledger=...)`).

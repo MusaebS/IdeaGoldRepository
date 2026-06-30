@@ -85,13 +85,34 @@ def _resolved_target(df, key: str, fallback):
 def format_fairness_log(
     df: pd.DataFrame, data: InputData, points: Dict[str, Dict[str, float]] | None = None
 ) -> str:
-    """Generate a human-readable fairness log."""
+    """Generate a human-readable fairness log.
+
+    Built to be a reliable verification artifact: it opens with a health line
+    (slots filled / unfilled), flags any resident whose total load is more than
+    one point off their target as ``[OVER]`` / ``[UNDER]``, and ends with an
+    explicit list of unfilled slots — so coverage gaps and unfair outliers can't
+    be missed when skimming the log.
+    """
     pts = points or calculate_points(df, data)
     target_total = _resolved_target(df, "target_total", data.target_total)
     target_total_map = _resolved_target(df, "target_total_map", data.target_total_map)
     target_weekend = _resolved_target(df, "target_weekend", data.target_weekend)
     target_nf = _resolved_target(df, "target_night_float", data.target_night_float)
-    lines: List[str] = []
+
+    records = df.to_dict("records")
+    labels = [s.label for s in data.shifts]
+    unfilled = [
+        (row.get("Date"), label)
+        for row in records
+        for label in labels
+        if row.get(label) in (None, "Unfilled")
+    ]
+    total_slots = len(records) * len(labels)
+    filled = total_slots - len(unfilled)
+
+    lines: List[str] = [
+        f"Schedule health: {filled}/{total_slots} slots filled ({len(unfilled)} unfilled)."
+    ]
     for person in sorted(pts):
         info = pts[person]
         role = "Senior" if person in data.seniors else "Junior"
@@ -100,10 +121,15 @@ def format_fairness_log(
         if target_nf and person in target_nf:
             line += f" (dev {nf - target_nf[person]:+.1f})"
         line += f"): total {info['total']:.1f}"
+        total_flag = ""
         person_total_target = (target_total_map or {}).get(person, target_total)
         if person_total_target is not None:
             dev = info['total'] - person_total_target
             line += f" (dev {dev:+.1f})"
+            if dev > 1.0:
+                total_flag = " [OVER]"
+            elif dev < -1.0:
+                total_flag = " [UNDER]"
         line += f", weekend {info['weekend']:.1f}"
         if target_weekend and person in target_weekend:
             wdev = info['weekend'] - target_weekend[person]
@@ -114,8 +140,11 @@ def format_fairness_log(
             if data.target_label and (person, label) in data.target_label:
                 ldev = val - data.target_label[(person, label)]
                 line += f" (dev {ldev:+.1f})"
-        lines.append(line)
+        lines.append(line + total_flag)
     lines.extend(fairness_range_lines(pts))
+    if unfilled:
+        lines.append("Unfilled slots:")
+        lines.extend(f"  {day} — {label}" for day, label in unfilled)
     return "\n".join(lines)
 
 
