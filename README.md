@@ -43,6 +43,11 @@ senior lists, and leave/rotator windows that reference unknown residents or run
 backwards. The app surfaces these as a list to fix; `build_schedule` raises
 `ValueError` for the same problems.
 
+`model.validation.config_warnings` adds *non-blocking* advisories for a valid but
+risky configuration — a night-float shift with no eligible residents, or more
+shifts of a role per day than there are residents of that role — so you know to
+expect unfilled slots before solving rather than after.
+
 ## Rest spacing and night-float blocks
 
 `min_gap` keeps a resident's regular (non-night-float) shifts more than `min_gap`

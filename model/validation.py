@@ -11,7 +11,47 @@ from .data_models import InputData
 from .nf_blocks import respects_nf_blocks
 from .optimiser import respects_min_gap
 
-__all__ = ["validate_input", "validate_schedule"]
+__all__ = ["validate_input", "config_warnings", "validate_schedule"]
+
+
+def config_warnings(data: InputData) -> List[str]:
+    """Return non-blocking advisories about a valid-but-risky configuration.
+
+    Unlike :func:`validate_input` (which blocks solving), these are hints that a
+    configuration will probably leave slots unfilled or be hard to satisfy, shown
+    so the user can fix the roster before wondering why coverage is poor:
+
+    * a night-float shift whose eligible pool is empty (its nights cannot be
+      covered, and with multi-night blocks this can make the model infeasible);
+    * more shifts of a role on a single day than there are residents of that role
+      (a resident works at most one shift per day, so the surplus is unfillable).
+    """
+    warnings: List[str] = []
+
+    for shift in data.shifts:
+        if shift.night_float:
+            pool = data.nf_juniors if shift.role == "Junior" else data.nf_seniors
+            if not pool:
+                warnings.append(
+                    f"Night-float shift '{shift.label}' ({shift.role}) has no "
+                    "eligible residents; its nights will be unfilled or, with "
+                    "multi-night blocks, the schedule may be infeasible."
+                )
+
+    role_people = {"Junior": len(data.juniors), "Senior": len(data.seniors)}
+    role_shifts: dict = {}
+    for shift in data.shifts:
+        role_shifts[shift.role] = role_shifts.get(shift.role, 0) + 1
+    for role, n_shifts in role_shifts.items():
+        n_people = role_people.get(role, 0)
+        if n_shifts > n_people:
+            warnings.append(
+                f"{n_shifts} {role} shift(s) per day but only {n_people} "
+                f"{role.lower()}(s); at least {n_shifts - n_people} slot(s) will "
+                "be unfilled each day."
+            )
+
+    return warnings
 
 
 def validate_input(data: InputData) -> List[str]:

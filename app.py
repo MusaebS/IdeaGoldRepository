@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from model.data_models import ShiftTemplate, InputData
 from model.optimiser import build_schedule
 from model.config_io import input_data_to_json, input_data_from_json
-from model.validation import validate_input, validate_schedule
+from model.validation import validate_input, config_warnings, validate_schedule
 from model.fairness import (
     calculate_points,
     fairness_range_lines,
@@ -208,6 +208,8 @@ if data is not None:
     else:
         if relaxation_note:
             st.info(relaxation_note)
+        for warning in config_warnings(data):
+            st.warning(warning)
         env = os.getenv("ENV", "prod")
         df = None
         try:

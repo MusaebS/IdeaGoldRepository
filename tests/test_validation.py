@@ -133,3 +133,31 @@ def test_build_schedule_rejects_invalid_config():
 
     with pytest.raises(ValueError):
         build_schedule(_data(shifts=[]), env="test")
+
+
+# --- config_warnings (non-blocking advisories) ---------------------------------
+
+def test_config_warnings_empty_for_healthy_config():
+    from model.validation import config_warnings
+    assert config_warnings(_data()) == []
+
+
+def test_config_warnings_flags_uncoverable_nf_shift():
+    from model.validation import config_warnings
+    data = _data(
+        shifts=[ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False)],
+        nf_juniors=[],  # no eligible NF residents
+    )
+    assert any("no" in w and "eligible" in w for w in config_warnings(data))
+
+
+def test_config_warnings_flags_more_shifts_than_residents():
+    from model.validation import config_warnings
+    data = _data(
+        juniors=["A"],  # one junior...
+        shifts=[
+            ShiftTemplate(label="D1", role="Junior", night_float=False, thu_weekend=False),
+            ShiftTemplate(label="D2", role="Junior", night_float=False, thu_weekend=False),
+        ],  # ...but two Junior shifts per day
+    )
+    assert any("unfilled each day" in w for w in config_warnings(data))
