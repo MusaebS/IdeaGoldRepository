@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import List
 
 try:
@@ -51,7 +52,74 @@ def config_warnings(data: InputData) -> List[str]:
                 "be unfilled each day."
             )
 
+    warnings.extend(_leave_rotator_warnings(data))
     return warnings
+
+
+def _leave_rotator_warnings(data: InputData) -> List[str]:
+    """Advisories about leave / rotator windows that are likely mistakes."""
+    out: List[str] = []
+    start, end = data.start_date, data.end_date
+    block_days = (
+        [start + timedelta(days=i) for i in range((end - start).days + 1)]
+        if end >= start
+        else []
+    )
+
+    # Windows that fall entirely outside the schedule dates do nothing.
+    for kind, windows in (("leave", data.leaves), ("rotator", data.rotators)):
+        for name, ws, we in windows:
+            if we < start or ws > end:
+                out.append(
+                    f"{name}'s {kind} window {ws}–{we} is outside the schedule "
+                    f"dates ({start}–{end}) and has no effect."
+                )
+
+    rotator_windows: dict = {}
+    for name, ws, we in data.rotators:
+        rotator_windows.setdefault(name, []).append((ws, we))
+    leave_windows: dict = {}
+    for name, ws, we in data.leaves:
+        leave_windows.setdefault(name, []).append((ws, we))
+
+    # A rotator with no active day in the block is fully excluded.
+    for name, windows in rotator_windows.items():
+        if block_days and not any(
+            any(ws <= d <= we for ws, we in windows) for d in block_days
+        ):
+            out.append(
+                f"Rotator '{name}' has no active days in the block and will not "
+                "be scheduled."
+            )
+
+    # Leave covering the whole block: leave keeps full quota (compensated), so the
+    # resident is guaranteed a large deviation.
+    for name, windows in leave_windows.items():
+        if block_days and all(
+            any(ws <= d <= we for ws, we in windows) for d in block_days
+        ):
+            out.append(
+                f"'{name}' is on leave for the whole block; leave keeps their full "
+                "fair share, so expect a large fairness deviation."
+            )
+
+    # A rotator's leave that never overlaps their active window is redundant.
+    for name, lwins in leave_windows.items():
+        rwins = rotator_windows.get(name)
+        if not rwins:
+            continue
+        for ws, we in lwins:
+            overlaps = any(
+                ws <= d <= we and any(rs <= d <= re for rs, re in rwins)
+                for d in block_days
+            )
+            if not overlaps:
+                out.append(
+                    f"'{name}' has a leave {ws}–{we} outside their rotator active "
+                    "window, so it has no effect."
+                )
+
+    return out
 
 
 def validate_input(data: InputData) -> List[str]:

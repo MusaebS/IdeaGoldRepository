@@ -46,9 +46,11 @@ backwards. The app surfaces these as a list to fix; `build_schedule` raises
 `ValueError` for the same problems.
 
 `model.validation.config_warnings` adds *non-blocking* advisories for a valid but
-risky configuration — a night-float shift with no eligible residents, or more
-shifts of a role per day than there are residents of that role — so you know to
-expect unfilled slots before solving rather than after.
+risky configuration — a night-float shift with no eligible residents, more shifts
+of a role per day than there are residents of that role, and likely leave/rotator
+mistakes (a window outside the schedule dates, a rotator with no active days, a
+resident on leave for the whole block, or a leave outside that resident's rotator
+window) — so you catch them before solving rather than after.
 
 ## Rest spacing and night-float blocks
 
@@ -110,6 +112,7 @@ the validation-error path, and the infeasible relax-and-retry recovery. It needs
 of the `pytest` run.
 
 ## Changelog
+- Added leave/rotator sanity advisories (out-of-range windows, fully-excluded rotators, whole-block leave, redundant leave).
 - Added cumulative carryover fairness via a save/load fairness ledger (`model/ledger.py`, `build_schedule(..., ledger=...)`).
 - Added per-resident hard caps on total and night-float load (`max_total`, `max_nights`).
 - Balanced night-float load as a first-class fairness objective (`target_night_float`), with deviation/range reporting; fairness deviations now read solver-resolved targets from `df.attrs`.

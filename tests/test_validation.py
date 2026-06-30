@@ -171,3 +171,43 @@ def test_cap_for_unknown_resident_rejected():
 def test_negative_cap_rejected():
     data = _data(max_nights={"A": -1.0})
     assert any("cannot be negative" in i for i in validate_input(data))
+
+
+# --- leave / rotator window advisories -----------------------------------------
+
+def test_warns_window_outside_schedule_dates():
+    from model.validation import config_warnings
+    data = _data(leaves=[("A", date(2022, 1, 1), date(2022, 1, 2))])  # prior year
+    assert any("outside the schedule" in w for w in config_warnings(data))
+
+
+def test_warns_rotator_with_no_active_days():
+    from model.validation import config_warnings
+    # rotator window entirely before the block -> no active days
+    data = _data(rotators=[("A", date(2022, 12, 1), date(2022, 12, 31))])
+    assert any("no active days" in w for w in config_warnings(data))
+
+
+def test_warns_leave_covering_whole_block():
+    from model.validation import config_warnings
+    data = _data(leaves=[("A", date(2023, 1, 1), date(2023, 1, 4))])  # whole 4-day block
+    assert any("whole block" in w for w in config_warnings(data))
+
+
+def test_warns_redundant_leave_outside_rotator_window():
+    from model.validation import config_warnings
+    data = _data(
+        rotators=[("A", date(2023, 1, 1), date(2023, 1, 2))],
+        leaves=[("A", date(2023, 1, 3), date(2023, 1, 4))],  # outside A's rotator window
+    )
+    assert any("outside their rotator active window" in w for w in config_warnings(data))
+
+
+def test_no_spurious_leave_rotator_warnings():
+    from model.validation import config_warnings
+    data = _data(leaves=[("A", date(2023, 1, 2), date(2023, 1, 2))])  # one normal day
+    assert not any(
+        kw in w
+        for w in config_warnings(data)
+        for kw in ("outside the schedule", "no active days", "whole block")
+    )
