@@ -33,7 +33,14 @@ schedule = build_schedule(data)
 # data.target_total and data.target_weekend now hold the computed shares
 ```
 
-The results page includes a **Download Fairness Log** button. It is built to be a verification artifact: it opens with a health line (slots filled / unfilled), shows each resident's role, night-float / total / weekend points and deviations from target, flags anyone more than a point off their total target as `[OVER]` / `[UNDER]`, and ends with an explicit list of unfilled slots — so coverage gaps and unfair outliers can't be missed. A Fairness summary and a per-resident bar chart also show the min/max/range directly in the UI. The schedule and fairness summary can also be exported as **CSV**, **Excel** (`.xlsx`, schedule + fairness sheets) and **PDF**.
+The results page includes a **Download Fairness Log** button. It is built to be a verification artifact so mistakes can't slip through:
+
+- a **health line** (slots filled / unfilled) and a **points checksum** (assigned + unfilled = available, flagged if they don't reconcile);
+- each resident's role, night-float / total / weekend points shown **with their target and deviation**, residents **sorted worst-deviation-first**, and anyone more than a point off their total target flagged `[OVER]` / `[UNDER]`;
+- a **Constraint violations** section (it runs `validate_schedule`, so a hand-edited roster's problems surface here too);
+- an explicit list of **unfilled slots**.
+
+A Fairness summary and a per-resident bar chart show the min/max/range in the UI, and the Excel/PDF "Fairness" sheet carries the same `Total dev` / `NF dev` columns from the same solver-resolved targets — so the on-screen view, the log, and the exports all agree. The schedule and fairness summary can also be exported as **CSV**, **Excel** (`.xlsx`, schedule + fairness sheets) and **PDF**.
 
 ## Configuration validation
 
@@ -121,6 +128,7 @@ the validation-error path, and the infeasible relax-and-retry recovery. It needs
 of the `pytest` run.
 
 ## Changelog
+- Fairness log shows targets inline + a points checksum, sorts worst-deviation-first, and folds in constraint violations; Excel/PDF gain matching `Total dev`/`NF dev` columns.
 - Hardened the fairness log into a verification artifact: a coverage-health header, `[OVER]`/`[UNDER]` outlier flags, and an explicit unfilled-slots list.
 - Added a per-leave compensated/uncompensated toggle (uncompensated leave scales the resident's quota down like a rotator).
 - Added leave/rotator sanity advisories (out-of-range windows, fully-excluded rotators, whole-block leave, redundant leave).

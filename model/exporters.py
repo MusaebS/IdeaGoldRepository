@@ -23,9 +23,20 @@ def _fmt(value) -> str:
 
 
 def build_fairness_frame(
-    points: Dict[str, Dict[str, float]], data: InputData
+    points: Dict[str, Dict[str, float]], data: InputData, df=None
 ) -> "pd.DataFrame":
-    """Return a per-resident fairness table (total, weekend, NF, per-label)."""
+    """Return a per-resident fairness table (total, weekend, NF, per-label).
+
+    When the solved ``df`` is given, ``Total dev`` and ``NF dev`` columns are
+    added from the same solver-resolved targets the fairness log uses, so the
+    exported sheet and the log agree on deviations (one source of truth).
+    """
+    from .fairness import _resolved_target  # shared target resolution
+
+    target_total = _resolved_target(df, "target_total", data.target_total) if df is not None else None
+    target_total_map = _resolved_target(df, "target_total_map", data.target_total_map) if df is not None else None
+    target_nf = _resolved_target(df, "target_night_float", data.target_night_float) if df is not None else None
+
     labels = sorted(
         {label for info in points.values() for label in info.get("labels", {})}
     )
@@ -40,6 +51,11 @@ def build_fairness_frame(
             "Weekend": info.get("weekend", 0.0),
             "Night Float": info.get("night_float", 0.0),
         }
+        total_tgt = (target_total_map or {}).get(name, target_total)
+        if total_tgt is not None:
+            row["Total dev"] = round(info.get("total", 0.0) - total_tgt, 1)
+        if target_nf and name in target_nf:
+            row["NF dev"] = round(info.get("night_float", 0.0) - target_nf[name], 1)
         for label in labels:
             row[label] = info.get("labels", {}).get(label, 0.0)
         rows.append(row)
@@ -58,7 +74,7 @@ def schedule_to_excel_bytes(
     ``openpyxl`` to be installed.
     """
     points = points if points is not None else calculate_points(df, data)
-    fairness = build_fairness_frame(points, data)
+    fairness = build_fairness_frame(points, data, df)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Schedule", index=False)
@@ -90,7 +106,7 @@ def schedule_to_pdf_bytes(
     )
 
     points = points if points is not None else calculate_points(df, data)
-    fairness = build_fairness_frame(points, data)
+    fairness = build_fairness_frame(points, data, df)
 
     styles = getSampleStyleSheet()
     cell = ParagraphStyle("cell", fontName="Helvetica", fontSize=6, leading=7)

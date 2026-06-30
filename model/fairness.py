@@ -101,6 +101,7 @@ def format_fairness_log(
 
     records = df.to_dict("records")
     labels = [s.label for s in data.shifts]
+    label_points = {s.label: s.points for s in data.shifts}
     unfilled = [
         (row.get("Date"), label)
         for row in records
@@ -110,30 +111,48 @@ def format_fairness_log(
     total_slots = len(records) * len(labels)
     filled = total_slots - len(unfilled)
 
+    # Checksum: assigned + unfilled points must equal the points available.
+    assigned_pts = sum(info["total"] for info in pts.values())
+    unfilled_pts = sum(label_points.get(label, 0.0) for _day, label in unfilled)
+    available_pts = sum(label_points.values()) * len(records)
+
+    def _person_total_target(person):
+        return (target_total_map or {}).get(person, target_total)
+
+    def _total_dev(person):
+        tgt = _person_total_target(person)
+        return None if tgt is None else pts[person]["total"] - tgt
+
     lines: List[str] = [
-        f"Schedule health: {filled}/{total_slots} slots filled ({len(unfilled)} unfilled)."
+        f"Schedule health: {filled}/{total_slots} slots filled ({len(unfilled)} unfilled).",
+        f"Points: {assigned_pts:.1f} assigned + {unfilled_pts:.1f} unfilled "
+        f"= {available_pts:.1f} available"
+        + ("" if abs(assigned_pts + unfilled_pts - available_pts) < 1e-6
+           else " (MISMATCH — totals do not reconcile!)"),
     ]
-    for person in sorted(pts):
+
+    # Worst total-deviation first so outliers sit at the top of the report.
+    for person in sorted(pts, key=lambda p: (-abs(_total_dev(p) or 0.0), p)):
         info = pts[person]
         role = "Senior" if person in data.seniors else "Junior"
         nf = info.get("night_float", 0.0)
         line = f"{person} ({role}, NF {nf:.1f}"
         if target_nf and person in target_nf:
-            line += f" (dev {nf - target_nf[person]:+.1f})"
+            line += f" (target {target_nf[person]:.1f}, dev {nf - target_nf[person]:+.1f})"
         line += f"): total {info['total']:.1f}"
         total_flag = ""
-        person_total_target = (target_total_map or {}).get(person, target_total)
-        if person_total_target is not None:
-            dev = info['total'] - person_total_target
-            line += f" (dev {dev:+.1f})"
+        tgt = _person_total_target(person)
+        if tgt is not None:
+            dev = info['total'] - tgt
+            line += f" (target {tgt:.1f}, dev {dev:+.1f})"
             if dev > 1.0:
                 total_flag = " [OVER]"
             elif dev < -1.0:
                 total_flag = " [UNDER]"
         line += f", weekend {info['weekend']:.1f}"
         if target_weekend and person in target_weekend:
-            wdev = info['weekend'] - target_weekend[person]
-            line += f" (dev {wdev:+.1f})"
+            wt = target_weekend[person]
+            line += f" (target {wt:.1f}, dev {info['weekend'] - wt:+.1f})"
         for label in sorted(info['labels']):
             val = info['labels'][label]
             line += f", {label} {val:.1f}"
@@ -142,6 +161,14 @@ def format_fairness_log(
                 line += f" (dev {ldev:+.1f})"
         lines.append(line + total_flag)
     lines.extend(fairness_range_lines(pts))
+
+    # Fold constraint checks in so a hand-edited schedule's violations surface here.
+    from .validation import validate_schedule  # lazy: validation imports optimiser
+    issues = validate_schedule(df, data)
+    if issues:
+        lines.append("Constraint violations:")
+        lines.extend(f"  {issue}" for issue in issues)
+
     if unfilled:
         lines.append("Unfilled slots:")
         lines.extend(f"  {day} — {label}" for day, label in unfilled)

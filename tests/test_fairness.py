@@ -71,14 +71,15 @@ def test_format_fairness_log():
         nf_seniors=[],
         leaves=[],
         rotators=[],
-        min_gap=1,
+        min_gap=0,
         target_total=3.0,
     )
     log = format_fairness_log(df, data)
     expected_lines = [
         "Schedule health: 4/4 slots filled (0 unfilled).",
-        "Alice (Junior, NF 0.0): total 3.0 (dev +0.0), weekend 3.0, D 1.0, N 2.0",
-        "Bob (Junior, NF 0.0): total 3.0 (dev +0.0), weekend 3.0, D 1.0, N 2.0",
+        "Points: 6.0 assigned + 0.0 unfilled = 6.0 available",
+        "Alice (Junior, NF 0.0): total 3.0 (target 3.0, dev +0.0), weekend 3.0, D 1.0, N 2.0",
+        "Bob (Junior, NF 0.0): total 3.0 (target 3.0, dev +0.0), weekend 3.0, D 1.0, N 2.0",
         "Total points min 3.0, max 3.0, range 0.0",
         "Weekend points min 3.0, max 3.0, range 0.0",
     ]
@@ -230,7 +231,7 @@ def test_fairness_log_shows_nightfloat_deviation():
         {"Date": date(2023, 1, 2), "NF": "B"},
     ])
     log = format_fairness_log(df, data)
-    assert any("NF 1.0 (dev +0.0)" in line for line in log.splitlines())
+    assert any("NF 1.0 (target 1.0, dev +0.0)" in line for line in log.splitlines())
     assert "Night-float points" in log
 
 
@@ -282,3 +283,49 @@ def test_fairness_log_flags_overloaded_resident():
     log = format_fairness_log(df, data)
     assert any(line.startswith("A ") and line.endswith("[OVER]") for line in log.splitlines())
     assert any(line.startswith("B ") and line.endswith("[UNDER]") for line in log.splitlines())
+
+
+def test_fairness_log_surfaces_constraint_violations():
+    shifts = [ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 2),
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=2,  # A on consecutive days violates this
+    )
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 1), "S": "A"},
+        {"Date": date(2023, 1, 2), "S": "A"},
+    ])
+    log = format_fairness_log(df, data)
+    assert "Constraint violations:" in log
+    assert any("Minimum gap" in line for line in log.splitlines())
+
+
+def test_fairness_log_checksum_reconciles():
+    shifts = [ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 2),
+        end_date=date(2023, 1, 3),
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+    )
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 2), "S": "A"},
+        {"Date": date(2023, 1, 3), "S": "Unfilled"},
+    ])
+    log = format_fairness_log(df, data)
+    assert "Points: 1.0 assigned + 1.0 unfilled = 2.0 available" in log
+    assert "MISMATCH" not in log

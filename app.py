@@ -260,9 +260,11 @@ with st.expander("Save / Load configuration", expanded=False):
 
 with st.expander("Carryover fairness (cumulative across blocks)", expanded=False):
     st.caption(
-        "Upload the fairness ledger from your previous block to balance cumulative "
-        "load: residents who carried extra before get lighter targets now. After "
-        "generating, download the updated ledger to use for the next block."
+        "Optional. Leave this empty for a standalone, one-off schedule — this "
+        "block is balanced on its own, with no link to fairness history. To keep "
+        "fairness across months instead, upload the previous block's ledger here "
+        "(residents who carried extra get lighter targets now) and download the "
+        "updated ledger afterwards for next time."
     )
     uploaded_ledger = st.file_uploader("Load fairness ledger (JSON)", type="json", key="ledger_upload")
 
