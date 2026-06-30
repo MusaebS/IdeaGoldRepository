@@ -71,6 +71,15 @@ resolved fairness targets and solver status are returned on the DataFrame's `att
 (`target_total`, `target_total_map`, `target_weekend`, `solver_status`,
 `wall_time_sec`).
 
+## Leaves: compensated or uncompensated
+
+Each leave carries a per-leave **compensated** flag (4-tuple
+`(resident, start, end, compensated)`; legacy 3-tuples are treated as
+compensated). A *compensated* leave blocks the days but keeps the resident's full
+fair share (they are not expected to make it up). An *uncompensated* leave also
+scales that share down for the days missed, like a rotator, so the resident is
+not penalised for the absence. Toggle it per leave in the app's Leaves editor.
+
 ## Carryover fairness (cumulative across blocks)
 
 Fairness can span multiple blocks. After generating a schedule, download the
@@ -112,6 +121,7 @@ the validation-error path, and the infeasible relax-and-retry recovery. It needs
 of the `pytest` run.
 
 ## Changelog
+- Added a per-leave compensated/uncompensated toggle (uncompensated leave scales the resident's quota down like a rotator).
 - Added leave/rotator sanity advisories (out-of-range windows, fully-excluded rotators, whole-block leave, redundant leave).
 - Added cumulative carryover fairness via a save/load fairness ledger (`model/ledger.py`, `build_schedule(..., ledger=...)`).
 - Added per-resident hard caps on total and night-float load (`max_total`, `max_nights`).

@@ -4,7 +4,7 @@ import json
 from datetime import date
 from typing import List, Tuple
 
-from .data_models import ShiftTemplate, InputData
+from .data_models import ShiftTemplate, InputData, normalized_leaves
 
 __all__ = ["input_data_to_json", "input_data_from_json"]
 
@@ -17,6 +17,22 @@ def _windows_from_json(items) -> List[Tuple[str, date, date]]:
     out: List[Tuple[str, date, date]] = []
     for name, start, end in items or []:
         out.append((name, date.fromisoformat(start), date.fromisoformat(end)))
+    return out
+
+
+def _leaves_to_json(leaves) -> List[list]:
+    return [
+        [name, start.isoformat(), end.isoformat(), compensated]
+        for name, start, end, compensated in normalized_leaves(leaves)
+    ]
+
+
+def _leaves_from_json(items) -> List[Tuple[str, date, date, bool]]:
+    out: List[Tuple[str, date, date, bool]] = []
+    for entry in items or []:
+        name, start, end = entry[0], entry[1], entry[2]
+        compensated = bool(entry[3]) if len(entry) > 3 else True
+        out.append((name, date.fromisoformat(start), date.fromisoformat(end), compensated))
     return out
 
 
@@ -43,7 +59,7 @@ def input_data_to_json(data: InputData) -> str:
         "seniors": list(data.seniors),
         "nf_juniors": list(data.nf_juniors),
         "nf_seniors": list(data.nf_seniors),
-        "leaves": _windows_to_json(data.leaves),
+        "leaves": _leaves_to_json(data.leaves),
         "rotators": _windows_to_json(data.rotators),
         "min_gap": data.min_gap,
         "nf_block_length": data.nf_block_length,
@@ -77,7 +93,7 @@ def input_data_from_json(text: str) -> InputData:
         seniors=list(raw.get("seniors", [])),
         nf_juniors=list(raw.get("nf_juniors", [])),
         nf_seniors=list(raw.get("nf_seniors", [])),
-        leaves=_windows_from_json(raw.get("leaves")),
+        leaves=_leaves_from_json(raw.get("leaves")),
         rotators=_windows_from_json(raw.get("rotators")),
         min_gap=int(raw.get("min_gap", 1)),
         nf_block_length=int(raw.get("nf_block_length", 5)),

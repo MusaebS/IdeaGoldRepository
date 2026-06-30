@@ -127,7 +127,7 @@ except ImportError:  # pragma: no cover - simple fallback if ortools missing
         },
     )
 
-from .data_models import InputData
+from .data_models import InputData, normalized_leaves
 from .nf_blocks import respects_nf_blocks
 from .utils import is_weekend
 
@@ -331,8 +331,8 @@ class SchedulerSolver:
                             self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
                         if shift.role == "Senior" and person not in self.data.nf_seniors:
                             self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
-                    # leaves
-                    for res, start, end in self.data.leaves:
+                    # leaves (compensated or not, the days are blocked)
+                    for res, start, end, _comp in normalized_leaves(self.data.leaves):
                         if res == person and start <= day <= end:
                             self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
                     # rotators: only available within their active window(s);
@@ -601,23 +601,31 @@ def build_schedule(data: InputData, env: str | None = None, ledger=None) -> pd.D
                 if is_weekend(day, s, data.weekend_days):
                     weekend_points += s.points
         # Availability weights: a rotator is only present within their active
-        # window(s), so they fairly carry a proportionally smaller share of the
-        # workload while the other residents absorb the rest. With no rotators
-        # every weight equals ``day_count`` and the targets reduce to an equal
-        # split (preserving previous behaviour).
+        # window(s) and an *uncompensated* leave removes those days too, so the
+        # resident fairly carries a proportionally smaller share while the others
+        # absorb the rest. With no rotators and only compensated leaves every
+        # weight equals ``day_count`` and the targets reduce to an equal split
+        # (preserving previous behaviour).
         rotator_windows: Dict[str, list] = {}
         for res, start, end in data.rotators:
             rotator_windows.setdefault(res, []).append((start, end))
+        uncomp_windows: Dict[str, list] = {}
+        for name, start, end, compensated in normalized_leaves(data.leaves):
+            if not compensated:
+                uncomp_windows.setdefault(name, []).append((start, end))
 
         def _active_days(person: str) -> int:
             windows = rotator_windows.get(person)
-            if not windows:
-                return day_count
-            return sum(
-                1
-                for i in range(day_count)
-                if any(s <= data.start_date + timedelta(days=i) <= e for s, e in windows)
-            )
+            uncomp = uncomp_windows.get(person, [])
+            active = 0
+            for i in range(day_count):
+                day = data.start_date + timedelta(days=i)
+                if windows and not any(s <= day <= e for s, e in windows):
+                    continue  # outside rotator active window
+                if any(s <= day <= e for s, e in uncomp):
+                    continue  # uncompensated leave day -> quota reduced
+                active += 1
+            return active
 
         availability = {p: _active_days(p) for p in participants}
         weight_sum = sum(availability.values())

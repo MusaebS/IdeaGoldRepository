@@ -685,3 +685,47 @@ def test_max_total_cap_is_enforced():
     from model.fairness import calculate_points
 
     assert calculate_points(df, data)["A"]["total"] <= 2.0
+
+
+def test_uncompensated_leave_scales_quota_down():
+    # B is on uncompensated leave half the block, so B's fair-share target is
+    # scaled down and A's up (whereas a compensated leave keeps full quotas).
+    shifts = [ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 4),  # 4-day block
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[("B", date(2023, 1, 1), date(2023, 1, 2), False)],  # uncompensated, 2 of 4 days
+        rotators=[],
+        min_gap=0,
+    )
+    df = build_schedule(data, env="test")
+    tmap = df.attrs["target_total_map"]
+    # total points = 4; weights A=4, B=2 -> A target 4*4/6, B target 4*2/6
+    assert abs(tmap["A"] - 4 * 4 / 6) < 1e-6
+    assert abs(tmap["B"] - 4 * 2 / 6) < 1e-6
+
+
+def test_compensated_leave_keeps_full_quota():
+    shifts = [ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 4),
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[("B", date(2023, 1, 1), date(2023, 1, 2), True)],  # compensated
+        rotators=[],
+        min_gap=0,
+    )
+    df = build_schedule(data, env="test")
+    tmap = df.attrs["target_total_map"]
+    # compensated -> equal weights -> equal targets (2.0 each)
+    assert abs(tmap["A"] - 2.0) < 1e-6
+    assert abs(tmap["B"] - 2.0) < 1e-6

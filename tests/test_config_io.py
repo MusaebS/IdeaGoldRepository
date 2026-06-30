@@ -19,7 +19,7 @@ def _sample_data():
         seniors=["C"],
         nf_juniors=["A"],
         nf_seniors=[],
-        leaves=[("A", date(2023, 1, 5), date(2023, 1, 7))],
+        leaves=[("A", date(2023, 1, 5), date(2023, 1, 7), False)],  # uncompensated
         rotators=[("B", date(2023, 1, 1), date(2023, 1, 14))],
         min_gap=2,
         nf_block_length=5,
@@ -64,3 +64,12 @@ def test_config_from_minimal_json():
     assert data.rotators == []
     assert data.min_gap == 1  # default
     assert data.nf_block_length == 5  # default
+
+
+def test_legacy_three_tuple_leave_normalizes_to_compensated():
+    text = (
+        '{"start_date": "2023-02-01", "end_date": "2023-02-05", "shifts": [],'
+        ' "juniors": ["A"], "seniors": [], "leaves": [["A", "2023-02-02", "2023-02-03"]]}'
+    )
+    data = input_data_from_json(text)
+    assert data.leaves == [("A", date(2023, 2, 2), date(2023, 2, 3), True)]

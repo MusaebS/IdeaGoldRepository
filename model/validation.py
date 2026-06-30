@@ -8,7 +8,7 @@ try:
 except ImportError:  # pragma: no cover - fallback when pandas missing
     from .pandas_stub import pd
 
-from .data_models import InputData
+from .data_models import InputData, normalized_leaves
 from .nf_blocks import respects_nf_blocks
 from .optimiser import respects_min_gap
 
@@ -66,8 +66,10 @@ def _leave_rotator_warnings(data: InputData) -> List[str]:
         else []
     )
 
+    leaves3 = [(n, s, e) for n, s, e, _c in normalized_leaves(data.leaves)]
+
     # Windows that fall entirely outside the schedule dates do nothing.
-    for kind, windows in (("leave", data.leaves), ("rotator", data.rotators)):
+    for kind, windows in (("leave", leaves3), ("rotator", data.rotators)):
         for name, ws, we in windows:
             if we < start or ws > end:
                 out.append(
@@ -79,7 +81,7 @@ def _leave_rotator_warnings(data: InputData) -> List[str]:
     for name, ws, we in data.rotators:
         rotator_windows.setdefault(name, []).append((ws, we))
     leave_windows: dict = {}
-    for name, ws, we in data.leaves:
+    for name, ws, we in leaves3:
         leave_windows.setdefault(name, []).append((ws, we))
 
     # A rotator with no active day in the block is fully excluded.
@@ -92,15 +94,21 @@ def _leave_rotator_warnings(data: InputData) -> List[str]:
                 "be scheduled."
             )
 
-    # Leave covering the whole block: leave keeps full quota (compensated), so the
-    # resident is guaranteed a large deviation.
-    for name, windows in leave_windows.items():
+    # Compensated leave covering the whole block keeps full quota with no days to
+    # earn it, so the resident is guaranteed a large deviation. (An uncompensated
+    # whole-block leave just zeroes their quota, which is expected, so no warning.)
+    comp_leave_windows: dict = {}
+    for name, ws, we, comp in normalized_leaves(data.leaves):
+        if comp:
+            comp_leave_windows.setdefault(name, []).append((ws, we))
+    for name, windows in comp_leave_windows.items():
         if block_days and all(
             any(ws <= d <= we for ws, we in windows) for d in block_days
         ):
             out.append(
-                f"'{name}' is on leave for the whole block; leave keeps their full "
-                "fair share, so expect a large fairness deviation."
+                f"'{name}' has compensated leave for the whole block; their full "
+                "fair share is kept but cannot be earned, so expect a large "
+                "fairness deviation."
             )
 
     # A rotator's leave that never overlaps their active window is redundant.
@@ -181,7 +189,8 @@ def validate_input(data: InputData) -> List[str]:
                 f"Night-float-eligible senior '{name}' is not in the Seniors list."
             )
 
-    for kind, windows in (("leave", data.leaves), ("rotator", data.rotators)):
+    leave_windows3 = [(n, s, e) for n, s, e, _c in normalized_leaves(data.leaves)]
+    for kind, windows in (("leave", leave_windows3), ("rotator", data.rotators)):
         for name, start, end in windows:
             if name not in roster:
                 issues.append(
@@ -247,7 +256,7 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
                         f"{day}: {person} on night-float '{shift.label}' is not NF-eligible"
                     )
 
-            for nm, ls, le in data.leaves:
+            for nm, ls, le, _comp in normalized_leaves(data.leaves):
                 if nm == person and ls <= day <= le:
                     issues.append(
                         f"{day}: {person} on '{shift.label}' is on leave ({ls} to {le})"

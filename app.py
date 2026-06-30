@@ -23,28 +23,43 @@ st.set_page_config(page_title="Idea Gold Scheduler", layout="wide")
 st.title("Idea Gold Scheduler – CP-SAT")
 
 
-def _date_range_editor(title: str, key: str, people: list) -> None:
-    """Inline editor for (resident, start, end) windows kept in session state."""
+def _date_range_editor(title: str, key: str, people: list, with_compensation: bool = False) -> None:
+    """Inline editor for (resident, start, end[, compensated]) windows.
+
+    With ``with_compensation`` (leaves) each entry carries a Compensated flag:
+    compensated keeps the resident's full fair share, uncompensated scales it down
+    like a rotator.
+    """
     st.markdown(f"**{title}**")
     if not people:
         st.caption("Add participants first to configure this.")
         return
-    c = st.columns([3, 2, 2, 1])
+    layout = [3, 2, 2, 2, 1] if with_compensation else [3, 2, 2, 1]
+    c = st.columns(layout)
     with c[0]:
         who = st.selectbox("Resident", people, key=f"{key}_who")
     with c[1]:
         start = st.date_input("Start", date.today(), key=f"{key}_start")
     with c[2]:
         end = st.date_input("End", date.today(), key=f"{key}_end")
-    with c[3]:
+    compensated = True
+    if with_compensation:
+        with c[3]:
+            compensated = st.checkbox("Compensated", value=True, key=f"{key}_comp")
+    with c[-1]:
         st.markdown("&nbsp;")
         if st.button("Add", key=f"{key}_add"):
-            st.session_state[key].append((who, start, end))
+            entry = (who, start, end, compensated) if with_compensation else (who, start, end)
+            st.session_state[key].append(entry)
     rows = st.session_state[key]
     if rows:
-        st.table(
-            pd.DataFrame([{"Resident": r, "Start": s, "End": e} for r, s, e in rows])
-        )
+        table_rows = []
+        for entry in rows:
+            row = {"Resident": entry[0], "Start": entry[1], "End": entry[2]}
+            if with_compensation:
+                row["Compensated"] = entry[3] if len(entry) > 3 else True
+            table_rows.append(row)
+        st.table(pd.DataFrame(table_rows))
         idx = st.selectbox(
             "Remove entry",
             list(range(len(rows))),
@@ -163,7 +178,16 @@ with cols[1]:
 
 with st.expander("Leaves & Rotators", expanded=False):
     _people = st.session_state.juniors + st.session_state.seniors
-    _date_range_editor("Leaves — resident unavailable during window", "leaves", _people)
+    _date_range_editor(
+        "Leaves — resident unavailable during window",
+        "leaves",
+        _people,
+        with_compensation=True,
+    )
+    st.caption(
+        "Compensated leave keeps the resident's full fair share; uncompensated "
+        "scales it down for the absence (like a rotator)."
+    )
     st.divider()
     _date_range_editor(
         "Rotators — resident only available during window", "rotators", _people

@@ -3,6 +3,21 @@ from datetime import date
 from typing import List, Tuple, Dict
 
 
+def normalized_leaves(leaves):
+    """Yield ``(name, start, end, compensated)`` for each leave entry.
+
+    Leaves may be stored as 4-tuples carrying a per-leave ``compensated`` flag, or
+    as legacy 3-tuples (treated as compensated — full quota, the original
+    behaviour). ``compensated`` leaves block the days but keep the resident's fair
+    share; ``uncompensated`` leaves additionally scale that share down (like a
+    rotator), so the resident is not penalised for the absence.
+    """
+    for entry in leaves or []:
+        name, start, end = entry[0], entry[1], entry[2]
+        compensated = bool(entry[3]) if len(entry) > 3 else True
+        yield name, start, end, compensated
+
+
 @dataclass
 class ShiftTemplate:
     label: str
