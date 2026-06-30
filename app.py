@@ -378,8 +378,13 @@ if data is not None:
             st.download_button(
                 "Download updated ledger (for next block)",
                 ledger_to_json(update_ledger(carryover_ledger, df, data)),
-                file_name="fairness_ledger.json",
+                file_name=f"fairness_ledger_through_{data.end_date.isoformat()}.json",
                 mime="application/json",
+            )
+            st.caption(
+                "Keep this file — it's the cumulative fairness record. Streamlit "
+                "Cloud doesn't store anything between sessions, so re-upload it "
+                "under 'Carryover fairness' next block to keep months fair."
             )
             try:
                 excel_bytes = schedule_to_excel_bytes(df, data, points=points)

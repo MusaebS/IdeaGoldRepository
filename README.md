@@ -97,6 +97,15 @@ takes an optional `ledger` argument; `model/ledger.py` handles save/load
 (`ledger_to_json` / `ledger_from_json`) and accumulation (`update_ledger`). A large
 prior imbalance is corrected over several blocks rather than all at once.
 
+**Where is it kept?** The app is stateless — nothing is stored server-side, which
+matters on Streamlit Community Cloud where the filesystem is wiped on every
+restart. The ledger is *your* file: download it after each block (named
+`fairness_ledger_through_<end-date>.json`) and re-upload it next block. This works
+on any host with zero setup and keeps resident data off third-party servers.
+Durable automatic persistence would require an external store (a database or cloud
+bucket) with credentials in `st.secrets`. Leaving the ledger empty produces a
+standalone, one-off schedule unrelated to history.
+
 ## Per-resident caps
 
 `InputData.max_total` and `InputData.max_nights` (maps of resident → points) put a
