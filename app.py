@@ -267,11 +267,9 @@ if data is not None:
                     st.write(line)
                 fair_frame = build_fairness_frame(points, data)
                 if len(fair_frame):
-                    chart_df = (
-                        fair_frame[["Resident", "Total", "Weekend", "Night Float"]]
-                        .set_index("Resident")
-                        .sort_values("Total", ascending=False)
-                    )
+                    chart_df = fair_frame[
+                        ["Resident", "Total", "Weekend", "Night Float"]
+                    ].set_index("Resident")
                     st.caption("Workload by resident (points)")
                     st.bar_chart(chart_df, stack=False)
             log_text = format_fairness_log(df, data, points=points)
