@@ -75,6 +75,15 @@ flag still adds Thursday for individual shifts on top of this.
 spec's ≤60s target for 40 residents × 28 days × 10 shifts; pass `people days shifts`
 for a single custom run.
 
+## App smoke test
+
+`python scripts/smoke_app.py` launches the app headless and drives it in a real
+browser (Playwright/Chromium) to check the end-to-end UI: load, Test mode +
+Generate rendering a schedule with the quality metric and CSV/Excel/PDF exports,
+the validation-error path, and the infeasible relax-and-retry recovery. It needs
+`pip install playwright` and a Chromium binary; it is an on-demand check, not part
+of the `pytest` run.
+
 ## Changelog
 - Added a configurable weekend definition (`weekend_days`) and a `scripts/benchmark.py` solve-time benchmark.
 - Added pre-solve configuration validation (`validate_input`) surfaced in the app and enforced by `build_schedule`.
