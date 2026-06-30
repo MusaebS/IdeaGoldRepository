@@ -25,6 +25,8 @@ def _sample_data():
         nf_block_length=5,
         seed=99,
         weekend_days=[4, 5],
+        max_total={"A": 12.0},
+        max_nights={"A": 4.0},
     )
 
 
@@ -45,6 +47,8 @@ def test_config_round_trip():
     assert restored.nf_block_length == data.nf_block_length
     assert restored.seed == data.seed
     assert restored.weekend_days == data.weekend_days
+    assert restored.max_total == data.max_total
+    assert restored.max_nights == data.max_nights
 
 
 def test_config_from_minimal_json():

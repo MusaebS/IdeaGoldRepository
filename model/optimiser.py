@@ -174,6 +174,7 @@ class SchedulerSolver:
             pass
         self.add_constraints()
         self.add_deviation_constraints()
+        self.add_cap_constraints()
         self.build_objective()
 
     def build_variables(self) -> None:
@@ -289,6 +290,22 @@ class SchedulerSolver:
                     self.model.Add(var >= lp - target)
                     self.model.Add(var >= target - lp)
                     self.dev_label[(p_idx, label)] = var
+
+    def add_cap_constraints(self) -> None:
+        """Hard per-resident ceilings on total and night-float points.
+
+        Capped residents simply work less; the slack falls to ``Unfilled`` (so a
+        cap never makes the model infeasible). Caps override fairness — a capped
+        resident's deviation from their fair share is accepted.
+        """
+        scale = self.SCALE
+        for p_idx, person in enumerate(self.people[:-1]):
+            if self.data.max_total and person in self.data.max_total:
+                cap = int(round(self.data.max_total[person] * scale))
+                self.model.Add(self.total_pts[p_idx] <= cap)
+            if self.data.max_nights and person in self.data.max_nights:
+                cap = int(round(self.data.max_nights[person] * scale))
+                self.model.Add(self.nf_pts[p_idx] <= cap)
 
     def add_constraints(self) -> None:
         rotator_windows: Dict[str, list] = {}

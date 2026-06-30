@@ -30,6 +30,10 @@ class InputData:
     # the default Saturday/Sunday. The per-shift ``thu_weekend`` flag still adds
     # Thursday for individual shifts on top of this.
     weekend_days: List[int] | None = None
+    # Per-resident hard caps (in points). A resident in the map works at most that
+    # many total / night-float points; uncovered slots fall to ``Unfilled``.
+    max_total: Dict[str, float] | None = None
+    max_nights: Dict[str, float] | None = None
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None
     target_weekend: Dict[str, float] | None = None

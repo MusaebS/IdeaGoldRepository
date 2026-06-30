@@ -69,6 +69,14 @@ resolved fairness targets and solver status are returned on the DataFrame's `att
 (`target_total`, `target_total_map`, `target_weekend`, `solver_status`,
 `wall_time_sec`).
 
+## Per-resident caps
+
+`InputData.max_total` and `InputData.max_nights` (maps of resident → points) put a
+hard ceiling on how much total / night-float load a resident can carry, configurable
+in the app's "Per-resident caps" panel. A capped resident simply works less and the
+slack falls to `Unfilled`, so a cap never makes the schedule infeasible; the cap
+overrides fairness for that resident.
+
 ## Weekend definition
 
 Weekend fairness defaults to Saturday/Sunday. Set **Weekend days** in the app (or
@@ -92,6 +100,7 @@ the validation-error path, and the infeasible relax-and-retry recovery. It needs
 of the `pytest` run.
 
 ## Changelog
+- Added per-resident hard caps on total and night-float load (`max_total`, `max_nights`).
 - Balanced night-float load as a first-class fairness objective (`target_night_float`), with deviation/range reporting; fairness deviations now read solver-resolved targets from `df.attrs`.
 - Added non-blocking pre-solve configuration warnings (`config_warnings`).
 - Added a configurable weekend definition (`weekend_days`) and a `scripts/benchmark.py` solve-time benchmark.

@@ -130,6 +130,13 @@ def validate_input(data: InputData) -> List[str]:
     if data.nf_block_length < 1:
         issues.append("Night-float block length must be at least 1.")
 
+    for label, caps in (("total", data.max_total), ("night-float", data.max_nights)):
+        for name, value in (caps or {}).items():
+            if name not in roster:
+                issues.append(f"Max {label} cap references unknown resident '{name}'.")
+            if value < 0:
+                issues.append(f"Max {label} cap for '{name}' cannot be negative.")
+
     return issues
 
 

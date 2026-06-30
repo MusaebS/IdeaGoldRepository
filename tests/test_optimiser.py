@@ -637,3 +637,51 @@ def test_night_float_load_is_balanced():
     pts = calculate_points(df, data)
     nf = [pts["A"]["night_float"], pts["B"]["night_float"]]
     assert max(nf) - min(nf) <= 1  # nights shared, not dumped on one resident
+
+
+def test_max_nights_cap_is_enforced():
+    pytest.importorskip("ortools")
+    shifts = [
+        ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="DayShift", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+    ]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 6),  # 6 nights available
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=["A", "B"],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+        nf_block_length=1,
+        max_nights={"A": 1.0},  # A may work at most 1 night
+    )
+    df = build_schedule(data, env="test")
+    from model.fairness import calculate_points
+
+    assert calculate_points(df, data)["A"]["night_float"] <= 1.0
+
+
+def test_max_total_cap_is_enforced():
+    pytest.importorskip("ortools")
+    shifts = [ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 6),
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+        max_total={"A": 2.0},  # A may work at most 2 points total
+    )
+    df = build_schedule(data, env="test")
+    from model.fairness import calculate_points
+
+    assert calculate_points(df, data)["A"]["total"] <= 2.0

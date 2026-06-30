@@ -49,6 +49,8 @@ def input_data_to_json(data: InputData) -> str:
         "nf_block_length": data.nf_block_length,
         "seed": data.seed,
         "weekend_days": data.weekend_days,
+        "max_total": data.max_total,
+        "max_nights": data.max_nights,
     }
     return json.dumps(payload, indent=2)
 
@@ -83,6 +85,16 @@ def input_data_from_json(text: str) -> InputData:
         weekend_days=(
             [int(d) for d in raw["weekend_days"]]
             if raw.get("weekend_days") is not None
+            else None
+        ),
+        max_total=(
+            {str(k): float(v) for k, v in raw["max_total"].items()}
+            if raw.get("max_total")
+            else None
+        ),
+        max_nights=(
+            {str(k): float(v) for k, v in raw["max_nights"].items()}
+            if raw.get("max_nights")
             else None
         ),
     )

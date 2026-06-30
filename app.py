@@ -54,6 +54,38 @@ def _date_range_editor(title: str, key: str, people: list) -> None:
             st.session_state[key].pop(idx)
 
 
+def _caps_editor(people: list) -> None:
+    """Inline editor for per-resident hard caps (0 = no cap)."""
+    st.markdown("**Caps — limit a resident's total / night-float points (0 = no cap)**")
+    if not people:
+        st.caption("Add participants first to configure caps.")
+        return
+    c = st.columns([3, 2, 2, 1])
+    with c[0]:
+        who = st.selectbox("Resident", people, key="cap_who")
+    with c[1]:
+        mt = st.number_input("Max total pts", 0.0, 999.0, 0.0, 0.5, key="cap_total")
+    with c[2]:
+        mn = st.number_input("Max night pts", 0.0, 999.0, 0.0, 0.5, key="cap_nights")
+    with c[3]:
+        st.markdown("&nbsp;")
+        if st.button("Add", key="cap_add"):
+            st.session_state.caps[who] = {"total": mt, "nights": mn}
+    caps = st.session_state.caps
+    if caps:
+        st.table(pd.DataFrame([
+            {
+                "Resident": p,
+                "Max total": v["total"] or "—",
+                "Max nights": v["nights"] or "—",
+            }
+            for p, v in caps.items()
+        ]))
+        rm = st.selectbox("Remove cap", list(caps.keys()), key="cap_del")
+        if st.button("Remove", key="cap_del_btn"):
+            st.session_state.caps.pop(rm, None)
+
+
 # Session defaults
 if "shifts" not in st.session_state:
     st.session_state.shifts = []
@@ -69,6 +101,8 @@ if "leaves" not in st.session_state:
     st.session_state.leaves = []
 if "rotators" not in st.session_state:
     st.session_state.rotators = []
+if "caps" not in st.session_state:
+    st.session_state.caps = {}
 if "result_df" not in st.session_state:
     st.session_state.result_df = None
 if "result_data" not in st.session_state:
@@ -134,6 +168,9 @@ with st.expander("Leaves & Rotators", expanded=False):
         "Rotators — resident only available during window", "rotators", _people
     )
 
+with st.expander("Per-resident caps", expanded=False):
+    _caps_editor(st.session_state.juniors + st.session_state.seniors)
+
 date_cols = st.columns(2)
 with date_cols[0]:
     start_date = st.date_input("Start Date", date.today())
@@ -157,6 +194,18 @@ weekend_labels = st.multiselect(
 )
 weekend_days = [_WEEKDAY_NAMES.index(name) for name in weekend_labels]
 
+_active_people = set(st.session_state.juniors + st.session_state.seniors)
+max_total = {
+    p: v["total"]
+    for p, v in st.session_state.caps.items()
+    if p in _active_people and v.get("total")
+}
+max_nights = {
+    p: v["nights"]
+    for p, v in st.session_state.caps.items()
+    if p in _active_people and v.get("nights")
+}
+
 session_config = InputData(
     start_date=start_date,
     end_date=end_date,
@@ -171,6 +220,8 @@ session_config = InputData(
     nf_block_length=nf_block_len,
     seed=int(seed),
     weekend_days=weekend_days,
+    max_total=max_total or None,
+    max_nights=max_nights or None,
 )
 
 with st.expander("Save / Load configuration", expanded=False):

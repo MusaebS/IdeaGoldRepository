@@ -161,3 +161,13 @@ def test_config_warnings_flags_more_shifts_than_residents():
         ],  # ...but two Junior shifts per day
     )
     assert any("unfilled each day" in w for w in config_warnings(data))
+
+
+def test_cap_for_unknown_resident_rejected():
+    data = _data(max_total={"Nobody": 5.0})
+    assert any("unknown resident" in i for i in validate_input(data))
+
+
+def test_negative_cap_rejected():
+    data = _data(max_nights={"A": -1.0})
+    assert any("cannot be negative" in i for i in validate_input(data))
