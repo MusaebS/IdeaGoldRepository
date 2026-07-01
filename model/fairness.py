@@ -8,7 +8,7 @@ except ImportError:  # pragma: no cover - fallback when pandas missing
     from .pandas_stub import pd
 
 from .data_models import ShiftTemplate, InputData
-from .utils import is_weekend
+from .utils import effective_points, is_weekend, weekend_holiday_dates
 
 __all__ = [
     "calculate_points",
@@ -25,19 +25,21 @@ def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, f
         name: {"total": 0.0, "weekend": 0.0, "labels": {}, "night_float": 0.0}
         for name in data.juniors + data.seniors
     }
+    weekend_dates = weekend_holiday_dates(data)
     for row in df.to_dict("records"):
         day = row.get("Date")
         for sh in data.shifts:
             person = row.get(sh.label)
             if person in (None, "Unfilled"):
                 continue
+            pts = effective_points(day, sh, data)
             info = summary.setdefault(person, {"total": 0.0, "weekend": 0.0, "labels": {}, "night_float": 0.0})
-            info["total"] += sh.points
-            info["labels"][sh.label] = info["labels"].get(sh.label, 0.0) + sh.points
+            info["total"] += pts
+            info["labels"][sh.label] = info["labels"].get(sh.label, 0.0) + pts
             if sh.night_float:
-                info["night_float"] += sh.points
-            if is_weekend(day, sh, data.weekend_days):
-                info["weekend"] += sh.points
+                info["night_float"] += pts
+            if is_weekend(day, sh, data.weekend_days, weekend_dates):
+                info["weekend"] += pts
     return summary
 
 
@@ -100,8 +102,8 @@ def format_fairness_log(
     target_nf = _resolved_target(df, "target_night_float", data.target_night_float)
 
     records = df.to_dict("records")
-    labels = [s.label for s in data.shifts]
-    label_points = {s.label: s.points for s in data.shifts}
+    shift_by_label = {s.label: s for s in data.shifts}
+    labels = list(shift_by_label)
     unfilled = [
         (row.get("Date"), label)
         for row in records
@@ -111,10 +113,15 @@ def format_fairness_log(
     total_slots = len(records) * len(labels)
     filled = total_slots - len(unfilled)
 
-    # Checksum: assigned + unfilled points must equal the points available.
+    # Checksum: assigned + unfilled points must equal the points available. Uses
+    # effective (weekday/holiday-adjusted) points so it still reconciles.
     assigned_pts = sum(info["total"] for info in pts.values())
-    unfilled_pts = sum(label_points.get(label, 0.0) for _day, label in unfilled)
-    available_pts = sum(label_points.values()) * len(records)
+    unfilled_pts = sum(
+        effective_points(day, shift_by_label[label], data) for day, label in unfilled
+    )
+    available_pts = sum(
+        effective_points(row.get("Date"), sh, data) for row in records for sh in data.shifts
+    )
 
     def _person_total_target(person):
         return (target_total_map or {}).get(person, target_total)
@@ -280,7 +287,7 @@ def assignment_rationale(
             f"{len(totals)} residents carry fewer — load balancing favoured this "
             "assignment."
         )
-    if is_weekend(day, shift, data.weekend_days) and person in pts:
+    if is_weekend(day, shift, data.weekend_days, weekend_holiday_dates(data)) and person in pts:
         lines.append(
             f"Weekend slot: {person} has {pts[person]['weekend']:.1f} weekend points."
         )

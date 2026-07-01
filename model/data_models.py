@@ -53,6 +53,13 @@ class InputData:
     # must carry this many points above their share: their total target is raised
     # by it (others' lowered to reconcile) and a hard floor enforces it.
     extra_points: Dict[str, float] | None = None
+    # Point-value overrides. ``weekday_points`` maps (shift label, weekday 0=Mon..
+    # 6=Sun) to the exact points that shift is worth on that weekday (e.g. a night
+    # worth 2 on Tuesdays). ``holidays`` is a list of (date, bonus, count_as_weekend)
+    # — every shift on that date gets ``bonus`` extra points, and if the flag is set
+    # the date also counts toward weekend balance.
+    weekday_points: Dict[Tuple[str, int], float] | None = None
+    holidays: List[Tuple[date, float, bool]] | None = None
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None
     target_weekend: Dict[str, float] | None = None

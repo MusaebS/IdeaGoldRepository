@@ -755,3 +755,55 @@ def test_extra_points_are_enforced():
     assert pts["A"]["total"] >= pts["B"]["total"] + 2
     assert pts["A"]["total"] >= pts["C"]["total"] + 2
     assert df.attrs["target_total_map"]["A"] > df.attrs["target_total_map"]["B"]
+
+
+def test_weekday_point_override_changes_load():
+    from model.fairness import calculate_points
+    # "night" is worth 2 on Tuesdays; a Tuesday-only schedule should score double.
+    shifts = [ShiftTemplate(label="night", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    df = pd.DataFrame([{"Date": date(2023, 1, 3), "night": "A"}])  # Jan 3 2023 = Tuesday
+    data = InputData(
+        start_date=date(2023, 1, 3), end_date=date(2023, 1, 3), shifts=shifts,
+        juniors=["A"], seniors=[], nf_juniors=[], nf_seniors=[], leaves=[], rotators=[],
+        min_gap=0, weekday_points={("night", 1): 2.0},
+    )
+    assert calculate_points(df, data)["A"]["total"] == 2.0
+
+
+def test_holiday_bonus_and_weekend_flag():
+    from model.fairness import calculate_points
+    shifts = [ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    df = pd.DataFrame([{"Date": date(2023, 1, 4), "S": "A"}])  # Jan 4 2023 = Wednesday
+    # Holiday: +1.5 bonus, counts as weekend
+    data = InputData(
+        start_date=date(2023, 1, 4), end_date=date(2023, 1, 4), shifts=shifts,
+        juniors=["A"], seniors=[], nf_juniors=[], nf_seniors=[], leaves=[], rotators=[],
+        min_gap=0, holidays=[(date(2023, 1, 4), 1.5, True)],
+    )
+    pts = calculate_points(df, data)
+    assert pts["A"]["total"] == 2.5       # 1 + 1.5 bonus
+    assert pts["A"]["weekend"] == 2.5     # holiday flagged as weekend
+
+    # Same holiday but NOT counted as weekend
+    data2 = InputData(
+        start_date=date(2023, 1, 4), end_date=date(2023, 1, 4), shifts=shifts,
+        juniors=["A"], seniors=[], nf_juniors=[], nf_seniors=[], leaves=[], rotators=[],
+        min_gap=0, holidays=[(date(2023, 1, 4), 1.5, False)],
+    )
+    pts2 = calculate_points(df, data2)
+    assert pts2["A"]["total"] == 2.5
+    assert pts2["A"]["weekend"] == 0.0    # weekday, not counted
+
+
+def test_weekday_override_raises_target():
+    # A single higher-value day should not overflow bounds; targets reflect it.
+    pytest.importorskip("ortools")
+    shifts = [ShiftTemplate(label="night", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 1), end_date=date(2023, 1, 7), shifts=shifts,
+        juniors=["A", "B"], seniors=[], nf_juniors=[], nf_seniors=[], leaves=[], rotators=[],
+        min_gap=0, weekday_points={("night", 1): 5.0},  # Tuesday worth 5
+    )
+    df = build_schedule(data, env="test")  # must not raise / overflow
+    # total available = 6 normal days*1 + 1 Tuesday*5 = 11 points, split fairly
+    assert abs(df.attrs["target_total_map"]["A"] - 11 / 2) < 1e-6

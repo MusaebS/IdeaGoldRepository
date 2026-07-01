@@ -127,6 +127,15 @@ rather than silently dropping the penalty. Configure it in the app's "Per-reside
 caps & extra points" panel. The fairness log tags that resident's line with
 `[+N penalty applied]` so it's clear why they carry more.
 
+## Point overrides & holidays (advanced)
+
+A shift can be worth different points depending on the day:
+
+- **Weekday overrides** (`weekday_points`, a map of `(shift label, weekday 0=Mon..6=Sun) → points`) set a shift's exact value on a given weekday — e.g. a night worth 2 on Tuesdays.
+- **Holidays** (`holidays`, a list of `(date, bonus, count_as_weekend)`) add bonus points to every shift on a specific date, for the occasional mid-week holiday. Each holiday can optionally count toward weekend balance; by default it's just worth more points.
+
+Both feed a single effective-points value (`utils.effective_points`) used everywhere points are counted, so a heavier day automatically counts more toward fairness — whoever works it carries more load and does fewer other shifts. Configure them in the app's "Point overrides & holidays (advanced)" panel.
+
 ## Weekend definition
 
 Weekend fairness defaults to Saturday/Sunday. Set **Weekend days** in the app (or
@@ -150,6 +159,7 @@ the validation-error path, and the infeasible relax-and-retry recovery. It needs
 of the `pytest` run.
 
 ## Changelog
+- Added per-weekday shift point overrides and holiday bonus dates (optionally weekend-counting), via one `effective_points` value threaded through the solver and fairness.
 - Added mandatory per-resident extra points (`extra_points`, e.g. a penalty): the target is raised and a hard floor enforces it.
 - Fairness log shows targets inline + a points checksum, sorts worst-deviation-first, and folds in constraint violations; Excel/PDF gain matching `Total dev`/`NF dev` columns.
 - Hardened the fairness log into a verification artifact: a coverage-health header, `[OVER]`/`[UNDER]` outlier flags, and an explicit unfilled-slots list.

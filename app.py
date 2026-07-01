@@ -131,6 +131,68 @@ def _extra_points_editor(people: list) -> None:
             st.session_state.extra_points.pop(rm, None)
 
 
+_WD = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def _weekday_points_editor(shift_labels: list) -> None:
+    """Inline editor: a shift's exact points on a given weekday (e.g. night = 2 on Tue)."""
+    st.markdown("**Weekday point overrides — a shift's exact points on a weekday**")
+    if not shift_labels:
+        st.caption("Add shift templates first.")
+        return
+    c = st.columns([3, 2, 2, 1])
+    with c[0]:
+        label = st.selectbox("Shift", shift_labels, key="wp_shift")
+    with c[1]:
+        wd = st.selectbox("Weekday", _WD, key="wp_wd")
+    with c[2]:
+        pts = st.number_input("Points", 0.0, 99.0, 1.0, 0.5, key="wp_pts")
+    with c[3]:
+        st.markdown("&nbsp;")
+        if st.button("Add", key="wp_add"):
+            st.session_state.weekday_points[(label, _WD.index(wd))] = pts
+    wp = st.session_state.weekday_points
+    if wp:
+        st.table(pd.DataFrame(
+            [{"Shift": lbl, "Weekday": _WD[d], "Points": v} for (lbl, d), v in wp.items()]
+        ))
+        opts = list(wp.keys())
+        idx = st.selectbox(
+            "Remove override", list(range(len(opts))),
+            format_func=lambda i: f"{opts[i][0]} / {_WD[opts[i][1]]}", key="wp_del_idx",
+        )
+        if st.button("Remove", key="wp_del"):
+            st.session_state.weekday_points.pop(opts[idx], None)
+
+
+def _holidays_editor() -> None:
+    """Inline editor: bonus points for every shift on a date (with weekend option)."""
+    st.markdown("**Holidays — bonus points for shifts on a date**")
+    c = st.columns([3, 2, 2, 1])
+    with c[0]:
+        hd = st.date_input("Date", date.today(), key="hol_date")
+    with c[1]:
+        bonus = st.number_input("Bonus points", 0.0, 99.0, 1.0, 0.5, key="hol_bonus")
+    with c[2]:
+        wk = st.checkbox("Count as weekend", value=False, key="hol_wk")
+    with c[3]:
+        st.markdown("&nbsp;")
+        if st.button("Add", key="hol_add"):
+            st.session_state.holidays = [h for h in st.session_state.holidays if h[0] != hd]
+            st.session_state.holidays.append((hd, bonus, wk))
+    hs = st.session_state.holidays
+    if hs:
+        st.table(pd.DataFrame(
+            [{"Date": d, "Bonus": b, "Counts as weekend": w} for d, b, w in hs]
+        ))
+        idx = st.selectbox(
+            "Remove holiday", list(range(len(hs))),
+            format_func=lambda i: str(hs[i][0]), key="hol_del_idx",
+        )
+        if st.button("Remove", key="hol_del"):
+            st.session_state.holidays.pop(idx)
+
+
 # Session defaults
 if "shifts" not in st.session_state:
     st.session_state.shifts = []
@@ -150,6 +212,10 @@ if "caps" not in st.session_state:
     st.session_state.caps = {}
 if "extra_points" not in st.session_state:
     st.session_state.extra_points = {}
+if "weekday_points" not in st.session_state:
+    st.session_state.weekday_points = {}
+if "holidays" not in st.session_state:
+    st.session_state.holidays = []
 if "result_df" not in st.session_state:
     st.session_state.result_df = None
 if "result_data" not in st.session_state:
@@ -229,6 +295,11 @@ with st.expander("Per-resident caps & extra points", expanded=False):
     st.divider()
     _extra_points_editor(st.session_state.juniors + st.session_state.seniors)
 
+with st.expander("Point overrides & holidays (advanced)", expanded=False):
+    _weekday_points_editor([s.label for s in st.session_state.shifts])
+    st.divider()
+    _holidays_editor()
+
 date_cols = st.columns(2)
 with date_cols[0]:
     start_date = st.date_input("Start Date", date.today())
@@ -268,6 +339,11 @@ extra_points = {
     for p, v in st.session_state.extra_points.items()
     if p in _active_people and v
 }
+_shift_labels = {s.label for s in st.session_state.shifts}
+weekday_points = {
+    k: v for k, v in st.session_state.weekday_points.items() if k[0] in _shift_labels
+}
+holidays = list(st.session_state.holidays)
 
 session_config = InputData(
     start_date=start_date,
@@ -286,6 +362,8 @@ session_config = InputData(
     max_total=max_total or None,
     max_nights=max_nights or None,
     extra_points=extra_points or None,
+    weekday_points=weekday_points or None,
+    holidays=holidays or None,
 )
 
 with st.expander("Save / Load configuration", expanded=False):

@@ -61,6 +61,13 @@ def config_warnings(data: InputData) -> List[str]:
                 "schedule will be infeasible."
             )
 
+    for h_date, _bonus, _weekend in (data.holidays or []):
+        if h_date < data.start_date or h_date > data.end_date:
+            warnings.append(
+                f"Holiday {h_date} is outside the schedule dates "
+                f"({data.start_date}–{data.end_date}) and has no effect."
+            )
+
     warnings.extend(_leave_rotator_warnings(data))
     return warnings
 
@@ -228,6 +235,16 @@ def validate_input(data: InputData) -> List[str]:
             issues.append(f"Extra points reference unknown resident '{name}'.")
         if value < 0:
             issues.append(f"Extra points for '{name}' cannot be negative.")
+
+    shift_labels = {s.label for s in data.shifts}
+    for (label, weekday), _pts in (data.weekday_points or {}).items():
+        if label not in shift_labels:
+            issues.append(f"Weekday point override references unknown shift '{label}'.")
+        if not 0 <= weekday <= 6:
+            issues.append(
+                f"Weekday point override for '{label}' has an invalid weekday "
+                f"{weekday} (expected 0=Mon .. 6=Sun)."
+            )
 
     return issues
 

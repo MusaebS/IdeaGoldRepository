@@ -227,3 +227,19 @@ def test_warns_extra_points_exceed_cap():
     from model.validation import config_warnings
     data = _data(extra_points={"A": 5.0}, max_total={"A": 3.0})
     assert any("can't fit under the cap" in w for w in config_warnings(data))
+
+
+def test_weekday_override_unknown_shift_rejected():
+    data = _data(weekday_points={("Nope", 1): 2.0})
+    assert any("unknown shift" in i for i in validate_input(data))
+
+
+def test_weekday_override_bad_weekday_rejected():
+    data = _data(weekday_points={("D", 9): 2.0})  # 9 is not a valid weekday
+    assert any("invalid weekday" in i for i in validate_input(data))
+
+
+def test_warns_holiday_outside_schedule():
+    from model.validation import config_warnings
+    data = _data(holidays=[(date(2022, 12, 25), 1.0, False)])  # before the block
+    assert any("Holiday" in w and "outside the schedule" in w for w in config_warnings(data))

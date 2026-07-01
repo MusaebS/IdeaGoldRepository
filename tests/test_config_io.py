@@ -28,6 +28,8 @@ def _sample_data():
         max_total={"A": 12.0},
         max_nights={"A": 4.0},
         extra_points={"B": 2.0},
+        weekday_points={("NF", 1): 2.0},  # NF worth 2 on Tuesdays
+        holidays=[(date(2023, 1, 20), 1.5, True)],
     )
 
 
@@ -51,6 +53,8 @@ def test_config_round_trip():
     assert restored.max_total == data.max_total
     assert restored.max_nights == data.max_nights
     assert restored.extra_points == data.extra_points
+    assert restored.weekday_points == data.weekday_points
+    assert restored.holidays == data.holidays
 
 
 def test_config_from_minimal_json():

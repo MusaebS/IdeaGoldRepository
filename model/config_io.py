@@ -68,6 +68,16 @@ def input_data_to_json(data: InputData) -> str:
         "max_total": data.max_total,
         "max_nights": data.max_nights,
         "extra_points": data.extra_points,
+        "weekday_points": (
+            [[label, wd, pts] for (label, wd), pts in data.weekday_points.items()]
+            if data.weekday_points
+            else None
+        ),
+        "holidays": (
+            [[d.isoformat(), bonus, weekend] for d, bonus, weekend in data.holidays]
+            if data.holidays
+            else None
+        ),
     }
     return json.dumps(payload, indent=2)
 
@@ -117,6 +127,19 @@ def input_data_from_json(text: str) -> InputData:
         extra_points=(
             {str(k): float(v) for k, v in raw["extra_points"].items()}
             if raw.get("extra_points")
+            else None
+        ),
+        weekday_points=(
+            {(str(label), int(wd)): float(pts) for label, wd, pts in raw["weekday_points"]}
+            if raw.get("weekday_points")
+            else None
+        ),
+        holidays=(
+            [
+                (date.fromisoformat(d), float(bonus), bool(weekend))
+                for d, bonus, weekend in raw["holidays"]
+            ]
+            if raw.get("holidays")
             else None
         ),
     )
