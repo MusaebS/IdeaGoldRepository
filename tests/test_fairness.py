@@ -329,3 +329,29 @@ def test_fairness_log_checksum_reconciles():
     log = format_fairness_log(df, data)
     assert "Points: 1.0 assigned + 1.0 unfilled = 2.0 available" in log
     assert "MISMATCH" not in log
+
+
+def test_fairness_log_annotates_penalty():
+    shifts = [ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 2),
+        end_date=date(2023, 1, 5),
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+        extra_points={"A": 2.0},
+    )
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 2), "S": "A"},
+        {"Date": date(2023, 1, 3), "S": "A"},
+        {"Date": date(2023, 1, 4), "S": "A"},
+        {"Date": date(2023, 1, 5), "S": "B"},
+    ])
+    log = format_fairness_log(df, data)
+    assert any(line.startswith("A ") and "[+2 penalty applied]" in line for line in log.splitlines())
+    assert not any("penalty applied" in line and line.startswith("B ") for line in log.splitlines())

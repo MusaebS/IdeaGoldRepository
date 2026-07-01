@@ -159,7 +159,9 @@ def format_fairness_log(
             if data.target_label and (person, label) in data.target_label:
                 ldev = val - data.target_label[(person, label)]
                 line += f" (dev {ldev:+.1f})"
-        lines.append(line + total_flag)
+        penalty = (data.extra_points or {}).get(person, 0.0)
+        penalty_note = f" [+{penalty:g} penalty applied]" if penalty > 0 else ""
+        lines.append(line + penalty_note + total_flag)
     lines.extend(fairness_range_lines(pts))
 
     # Fold constraint checks in so a hand-edited schedule's violations surface here.

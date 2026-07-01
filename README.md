@@ -124,7 +124,8 @@ resident given `+2` ends up two points above their peers' fair share. It is
 enforced, not merely preferred: if it can't fit (availability / min-gap, or a
 conflicting `max_total` cap), the schedule is reported infeasible with diagnostics
 rather than silently dropping the penalty. Configure it in the app's "Per-resident
-caps & extra points" panel.
+caps & extra points" panel. The fairness log tags that resident's line with
+`[+N penalty applied]` so it's clear why they carry more.
 
 ## Weekend definition
 
