@@ -42,6 +42,24 @@ The results page includes a **Download Fairness Log** button. It is built to be 
 
 A Fairness summary and a per-resident bar chart show the min/max/range in the UI, and the Excel/PDF "Fairness" sheet carries the same `Total dev` / `NF dev` columns from the same solver-resolved targets — so the on-screen view, the log, and the exports all agree. The schedule and fairness summary can also be exported as **CSV**, **Excel** (`.xlsx`, schedule + fairness sheets) and **PDF**.
 
+## Results colour-coding
+
+The results grid can be shaded with a **Colour cells by** selector, and the same
+colours flow into the Excel and PDF downloads (`model/coloring.py` returns one
+`{(row, shift) -> #rrggbb}` map used on-screen, in openpyxl fills, and in reportlab
+backgrounds, so all three agree cell-for-cell). Modes:
+
+- **Weekend + points** (default) — weekends get an amber shade, weekdays a blue one,
+  with the intensity rising for higher-point shifts, so a heavy weekend night stands out.
+- **Weekend only** — just flags weekend cells.
+- **Point value** — shades every cell by how many points it's worth.
+- **Role (junior/senior)** — senior shifts one hue, junior another.
+- **None** — no shading.
+
+Unfilled slots are always flagged red regardless of the mode. Pick **None** (or a
+plainer mode) if the colours make a wide roster look busy — they never change the
+schedule, only how it's displayed.
+
 ## Configuration validation
 
 Before solving, the configuration is checked with `model.validation.validate_input`.
@@ -159,6 +177,7 @@ the validation-error path, and the infeasible relax-and-retry recovery. It needs
 of the `pytest` run.
 
 ## Changelog
+- Added customisable results colour-coding (`model/coloring.py`): weekend/points/role/none modes shading the on-screen grid, with matching colours in the Excel and PDF exports; results now render from `session_state` so changing the colour mode doesn't re-solve.
 - Reorganised the app UI into tabs (Shifts & people / Dates & rules / Advanced / Save & carryover), with a primary Generate button, summary metrics, and unfilled-slot highlighting.
 - Added per-weekday shift point overrides and holiday bonus dates (optionally weekend-counting), via one `effective_points` value threaded through the solver and fairness.
 - Added mandatory per-resident extra points (`extra_points`, e.g. a penalty): the target is raised and a hard floor enforces it.

@@ -17,6 +17,7 @@ from model.fairness import (
 )
 from model.demo_data import sample_shifts, sample_names
 from model.exporters import build_fairness_frame, schedule_to_excel_bytes, schedule_to_pdf_bytes
+from model.coloring import COLOR_MODES, schedule_cell_colors
 import os
 
 st.set_page_config(page_title="Idea Gold Scheduler", page_icon="🗓️", layout="wide")
@@ -197,6 +198,30 @@ def _holidays_editor() -> None:
             st.session_state.holidays.pop(idx)
 
 
+def _style_schedule(df, data, color_mode):
+    """Return a Styler shading the grid by ``color_mode`` (unfilled always flagged).
+
+    Uses the same ``schedule_cell_colors`` map the Excel/PDF exports use, so the
+    on-screen view and the downloads agree cell-for-cell.
+    """
+    color_map = schedule_cell_colors(df, data, color_mode)
+    columns = list(df.columns)
+    records = df.to_dict("records")
+
+    def _apply(_):
+        css = pd.DataFrame("", index=df.index, columns=df.columns)
+        for (row_idx, label), hexcolor in color_map.items():
+            if label not in columns:
+                continue
+            style = f"background-color: {hexcolor}"
+            if records[row_idx].get(label) in (None, "Unfilled"):
+                style += "; color: #b00000; font-weight: 600"
+            css.iloc[row_idx, columns.index(label)] = style
+        return css
+
+    return df.style.apply(_apply, axis=None)
+
+
 # Session defaults
 if "shifts" not in st.session_state:
     st.session_state.shifts = []
@@ -224,6 +249,8 @@ if "result_df" not in st.session_state:
     st.session_state.result_df = None
 if "result_data" not in st.session_state:
     st.session_state.result_data = None
+if "result_prior_ledger" not in st.session_state:
+    st.session_state.result_prior_ledger = None
 if "demo_loaded" not in st.session_state:
     st.session_state.demo_loaded = False
 
@@ -466,88 +493,104 @@ if data is not None:
         if df is not None:
             st.session_state.result_df = df
             st.session_state.result_data = data
-            warning = df.attrs.get("solver_warning") if hasattr(df, "attrs") else None
-            if warning:
-                st.warning(warning)
-            status = df.attrs.get("solver_status")
-            wall = df.attrs.get("wall_time_sec")
-            if status:
-                detail = f"Solver status: {status} · seed {data.seed}"
-                if wall is not None:
-                    detail += f" · {wall:.2f}s"
-                st.caption(detail)
-            points = calculate_points(df, data)
-            quality = schedule_quality(df, data, points=points)
-            mcols = st.columns(3)
-            mcols[0].metric("Schedule quality", f"{quality['score']} / 100")
-            mcols[1].metric("Slots filled", f"{quality['filled']}/{quality['total_slots']}")
-            mcols[2].metric("Unfilled", quality["unfilled"])
-            st.caption(
-                f"Total-points range {quality['total_range']:.1f} · "
-                f"weekend range {quality['weekend_range']:.1f} (smaller is fairer)"
-            )
-            try:
-                styled = df.style.map(
-                    lambda v: "background-color: #ffe0e0; color: #b00000" if v == "Unfilled" else ""
-                )
-                st.dataframe(styled, use_container_width=True)
-            except Exception:  # pragma: no cover - styling is best-effort
-                st.dataframe(df, use_container_width=True)
-            ranges = fairness_range_lines(points)
-            if ranges:
-                st.subheader("Fairness summary")
-                for line in ranges:
-                    st.write(line)
-                fair_frame = build_fairness_frame(points, data)
-                if len(fair_frame):
-                    chart_df = fair_frame[
-                        ["Resident", "Total", "Weekend", "Night Float"]
-                    ].set_index("Resident")
-                    st.caption("Workload by resident (points)")
-                    st.bar_chart(chart_df, stack=False)
-            log_text = format_fairness_log(df, data, points=points)
-            st.download_button(
-                "Download CSV (schedule)",
-                df.to_csv(index=False),
-                file_name="schedule.csv",
-                mime="text/csv",
-            )
-            st.download_button("Download Fairness Log", log_text, file_name="fairness_log.txt")
-            st.download_button(
-                "Download updated ledger (for next block)",
-                ledger_to_json(update_ledger(carryover_ledger, df, data)),
-                file_name=f"fairness_ledger_through_{data.end_date.isoformat()}.json",
-                mime="application/json",
-            )
-            st.caption(
-                "Keep this file — it's the cumulative fairness record. Streamlit "
-                "Cloud doesn't store anything between sessions, so re-upload it "
-                "under 'Carryover fairness' next block to keep months fair."
-            )
-            try:
-                excel_bytes = schedule_to_excel_bytes(df, data, points=points)
-                st.download_button(
-                    "Download Excel (schedule + fairness)",
-                    excel_bytes,
-                    file_name="schedule.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-            except Exception as exc:  # pragma: no cover - e.g. openpyxl not installed
-                st.info(f"Excel export unavailable: {exc}")
-            try:
-                pdf_bytes = schedule_to_pdf_bytes(df, data, points=points)
-                st.download_button(
-                    "Download PDF (schedule + fairness)",
-                    pdf_bytes,
-                    file_name="schedule.pdf",
-                    mime="application/pdf",
-                )
-            except Exception as exc:  # pragma: no cover - e.g. reportlab not installed
-                st.info(f"PDF export unavailable: {exc}")
-            if st.checkbox("Show Fairness Log"):
-                st.text(log_text)
+            st.session_state.result_prior_ledger = carryover_ledger
 
+# Results render from session_state so they survive reruns (e.g. changing the
+# colour mode) without re-solving.
 if st.session_state.result_df is not None:
+    df = st.session_state.result_df
+    data = st.session_state.result_data
+    prior_ledger = st.session_state.get("result_prior_ledger")
+
+    warning = df.attrs.get("solver_warning") if hasattr(df, "attrs") else None
+    if warning:
+        st.warning(warning)
+    status = df.attrs.get("solver_status") if hasattr(df, "attrs") else None
+    wall = df.attrs.get("wall_time_sec") if hasattr(df, "attrs") else None
+    if status:
+        detail = f"Solver status: {status} · seed {data.seed}"
+        if wall is not None:
+            detail += f" · {wall:.2f}s"
+        st.caption(detail)
+
+    points = calculate_points(df, data)
+    quality = schedule_quality(df, data, points=points)
+    mcols = st.columns(3)
+    mcols[0].metric("Schedule quality", f"{quality['score']} / 100")
+    mcols[1].metric("Slots filled", f"{quality['filled']}/{quality['total_slots']}")
+    mcols[2].metric("Unfilled", quality["unfilled"])
+    st.caption(
+        f"Total-points range {quality['total_range']:.1f} · "
+        f"weekend range {quality['weekend_range']:.1f} (smaller is fairer)"
+    )
+
+    color_label = st.selectbox(
+        "Colour cells by",
+        list(COLOR_MODES),
+        index=0,
+        help="Shade the schedule grid; the same colours flow into the Excel and PDF downloads.",
+    )
+    color_mode = COLOR_MODES[color_label]
+    try:
+        st.dataframe(_style_schedule(df, data, color_mode), use_container_width=True)
+    except Exception:  # pragma: no cover - styling is best-effort
+        st.dataframe(df, use_container_width=True)
+
+    ranges = fairness_range_lines(points)
+    if ranges:
+        st.subheader("Fairness summary")
+        for line in ranges:
+            st.write(line)
+        fair_frame = build_fairness_frame(points, data)
+        if len(fair_frame):
+            chart_df = fair_frame[
+                ["Resident", "Total", "Weekend", "Night Float"]
+            ].set_index("Resident")
+            st.caption("Workload by resident (points)")
+            st.bar_chart(chart_df, stack=False)
+
+    log_text = format_fairness_log(df, data, points=points)
+    st.download_button(
+        "Download CSV (schedule)",
+        df.to_csv(index=False),
+        file_name="schedule.csv",
+        mime="text/csv",
+    )
+    st.download_button("Download Fairness Log", log_text, file_name="fairness_log.txt")
+    st.download_button(
+        "Download updated ledger (for next block)",
+        ledger_to_json(update_ledger(prior_ledger, df, data)),
+        file_name=f"fairness_ledger_through_{data.end_date.isoformat()}.json",
+        mime="application/json",
+    )
+    st.caption(
+        "Keep this file — it's the cumulative fairness record. Streamlit "
+        "Cloud doesn't store anything between sessions, so re-upload it "
+        "under 'Carryover fairness' next block to keep months fair."
+    )
+    try:
+        excel_bytes = schedule_to_excel_bytes(df, data, points=points, color_mode=color_mode)
+        st.download_button(
+            "Download Excel (schedule + fairness)",
+            excel_bytes,
+            file_name="schedule.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    except Exception as exc:  # pragma: no cover - e.g. openpyxl not installed
+        st.info(f"Excel export unavailable: {exc}")
+    try:
+        pdf_bytes = schedule_to_pdf_bytes(df, data, points=points, color_mode=color_mode)
+        st.download_button(
+            "Download PDF (schedule + fairness)",
+            pdf_bytes,
+            file_name="schedule.pdf",
+            mime="application/pdf",
+        )
+    except Exception as exc:  # pragma: no cover - e.g. reportlab not installed
+        st.info(f"PDF export unavailable: {exc}")
+    if st.checkbox("Show Fairness Log"):
+        st.text(log_text)
+
     with st.expander("Manual edit & revalidate", expanded=False):
         st.caption("Edit the shift assignments below, then review any constraint issues.")
         edited = st.data_editor(

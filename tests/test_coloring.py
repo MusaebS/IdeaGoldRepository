@@ -1,0 +1,110 @@
+import sys, os
+import re
+from datetime import date
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+try:
+    import pandas as pd
+except Exception:  # pragma: no cover - fallback when pandas missing
+    from model import optimiser as opt
+    pd = opt.pd
+
+from model.data_models import ShiftTemplate, InputData
+from model.coloring import COLOR_MODES, schedule_cell_colors, _blend
+
+_HEX = re.compile(r"^#[0-9a-f]{6}$")
+
+
+def _sample():
+    shifts = [
+        ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="N", role="Senior", night_float=True, thu_weekend=False, points=2.0),
+    ]
+    data = InputData(
+        start_date=date(2023, 1, 7),
+        end_date=date(2023, 1, 9),
+        shifts=shifts,
+        juniors=["Alice"],
+        seniors=["Bob"],
+        nf_juniors=[],
+        nf_seniors=["Bob"],
+        leaves=[],
+        rotators=[],
+        min_gap=1,
+    )
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 7), "Day": "Saturday", "D": "Alice", "N": "Bob"},   # weekend
+        {"Date": date(2023, 1, 9), "Day": "Monday", "D": "Unfilled", "N": "Bob"},  # weekday, one gap
+    ])
+    return df, data
+
+
+def test_blend_endpoints():
+    hue = (74, 144, 217)
+    assert _blend(hue, 0.0) == "#ffffff"          # 0 = white
+    assert _blend(hue, 1.0) == "#4a90d9"          # 1 = full hue
+    # clamped outside [0, 1]
+    assert _blend(hue, -1.0) == "#ffffff"
+    assert _blend(hue, 2.0) == "#4a90d9"
+
+
+def test_all_colors_are_valid_hex():
+    df, data = _sample()
+    for label in COLOR_MODES:
+        mode = COLOR_MODES[label]
+        for value in schedule_cell_colors(df, data, mode).values():
+            assert _HEX.match(value), f"{mode}: {value!r} is not #rrggbb"
+
+
+def test_unfilled_always_flagged_red_every_mode():
+    df, data = _sample()
+    for mode in COLOR_MODES.values():
+        colors = schedule_cell_colors(df, data, mode)
+        assert colors[(1, "D")] == "#ffcccc", f"unfilled not red in mode {mode!r}"
+
+
+def test_none_mode_only_colors_unfilled():
+    df, data = _sample()
+    colors = schedule_cell_colors(df, data, "none")
+    # Only the single unfilled cell carries a colour.
+    assert colors == {(1, "D"): "#ffcccc"}
+
+
+def test_weekend_mode_colors_weekend_only():
+    df, data = _sample()
+    colors = schedule_cell_colors(df, data, "weekend")
+    assert (0, "N") in colors          # Saturday -> shaded
+    assert (1, "N") not in colors      # Monday -> no shade
+    assert colors[(1, "D")] == "#ffcccc"  # unfilled still flagged
+
+
+def test_role_mode_distinguishes_senior_from_junior():
+    df, data = _sample()
+    colors = schedule_cell_colors(df, data, "role")
+    junior = colors[(0, "D")]          # Alice, Junior shift
+    senior = colors[(0, "N")]          # Bob, Senior shift
+    assert junior != senior
+    # role colour ignores weekend: Monday senior shift matches Saturday senior
+    assert colors[(1, "N")] == senior
+
+
+def test_points_mode_higher_points_more_intense():
+    df, data = _sample()
+    colors = schedule_cell_colors(df, data, "points")
+    low = colors[(0, "D")]             # 1.0 point
+    high = colors[(0, "N")]            # 2.0 points
+    assert low != high
+    # more points -> blended further from white -> smaller channel sum
+    def _sum(hexstr):
+        h = hexstr.lstrip("#")
+        return int(h[0:2], 16) + int(h[2:4], 16) + int(h[4:6], 16)
+    assert _sum(high) < _sum(low)
+
+
+def test_auto_mode_weekend_differs_from_weekday_same_shift():
+    df, data = _sample()
+    colors = schedule_cell_colors(df, data, "auto")
+    weekend_n = colors[(0, "N")]       # Saturday
+    weekday_n = colors[(1, "N")]       # Monday
+    assert weekend_n != weekday_n

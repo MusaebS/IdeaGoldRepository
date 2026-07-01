@@ -8,6 +8,7 @@ try:
 except ImportError:  # pragma: no cover - fallback when pandas missing
     from .pandas_stub import pd
 
+from .coloring import schedule_cell_colors
 from .data_models import InputData
 from .fairness import calculate_points
 
@@ -66,19 +67,31 @@ def schedule_to_excel_bytes(
     df: "pd.DataFrame",
     data: InputData,
     points: Dict[str, Dict[str, float]] | None = None,
+    color_mode: str = "none",
 ) -> bytes:
     """Serialise the schedule and fairness summary to an .xlsx workbook.
 
     Sheet "Schedule" is the calendar grid (rows = dates, columns = shift
-    labels); sheet "Fairness" is the per-resident point summary. Requires
-    ``openpyxl`` to be installed.
+    labels); sheet "Fairness" is the per-resident point summary. ``color_mode``
+    shades the schedule cells to match the on-screen view. Requires ``openpyxl``.
     """
+    from openpyxl.styles import PatternFill
+
     points = points if points is not None else calculate_points(df, data)
     fairness = build_fairness_frame(points, data, df)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Schedule", index=False)
         fairness.to_excel(writer, sheet_name="Fairness", index=False)
+        if color_mode and color_mode != "none":
+            worksheet = writer.sheets["Schedule"]
+            columns = list(df.columns)
+            for (row_idx, label), hexcolor in schedule_cell_colors(df, data, color_mode).items():
+                if label in columns:
+                    rgb = hexcolor.lstrip("#").upper()
+                    worksheet.cell(row=row_idx + 2, column=columns.index(label) + 1).fill = (
+                        PatternFill(start_color=rgb, end_color=rgb, fill_type="solid")
+                    )
     return buffer.getvalue()
 
 
@@ -86,11 +99,13 @@ def schedule_to_pdf_bytes(
     df: "pd.DataFrame",
     data: InputData,
     points: Dict[str, Dict[str, float]] | None = None,
+    color_mode: str = "none",
 ) -> bytes:
     """Render the schedule (calendar grid) and fairness summary to a PDF.
 
     Cells are wrapping paragraphs with fixed, evenly-divided column widths so a
     wide 10-shift schedule fits the landscape page rather than overflowing.
+    ``color_mode`` shades the schedule cells to match the on-screen view.
     Requires ``reportlab`` to be installed.
     """
     from reportlab.lib import colors
@@ -126,30 +141,44 @@ def schedule_to_pdf_bytes(
         bottomMargin=cm,
     )
 
-    def _table(columns, rows):
+    def _table(columns, rows, cell_bg=None):
         n = len(columns) or 1
         widths = [usable_width / n] * n
-        header = [Paragraph(_fmt(c) or " ", head) for c in columns]
-        body = [[Paragraph(_fmt(r.get(c)) or " ", cell) for c in columns] for r in rows]
+        header = [Paragraph(_fmt(c) or "  ", head) for c in columns]
+        body = [[Paragraph(_fmt(r.get(c)) or "  ", cell) for c in columns] for r in rows]
         table = Table([header] + body, colWidths=widths, repeatRows=1)
-        table.setStyle(
-            TableStyle(
-                [
-                    ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#333333")),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#eeeeee")]),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-                    ("TOPPADDING", (0, 0), (-1, -1), 1),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
-                ]
+        style = [
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#333333")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+            ("TOPPADDING", (0, 0), (-1, -1), 1),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ]
+        if cell_bg:
+            # Per-cell shading to match the on-screen view; header stays dark.
+            for (row_idx, label), hexcolor in cell_bg.items():
+                if label in columns:
+                    col = columns.index(label)
+                    style.append(
+                        ("BACKGROUND", (col, row_idx + 1), (col, row_idx + 1),
+                         colors.HexColor(hexcolor))
+                    )
+        else:
+            style.append(
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#eeeeee")])
             )
-        )
+        table.setStyle(TableStyle(style))
         return table
 
+    schedule_bg = (
+        schedule_cell_colors(df, data, color_mode)
+        if color_mode and color_mode != "none"
+        else None
+    )
     elements = [Paragraph("Idea Gold Schedule", styles["Title"]), Spacer(1, 8)]
-    elements.append(_table(list(df.columns), df.to_dict("records")))
+    elements.append(_table(list(df.columns), df.to_dict("records"), cell_bg=schedule_bg))
     elements.append(Spacer(1, 14))
     elements.append(Paragraph("Fairness summary", styles["Heading2"]))
     elements.append(Spacer(1, 4))

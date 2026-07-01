@@ -105,6 +105,17 @@ def _run_checks() -> list[str]:
                   "fairness bar chart renders")
         except Exception:
             check(False, "fairness bar chart renders")
+        try:
+            page.get_by_text("Colour cells by").wait_for(timeout=10000)
+            check(True, "colour-mode selector shown")
+        except Exception:
+            check(False, "colour-mode selector shown")
+        # Toggling a control triggers a Streamlit rerun without re-solving; the
+        # schedule must persist (results now render from session_state).
+        page.get_by_text("Show Fairness Log").click()
+        page.wait_for_timeout(2500)
+        check(page.locator('[data-testid="stDataFrame"], [data-testid="stDataFrameResizable"]').count() > 0,
+              "results persist across a rerun")
         check(page.locator('[data-testid="stException"]').count() == 0,
               "no uncaught exception on the page")
         page.close()
