@@ -19,8 +19,12 @@ from model.demo_data import sample_shifts, sample_names
 from model.exporters import build_fairness_frame, schedule_to_excel_bytes, schedule_to_pdf_bytes
 import os
 
-st.set_page_config(page_title="Idea Gold Scheduler", layout="wide")
-st.title("Idea Gold Scheduler – CP-SAT")
+st.set_page_config(page_title="Idea Gold Scheduler", page_icon="🗓️", layout="wide")
+st.title("🗓️ Idea Gold Scheduler")
+st.caption(
+    "Build a provably fair on-call schedule. Set up shifts and people, tweak the "
+    "rules, then Generate — the optimiser balances the workload for you."
+)
 
 
 def _date_range_editor(title: str, key: str, people: list, with_compensation: bool = False) -> None:
@@ -235,93 +239,98 @@ if test_mode and not st.session_state.demo_loaded:
     st.session_state.demo_loaded = True
 
 st.header("Configuration")
+tab_people, tab_rules, tab_adv, tab_save = st.tabs(
+    ["① Shifts & people", "② Dates & rules", "③ Advanced", "④ Save / carryover"]
+)
 
-with st.expander("Shift Templates", expanded=True):
+with tab_people:
+    st.subheader("Shift templates")
     label = st.text_input("Label")
     role = st.selectbox("Role", ["Junior", "Senior"])
-    nf = st.checkbox("Night Float")
-    thu_wk = st.checkbox("Thu counts as weekend")
-    points = st.number_input("Points", 1.0, 10.0, 1.0, 0.5)
-    if st.button("Add Shift", key="add_shift"):
+    sc = st.columns(3)
+    with sc[0]:
+        nf = st.checkbox("Night float")
+    with sc[1]:
+        thu_wk = st.checkbox("Thu counts as weekend")
+    with sc[2]:
+        points = st.number_input("Points", 1.0, 10.0, 1.0, 0.5)
+    if st.button("Add shift", key="add_shift"):
         st.session_state.shifts.append(
             ShiftTemplate(label=label, role=role, night_float=nf, thu_weekend=thu_wk, points=points)
         )
     if st.session_state.shifts:
         st.table(pd.DataFrame([s.__dict__ for s in st.session_state.shifts]))
-        del_opts = list(range(len(st.session_state.shifts)))
         del_idx = st.selectbox(
-            "Delete shift", del_opts,
+            "Delete shift", list(range(len(st.session_state.shifts))),
             format_func=lambda i: st.session_state.shifts[i].label,
         )
-        if st.button("Delete Shift", key="del_shift"):
+        if st.button("Delete shift", key="del_shift"):
             st.session_state.shifts.pop(del_idx)
 
-cols = st.columns(2)
-with cols[0]:
-    st.subheader("Participants")
-    juniors_text = st.text_area("Juniors", "\n".join(st.session_state.juniors))
-    seniors_text = st.text_area("Seniors", "\n".join(st.session_state.seniors))
-    st.session_state.juniors = [n.strip() for n in juniors_text.splitlines() if n.strip()]
-    st.session_state.seniors = [n.strip() for n in seniors_text.splitlines() if n.strip()]
+    st.divider()
+    cols = st.columns(2)
+    with cols[0]:
+        st.subheader("Participants")
+        juniors_text = st.text_area("Juniors (one per line)", "\n".join(st.session_state.juniors))
+        seniors_text = st.text_area("Seniors (one per line)", "\n".join(st.session_state.seniors))
+        st.session_state.juniors = [n.strip() for n in juniors_text.splitlines() if n.strip()]
+        st.session_state.seniors = [n.strip() for n in seniors_text.splitlines() if n.strip()]
+    with cols[1]:
+        st.subheader("Night-float eligible")
+        st.session_state.nf_juniors = st.multiselect(
+            "Juniors", st.session_state.juniors, default=st.session_state.nf_juniors
+        )
+        st.session_state.nf_seniors = st.multiselect(
+            "Seniors", st.session_state.seniors, default=st.session_state.nf_seniors
+        )
 
-with cols[1]:
-    st.subheader("Night Float Eligible")
-    st.session_state.nf_juniors = st.multiselect(
-        "Juniors", st.session_state.juniors, default=st.session_state.nf_juniors
-    )
-    st.session_state.nf_seniors = st.multiselect(
-        "Seniors", st.session_state.seniors, default=st.session_state.nf_seniors
-    )
+with tab_rules:
+    dc = st.columns(2)
+    with dc[0]:
+        start_date = st.date_input("Start date", date.today())
+    with dc[1]:
+        end_date = st.date_input("End date", date.today() + timedelta(days=27))
+    rc = st.columns(2)
+    with rc[0]:
+        min_gap = st.slider("Minimum gap (rest days between shifts)", 0, 7, 1)
+    with rc[1]:
+        nf_block_len = st.number_input("Night-float block length", 1, 7, 5)
+    oc = st.columns(2)
+    with oc[0]:
+        seed = st.number_input(
+            "Random seed", 0, 1_000_000, 0, 1,
+            help="Same seed reproduces the same schedule when the solver finishes.",
+        )
+    with oc[1]:
+        weekend_labels = st.multiselect(
+            "Weekend days", _WD, default=["Sat", "Sun"],
+            help="Days that count as weekend for fairness (a shift's 'Thu' flag also adds Thursday).",
+        )
+    weekend_days = [_WD.index(name) for name in weekend_labels]
 
-with st.expander("Leaves & Rotators", expanded=False):
+    st.divider()
+    st.subheader("Leaves & rotators")
     _people = st.session_state.juniors + st.session_state.seniors
     _date_range_editor(
-        "Leaves — resident unavailable during window",
-        "leaves",
-        _people,
-        with_compensation=True,
+        "Leaves — resident unavailable during window", "leaves", _people, with_compensation=True,
     )
     st.caption(
         "Compensated leave keeps the resident's full fair share; uncompensated "
         "scales it down for the absence (like a rotator)."
     )
     st.divider()
-    _date_range_editor(
-        "Rotators — resident only available during window", "rotators", _people
-    )
+    _date_range_editor("Rotators — resident only available during window", "rotators", _people)
 
-with st.expander("Per-resident caps & extra points", expanded=False):
+with tab_adv:
+    st.subheader("Per-resident caps & extra points")
     _caps_editor(st.session_state.juniors + st.session_state.seniors)
     st.divider()
     _extra_points_editor(st.session_state.juniors + st.session_state.seniors)
-
-with st.expander("Point overrides & holidays (advanced)", expanded=False):
+    st.divider()
+    st.subheader("Point overrides & holidays")
     _weekday_points_editor([s.label for s in st.session_state.shifts])
     st.divider()
     _holidays_editor()
-
-date_cols = st.columns(2)
-with date_cols[0]:
-    start_date = st.date_input("Start Date", date.today())
-with date_cols[1]:
-    end_date = st.date_input("End Date", date.today() + timedelta(days=27))
-min_gap = st.slider("Minimum Gap", 0, 7, 1)
-nf_block_len = st.number_input("NF Block Length", 1, 7, 5)
-seed = st.number_input(
-    "Random seed", 0, 1_000_000, 0, 1,
-    help="Seeds the solver's search. The same seed reproduces the same schedule "
-    "when the solver finishes; under a tight time limit results may still vary.",
-)
-
-_WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-weekend_labels = st.multiselect(
-    "Weekend days",
-    _WEEKDAY_NAMES,
-    default=["Sat", "Sun"],
-    help="Days that count as weekend for fairness. A shift's 'Thu counts as "
-    "weekend' flag still adds Thursday for that shift.",
-)
-weekend_days = [_WEEKDAY_NAMES.index(name) for name in weekend_labels]
 
 _active_people = set(st.session_state.juniors + st.session_state.seniors)
 max_total = {
@@ -366,7 +375,8 @@ session_config = InputData(
     holidays=holidays or None,
 )
 
-with st.expander("Save / Load configuration", expanded=False):
+with tab_save:
+    st.subheader("Save / load configuration")
     st.download_button(
         "Download config (JSON)",
         input_data_to_json(session_config),
@@ -374,14 +384,14 @@ with st.expander("Save / Load configuration", expanded=False):
         mime="application/json",
     )
     uploaded_config = st.file_uploader("Load config (JSON), then click Generate", type="json")
-
-with st.expander("Carryover fairness (cumulative across blocks)", expanded=False):
+    st.divider()
+    st.subheader("Carryover fairness (optional)")
     st.caption(
-        "Optional. Leave this empty for a standalone, one-off schedule — this "
-        "block is balanced on its own, with no link to fairness history. To keep "
-        "fairness across months instead, upload the previous block's ledger here "
-        "(residents who carried extra get lighter targets now) and download the "
-        "updated ledger afterwards for next time."
+        "Leave this empty for a standalone, one-off schedule — this block is "
+        "balanced on its own, with no link to fairness history. To keep fairness "
+        "across months instead, upload the previous block's ledger here (residents "
+        "who carried extra get lighter targets now) and download the updated "
+        "ledger afterwards for next time."
     )
     uploaded_ledger = st.file_uploader("Load fairness ledger (JSON)", type="json", key="ledger_upload")
 
@@ -392,7 +402,10 @@ if uploaded_ledger is not None:
     except Exception as exc:
         st.error(f"Could not read ledger: {exc}")
 
-generate_clicked = st.button("Generate Schedule")
+st.divider()
+generate_clicked = st.button(
+    "⚙️ Generate schedule", type="primary", use_container_width=True
+)
 
 # A relaxed-constraint retry queued by the recovery buttons takes precedence
 # over a fresh click so the chosen relaxation is actually applied.
@@ -464,14 +477,22 @@ if data is not None:
                     detail += f" · {wall:.2f}s"
                 st.caption(detail)
             points = calculate_points(df, data)
-            st.dataframe(df)
             quality = schedule_quality(df, data, points=points)
-            st.metric("Schedule quality", f"{quality['score']} / 100")
+            mcols = st.columns(3)
+            mcols[0].metric("Schedule quality", f"{quality['score']} / 100")
+            mcols[1].metric("Slots filled", f"{quality['filled']}/{quality['total_slots']}")
+            mcols[2].metric("Unfilled", quality["unfilled"])
             st.caption(
-                f"Coverage {quality['filled']}/{quality['total_slots']} slots filled "
-                f"({quality['unfilled']} unfilled) · total range {quality['total_range']:.1f} "
-                f"· weekend range {quality['weekend_range']:.1f}"
+                f"Total-points range {quality['total_range']:.1f} · "
+                f"weekend range {quality['weekend_range']:.1f} (smaller is fairer)"
             )
+            try:
+                styled = df.style.map(
+                    lambda v: "background-color: #ffe0e0; color: #b00000" if v == "Unfilled" else ""
+                )
+                st.dataframe(styled, use_container_width=True)
+            except Exception:  # pragma: no cover - styling is best-effort
+                st.dataframe(df, use_container_width=True)
             ranges = fairness_range_lines(points)
             if ranges:
                 st.subheader("Fairness summary")

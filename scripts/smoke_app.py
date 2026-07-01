@@ -77,7 +77,7 @@ def _run_checks() -> list[str]:
         check(True, "app loads")
         page.get_by_text("Test mode (preload example data)").click()
         page.wait_for_timeout(2500)
-        page.get_by_role("button", name="Generate Schedule").click()
+        page.locator('button:has-text("Generate schedule")').click()
         page.wait_for_selector(
             '[data-testid="stDataFrame"], [data-testid="stDataFrameResizable"]',
             timeout=120000,
@@ -113,7 +113,7 @@ def _run_checks() -> list[str]:
         page = browser.new_page(viewport={"width": 1400, "height": 1000})
         page.goto(URL, wait_until="load", timeout=60000)
         page.wait_for_selector("text=Idea Gold Scheduler", timeout=60000)
-        page.get_by_role("button", name="Generate Schedule").click()
+        page.locator('button:has-text("Generate schedule")').click()
         page.wait_for_timeout(2000)
         check(page.get_by_text("Fix the configuration before generating").count() > 0,
               "invalid config shows a validation error")
@@ -125,10 +125,10 @@ def _run_checks() -> list[str]:
         page.wait_for_selector("text=Idea Gold Scheduler", timeout=60000)
         page.locator('[data-testid="stTextArea"] textarea').first.fill("A")
         page.locator('[data-testid="stTextInput"] input').first.fill("NF")
-        page.get_by_text("Night Float", exact=True).click()
-        page.get_by_role("button", name="Add Shift").click()
+        page.get_by_text("Night float", exact=True).click()
+        page.locator('button:has-text("Add shift")').click()
         page.wait_for_timeout(1500)
-        page.get_by_role("button", name="Generate Schedule").click()
+        page.locator('button:has-text("Generate schedule")').click()
         page.wait_for_timeout(6000)
         check(page.get_by_role("button", name="Retry with min_gap 0").count() > 0,
               "infeasible config offers a relax-and-retry button")

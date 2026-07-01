@@ -159,6 +159,7 @@ the validation-error path, and the infeasible relax-and-retry recovery. It needs
 of the `pytest` run.
 
 ## Changelog
+- Reorganised the app UI into tabs (Shifts & people / Dates & rules / Advanced / Save & carryover), with a primary Generate button, summary metrics, and unfilled-slot highlighting.
 - Added per-weekday shift point overrides and holiday bonus dates (optionally weekend-counting), via one `effective_points` value threaded through the solver and fairness.
 - Added mandatory per-resident extra points (`extra_points`, e.g. a penalty): the target is raised and a hard floor enforces it.
 - Fairness log shows targets inline + a points checksum, sorts worst-deviation-first, and folds in constraint violations; Excel/PDF gain matching `Total dev`/`NF dev` columns.
