@@ -70,3 +70,23 @@ def test_schedule_to_pdf_bytes():
     blob = schedule_to_pdf_bytes(df, data)
     assert isinstance(blob, (bytes, bytearray))
     assert blob[:4] == b"%PDF"  # PDF magic number
+
+
+def test_exports_accept_cosmetic_columns_and_palette():
+    pytest.importorskip("openpyxl")
+    pytest.importorskip("reportlab")
+    df, data = _sample()
+    # A purely cosmetic column (like an on-call team label) plus a custom palette
+    # must not break the exports; fairness is computed from points, not columns.
+    df = df.copy()
+    df["On-call team"] = ["Red", "Blue"]
+    points = calculate_points(df, data)
+    frame = build_fairness_frame(points, data, df)
+    assert "On-call team" not in frame.columns  # cosmetic column stays cosmetic
+    xl = schedule_to_excel_bytes(
+        df, data, points=points, color_mode="auto", palette={"weekend": "#123456"}
+    )
+    pdf = schedule_to_pdf_bytes(
+        df, data, points=points, color_mode="role", palette={"senior": "#654321"}
+    )
+    assert xl[:2] == b"PK" and pdf[:4] == b"%PDF"

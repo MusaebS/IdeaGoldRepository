@@ -105,17 +105,40 @@ def _run_checks() -> list[str]:
                   "fairness bar chart renders")
         except Exception:
             check(False, "fairness bar chart renders")
+        # Open the "Customise" expander to reach the colour + column controls.
         try:
+            page.get_by_text("Customise the schedule", exact=False).first.click()
+            page.wait_for_timeout(1000)
             page.get_by_text("Colour cells by").wait_for(timeout=10000)
             check(True, "colour-mode selector shown")
         except Exception:
             check(False, "colour-mode selector shown")
+        # Add a cosmetic custom column and confirm it lands on the schedule.
+        try:
+            page.locator('[data-testid="stTextInput"]').filter(
+                has_text="New column name"
+            ).locator("input").fill("On-call team")
+            page.get_by_role("button", name="Add column").click()
+            page.wait_for_timeout(2500)
+            check(page.get_by_text("On-call team").count() > 0,
+                  "custom cosmetic column added")
+        except Exception:
+            check(False, "custom cosmetic column added")
         # Toggling a control triggers a Streamlit rerun without re-solving; the
         # schedule must persist (results now render from session_state).
         page.get_by_text("Show Fairness Log").click()
         page.wait_for_timeout(2500)
         check(page.locator('[data-testid="stDataFrame"], [data-testid="stDataFrameResizable"]').count() > 0,
               "results persist across a rerun")
+        # Clicking a download must NOT blank the results (exports are cached).
+        try:
+            with page.expect_download(timeout=20000):
+                page.get_by_role("button", name="Download CSV (schedule)").click()
+        except Exception:
+            pass  # capturing the file is best-effort; persistence below is the point
+        page.wait_for_timeout(1500)
+        check(page.locator('[data-testid="stDataFrame"], [data-testid="stDataFrameResizable"]').count() > 0,
+              "results persist after a download click")
         check(page.locator('[data-testid="stException"]').count() == 0,
               "no uncaught exception on the page")
         page.close()

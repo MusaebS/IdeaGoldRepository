@@ -68,12 +68,14 @@ def schedule_to_excel_bytes(
     data: InputData,
     points: Dict[str, Dict[str, float]] | None = None,
     color_mode: str = "none",
+    palette: Dict[str, str] | None = None,
 ) -> bytes:
     """Serialise the schedule and fairness summary to an .xlsx workbook.
 
     Sheet "Schedule" is the calendar grid (rows = dates, columns = shift
     labels); sheet "Fairness" is the per-resident point summary. ``color_mode``
-    shades the schedule cells to match the on-screen view. Requires ``openpyxl``.
+    (with an optional ``palette``) shades the schedule cells to match the
+    on-screen view. Requires ``openpyxl``.
     """
     from openpyxl.styles import PatternFill
 
@@ -86,7 +88,7 @@ def schedule_to_excel_bytes(
         if color_mode and color_mode != "none":
             worksheet = writer.sheets["Schedule"]
             columns = list(df.columns)
-            for (row_idx, label), hexcolor in schedule_cell_colors(df, data, color_mode).items():
+            for (row_idx, label), hexcolor in schedule_cell_colors(df, data, color_mode, palette).items():
                 if label in columns:
                     rgb = hexcolor.lstrip("#").upper()
                     worksheet.cell(row=row_idx + 2, column=columns.index(label) + 1).fill = (
@@ -100,13 +102,14 @@ def schedule_to_pdf_bytes(
     data: InputData,
     points: Dict[str, Dict[str, float]] | None = None,
     color_mode: str = "none",
+    palette: Dict[str, str] | None = None,
 ) -> bytes:
     """Render the schedule (calendar grid) and fairness summary to a PDF.
 
     Cells are wrapping paragraphs with fixed, evenly-divided column widths so a
     wide 10-shift schedule fits the landscape page rather than overflowing.
-    ``color_mode`` shades the schedule cells to match the on-screen view.
-    Requires ``reportlab`` to be installed.
+    ``color_mode`` (with an optional ``palette``) shades the schedule cells to
+    match the on-screen view. Requires ``reportlab`` to be installed.
     """
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4, landscape
@@ -173,7 +176,7 @@ def schedule_to_pdf_bytes(
         return table
 
     schedule_bg = (
-        schedule_cell_colors(df, data, color_mode)
+        schedule_cell_colors(df, data, color_mode, palette)
         if color_mode and color_mode != "none"
         else None
     )

@@ -108,3 +108,26 @@ def test_auto_mode_weekend_differs_from_weekday_same_shift():
     weekend_n = colors[(0, "N")]       # Saturday
     weekday_n = colors[(1, "N")]       # Monday
     assert weekend_n != weekday_n
+
+
+def test_palette_overrides_recolour_roles():
+    df, data = _sample()
+    default = schedule_cell_colors(df, data, "role")
+    # Recolour senior shifts pure red; junior stays default.
+    custom = schedule_cell_colors(df, data, "role", palette={"senior": "#ff0000"})
+    assert custom[(0, "N")] != default[(0, "N")]   # senior shift changed
+    assert custom[(0, "D")] == default[(0, "D")]   # junior shift unchanged
+
+
+def test_palette_overrides_unfilled_colour():
+    df, data = _sample()
+    colors = schedule_cell_colors(df, data, "auto", palette={"unfilled": "#000000"})
+    assert colors[(1, "D")] == "#000000"
+
+
+def test_empty_palette_entries_fall_back_to_default():
+    df, data = _sample()
+    base = schedule_cell_colors(df, data, "auto")
+    # Blank/None values must not override the default palette.
+    same = schedule_cell_colors(df, data, "auto", palette={"weekend": "", "points": None})
+    assert same == base

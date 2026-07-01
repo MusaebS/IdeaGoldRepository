@@ -42,23 +42,40 @@ The results page includes a **Download Fairness Log** button. It is built to be 
 
 A Fairness summary and a per-resident bar chart show the min/max/range in the UI, and the Excel/PDF "Fairness" sheet carries the same `Total dev` / `NF dev` columns from the same solver-resolved targets — so the on-screen view, the log, and the exports all agree. The schedule and fairness summary can also be exported as **CSV**, **Excel** (`.xlsx`, schedule + fairness sheets) and **PDF**.
 
-## Results colour-coding
+## Customising the results (cosmetic)
 
-The results grid can be shaded with a **Colour cells by** selector, and the same
+Everything under **🎨 Customise the schedule** and the column controls is *purely
+cosmetic* — it changes how the finished schedule looks and what the downloads
+contain, never the assignments, fairness, or validation.
+
+**Colour-coding.** A **Colour cells by** selector shades the grid, and the same
 colours flow into the Excel and PDF downloads (`model/coloring.py` returns one
 `{(row, shift) -> #rrggbb}` map used on-screen, in openpyxl fills, and in reportlab
 backgrounds, so all three agree cell-for-cell). Modes:
 
-- **Weekend + points** (default) — weekends get an amber shade, weekdays a blue one,
-  with the intensity rising for higher-point shifts, so a heavy weekend night stands out.
+- **Weekend + points** (default) — weekends get one shade, weekdays another, with the
+  intensity rising for higher-point shifts, so a heavy weekend night stands out.
 - **Weekend only** — just flags weekend cells.
 - **Point value** — shades every cell by how many points it's worth.
 - **Role (junior/senior)** — senior shifts one hue, junior another.
 - **None** — no shading.
 
-Unfilled slots are always flagged red regardless of the mode. Pick **None** (or a
-plainer mode) if the colours make a wide roster look busy — they never change the
-schedule, only how it's displayed.
+The five role colours (weekend / points / senior / junior / unfilled) are editable
+with colour pickers, with a **Reset colours** button. Unfilled slots are always
+flagged regardless of the mode.
+
+**Custom columns.** Add extra columns to the final schedule for labelling that has
+nothing to do with the maths — on-call team, consultant on service, a notes column,
+whatever a given month needs. Add/remove them by name and fill a value per day; they
+ride along into the on-screen grid and every download but are ignored by the
+scheduler, fairness, and validation.
+
+**Column order & visibility.** Reorder columns (the selection order in the *Columns
+to show* control is the display order) and hide any you don't want — again, display
+only.
+
+Downloads are cached per (result + colours + columns), so clicking a download is
+instant and no longer momentarily blanks the results while a large Excel/PDF rebuilds.
 
 ## Configuration validation
 
@@ -177,6 +194,7 @@ the validation-error path, and the infeasible relax-and-retry recovery. It needs
 of the `pytest` run.
 
 ## Changelog
+- Added editable colour pickers for the five schedule colours, cosmetic custom columns (e.g. on-call team / consultant, labelled per day and carried into the downloads without touching the maths), and column reorder/hide. Exports are now cached per result+display so a download no longer blanks the results while a large Excel/PDF rebuilds.
 - Added customisable results colour-coding (`model/coloring.py`): weekend/points/role/none modes shading the on-screen grid, with matching colours in the Excel and PDF exports; results now render from `session_state` so changing the colour mode doesn't re-solve.
 - Reorganised the app UI into tabs (Shifts & people / Dates & rules / Advanced / Save & carryover), with a primary Generate button, summary metrics, and unfilled-slot highlighting.
 - Added per-weekday shift point overrides and holiday bonus dates (optionally weekend-counting), via one `effective_points` value threaded through the solver and fairness.

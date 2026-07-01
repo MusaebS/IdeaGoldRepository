@@ -17,7 +17,7 @@ from model.fairness import (
 )
 from model.demo_data import sample_shifts, sample_names
 from model.exporters import build_fairness_frame, schedule_to_excel_bytes, schedule_to_pdf_bytes
-from model.coloring import COLOR_MODES, schedule_cell_colors
+from model.coloring import COLOR_MODES, DEFAULT_PALETTE, schedule_cell_colors
 import os
 
 st.set_page_config(page_title="Idea Gold Scheduler", page_icon="🗓️", layout="wide")
@@ -198,13 +198,14 @@ def _holidays_editor() -> None:
             st.session_state.holidays.pop(idx)
 
 
-def _style_schedule(df, data, color_mode):
+def _style_schedule(df, data, color_mode, palette=None):
     """Return a Styler shading the grid by ``color_mode`` (unfilled always flagged).
 
     Uses the same ``schedule_cell_colors`` map the Excel/PDF exports use, so the
-    on-screen view and the downloads agree cell-for-cell.
+    on-screen view and the downloads agree cell-for-cell. ``palette`` recolours
+    the named roles. Cosmetic custom columns are simply left unshaded.
     """
-    color_map = schedule_cell_colors(df, data, color_mode)
+    color_map = schedule_cell_colors(df, data, color_mode, palette)
     columns = list(df.columns)
     records = df.to_dict("records")
 
@@ -220,6 +221,102 @@ def _style_schedule(df, data, color_mode):
         return css
 
     return df.style.apply(_apply, axis=None)
+
+
+def _final_schedule_df(base_df, extra_cols, extra_vals, order):
+    """Return a *display/export* copy of the schedule with cosmetic columns.
+
+    Custom columns are looked up per date and appended; ``order`` reorders and
+    (by omission) hides columns. Purely cosmetic — the returned frame is never
+    fed back into scheduling maths, and ``base_df.attrs`` (solver-resolved
+    targets) are carried over so exports still show deviations.
+    """
+    out = base_df.copy()
+    dates = list(base_df["Date"])
+    for name in extra_cols:
+        vals = extra_vals.get(name, {})
+        out[name] = [vals.get(str(d), "") for d in dates]
+    if order:
+        # ``order`` is the explicit show list (from the multiselect); columns
+        # left out are hidden. Callers pass the full set when nothing is hidden.
+        keep = [c for c in order if c in out.columns]
+        if keep:
+            out = out[keep]
+    try:
+        out.attrs = dict(base_df.attrs)
+    except Exception:  # pragma: no cover - attrs is best-effort metadata
+        pass
+    return out
+
+
+def _custom_columns_editor(base_df):
+    """UI to add/remove/fill cosmetic columns (on-call team, consultant, notes…)."""
+    st.markdown("**Custom columns — cosmetic labels added to the final schedule only**")
+    st.caption(
+        "These don't affect scheduling, fairness, or validation — they're just "
+        "extra columns (e.g. on-call team, consultant on service) you can label "
+        "per day and carry into the downloads."
+    )
+    ac = st.columns([3, 1])
+    new_name = ac[0].text_input("New column name", key="newcol_name")
+    if ac[1].button("Add column", key="newcol_add"):
+        name = new_name.strip()
+        if name and name not in base_df.columns and name not in st.session_state.extra_cols:
+            st.session_state.extra_cols.append(name)
+    if not st.session_state.extra_cols:
+        return
+    rc = st.columns([3, 1])
+    rm = rc[0].selectbox("Remove column", st.session_state.extra_cols, key="rmcol_sel")
+    if rc[1].button("Remove column", key="rmcol_btn"):
+        st.session_state.extra_cols.remove(rm)
+        st.session_state.extra_vals.pop(rm, None)
+        st.rerun()
+    dates = list(base_df["Date"])
+    editor_df = pd.DataFrame({"Date": dates})
+    for name in st.session_state.extra_cols:
+        vals = st.session_state.extra_vals.get(name, {})
+        editor_df[name] = [vals.get(str(d), "") for d in dates]
+    edited = st.data_editor(
+        editor_df, key="extra_cols_editor", disabled=["Date"], use_container_width=True
+    )
+    for name in st.session_state.extra_cols:
+        st.session_state.extra_vals[name] = {
+            str(d): ("" if v is None else str(v))
+            for d, v in zip(list(edited["Date"]), list(edited[name]))
+        }
+
+
+def _reconcile_column_order(all_cols):
+    """Keep ``st.session_state.col_order`` in sync with the live column set.
+
+    New columns are appended (shown); removed columns drop out. A user's manual
+    reorder / hide (deselecting in the multiselect) is otherwise preserved.
+    """
+    known = st.session_state.known_cols
+    order = st.session_state.col_order
+    for c in all_cols:
+        if c not in known:
+            order.append(c)
+    order[:] = [c for c in order if c in all_cols]
+    st.session_state.known_cols = list(all_cols)
+    st.session_state.col_order = order
+
+
+def _cached_export(kind, signature, builder):
+    """Memoise an expensive export so a download click doesn't rebuild it.
+
+    Every Streamlit download click is a full rerun; regenerating the Excel/PDF
+    (seconds on a large roster) each time blanks the results while it runs — the
+    "download makes the schedule disappear" bug. Caching by ``signature`` (result
+    version + colours + columns) keeps downloads instant and the view stable.
+    """
+    cache = st.session_state.export_cache
+    if cache.get("signature") != signature:
+        cache.clear()
+        cache["signature"] = signature
+    if kind not in cache:
+        cache[kind] = builder()
+    return cache[kind]
 
 
 # Session defaults
@@ -251,6 +348,20 @@ if "result_data" not in st.session_state:
     st.session_state.result_data = None
 if "result_prior_ledger" not in st.session_state:
     st.session_state.result_prior_ledger = None
+if "result_version" not in st.session_state:
+    st.session_state.result_version = 0
+if "extra_cols" not in st.session_state:
+    st.session_state.extra_cols = []
+if "extra_vals" not in st.session_state:
+    st.session_state.extra_vals = {}
+if "palette" not in st.session_state:
+    st.session_state.palette = dict(DEFAULT_PALETTE)
+if "col_order" not in st.session_state:
+    st.session_state.col_order = []
+if "known_cols" not in st.session_state:
+    st.session_state.known_cols = []
+if "export_cache" not in st.session_state:
+    st.session_state.export_cache = {}
 if "demo_loaded" not in st.session_state:
     st.session_state.demo_loaded = False
 
@@ -494,6 +605,7 @@ if data is not None:
             st.session_state.result_df = df
             st.session_state.result_data = data
             st.session_state.result_prior_ledger = carryover_ledger
+            st.session_state.result_version += 1
 
 # Results render from session_state so they survive reruns (e.g. changing the
 # colour mode) without re-solving.
@@ -524,17 +636,54 @@ if st.session_state.result_df is not None:
         f"weekend range {quality['weekend_range']:.1f} (smaller is fairer)"
     )
 
-    color_label = st.selectbox(
-        "Colour cells by",
-        list(COLOR_MODES),
-        index=0,
-        help="Shade the schedule grid; the same colours flow into the Excel and PDF downloads.",
-    )
+    # --- Display customisation (cosmetic only — no effect on scheduling) ------
+    with st.expander("🎨 Customise the schedule — colours & columns", expanded=False):
+        color_label = st.selectbox(
+            "Colour cells by",
+            list(COLOR_MODES),
+            index=0,
+            help="Shade the grid; the same colours flow into the Excel and PDF downloads.",
+        )
+        st.caption("Colours for each role (used by the modes above):")
+        pcols = st.columns(5)
+        for col, (key, lbl) in zip(
+            pcols,
+            [("weekend", "Weekend"), ("points", "Points"), ("senior", "Senior"),
+             ("junior", "Junior"), ("unfilled", "Unfilled")],
+        ):
+            st.session_state.palette[key] = col.color_picker(
+                lbl, st.session_state.palette.get(key, DEFAULT_PALETTE[key]), key=f"pal_{key}"
+            )
+        if st.button("Reset colours", key="pal_reset"):
+            st.session_state.palette = dict(DEFAULT_PALETTE)
+            for key in DEFAULT_PALETTE:  # clear widget state so the pickers re-init
+                st.session_state.pop(f"pal_{key}", None)
+            st.rerun()
+        st.divider()
+        _custom_columns_editor(df)
+
     color_mode = COLOR_MODES[color_label]
+    palette = st.session_state.palette
+
+    # Reorder / hide columns (cosmetic). Selection order = display order.
+    all_cols = list(df.columns) + list(st.session_state.extra_cols)
+    _reconcile_column_order(all_cols)
+    chosen = st.multiselect(
+        "Columns to show (order = display order; unselect to hide)",
+        all_cols,
+        key="col_order",
+    )
+    order = chosen or all_cols
+    final_df = _final_schedule_df(
+        df, st.session_state.extra_cols, st.session_state.extra_vals, order
+    )
+
     try:
-        st.dataframe(_style_schedule(df, data, color_mode), use_container_width=True)
+        st.dataframe(
+            _style_schedule(final_df, data, color_mode, palette), use_container_width=True
+        )
     except Exception:  # pragma: no cover - styling is best-effort
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(final_df, use_container_width=True)
 
     ranges = fairness_range_lines(points)
     if ranges:
@@ -549,45 +698,78 @@ if st.session_state.result_df is not None:
             st.caption("Workload by resident (points)")
             st.bar_chart(chart_df, stack=False)
 
+    # --- Downloads (exports cached so a click doesn't rebuild / blank them) ----
+    st.subheader("Downloads")
     log_text = format_fairness_log(df, data, points=points)
-    st.download_button(
+    export_sig = (
+        st.session_state.result_version,
+        color_mode,
+        tuple(sorted(palette.items())),
+        tuple(final_df.columns),
+        tuple(
+            (name, tuple(sorted(vals.items())))
+            for name, vals in sorted(st.session_state.extra_vals.items())
+        ),
+    )
+    dcols = st.columns(3)
+    dcols[0].download_button(
         "Download CSV (schedule)",
-        df.to_csv(index=False),
+        final_df.to_csv(index=False),
         file_name="schedule.csv",
         mime="text/csv",
-    )
-    st.download_button("Download Fairness Log", log_text, file_name="fairness_log.txt")
-    st.download_button(
-        "Download updated ledger (for next block)",
-        ledger_to_json(update_ledger(prior_ledger, df, data)),
-        file_name=f"fairness_ledger_through_{data.end_date.isoformat()}.json",
-        mime="application/json",
-    )
-    st.caption(
-        "Keep this file — it's the cumulative fairness record. Streamlit "
-        "Cloud doesn't store anything between sessions, so re-upload it "
-        "under 'Carryover fairness' next block to keep months fair."
+        use_container_width=True,
     )
     try:
-        excel_bytes = schedule_to_excel_bytes(df, data, points=points, color_mode=color_mode)
-        st.download_button(
+        excel_bytes = _cached_export(
+            "excel", export_sig,
+            lambda: schedule_to_excel_bytes(
+                final_df, data, points=points, color_mode=color_mode, palette=palette
+            ),
+        )
+        dcols[1].download_button(
             "Download Excel (schedule + fairness)",
             excel_bytes,
             file_name="schedule.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
         )
     except Exception as exc:  # pragma: no cover - e.g. openpyxl not installed
-        st.info(f"Excel export unavailable: {exc}")
+        dcols[1].info(f"Excel export unavailable: {exc}")
     try:
-        pdf_bytes = schedule_to_pdf_bytes(df, data, points=points, color_mode=color_mode)
-        st.download_button(
+        pdf_bytes = _cached_export(
+            "pdf", export_sig,
+            lambda: schedule_to_pdf_bytes(
+                final_df, data, points=points, color_mode=color_mode, palette=palette
+            ),
+        )
+        dcols[2].download_button(
             "Download PDF (schedule + fairness)",
             pdf_bytes,
             file_name="schedule.pdf",
             mime="application/pdf",
+            use_container_width=True,
         )
     except Exception as exc:  # pragma: no cover - e.g. reportlab not installed
-        st.info(f"PDF export unavailable: {exc}")
+        dcols[2].info(f"PDF export unavailable: {exc}")
+    dcols2 = st.columns(2)
+    dcols2[0].download_button(
+        "Download Fairness Log",
+        log_text,
+        file_name="fairness_log.txt",
+        use_container_width=True,
+    )
+    dcols2[1].download_button(
+        "Download updated ledger (for next block)",
+        ledger_to_json(update_ledger(prior_ledger, df, data)),
+        file_name=f"fairness_ledger_through_{data.end_date.isoformat()}.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+    st.caption(
+        "Keep the ledger — it's the cumulative fairness record. Streamlit Cloud "
+        "doesn't store anything between sessions, so re-upload it under "
+        "'Carryover fairness' next block to keep months fair."
+    )
     if st.checkbox("Show Fairness Log"):
         st.text(log_text)
 

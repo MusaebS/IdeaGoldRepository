@@ -3,7 +3,7 @@
 Returns a ``{(row_index, shift_label): '#rrggbb'}`` map so the same colours can be
 applied on-screen (a pandas Styler), in Excel (openpyxl fills) and in the PDF
 (reportlab backgrounds). Modes let the user pick what the colour means; unfilled
-slots are always flagged red.
+slots are always flagged red. A ``palette`` lets the user recolour each role.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Dict, Tuple
 from .data_models import InputData
 from .utils import effective_points, is_weekend, weekend_holiday_dates
 
-__all__ = ["COLOR_MODES", "schedule_cell_colors"]
+__all__ = ["COLOR_MODES", "DEFAULT_PALETTE", "schedule_cell_colors"]
 
 # UI label -> internal mode.
 COLOR_MODES = {
@@ -23,11 +23,19 @@ COLOR_MODES = {
     "None": "none",
 }
 
-_WEEKEND_HUE = (255, 193, 7)    # amber
-_POINT_HUE = (74, 144, 217)     # blue
-_SENIOR_HUE = (150, 110, 220)   # purple
-_JUNIOR_HUE = (90, 180, 120)    # green
-_UNFILLED = "#ffcccc"           # red
+# Named colour roles the user can override; values are #rrggbb hex strings.
+DEFAULT_PALETTE = {
+    "weekend": "#ffc107",    # amber
+    "points": "#4a90d9",     # blue
+    "senior": "#966edc",     # purple
+    "junior": "#5ab478",     # green
+    "unfilled": "#ffcccc",   # red
+}
+
+
+def _hex_to_rgb(hexstr: str) -> Tuple[int, int, int]:
+    h = hexstr.lstrip("#")
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
 def _blend(hue: Tuple[int, int, int], ratio: float) -> str:
@@ -37,8 +45,24 @@ def _blend(hue: Tuple[int, int, int], ratio: float) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def schedule_cell_colors(df, data: InputData, mode: str = "auto") -> Dict[Tuple[int, str], str]:
-    """Return a colour per assigned/unfilled schedule cell for the given mode."""
+def schedule_cell_colors(
+    df, data: InputData, mode: str = "auto", palette: Dict[str, str] | None = None
+) -> Dict[Tuple[int, str], str]:
+    """Return a colour per assigned/unfilled schedule cell for the given mode.
+
+    ``palette`` overrides any of the named colour roles in ``DEFAULT_PALETTE``
+    (``weekend``/``points``/``senior``/``junior``/``unfilled``); missing or empty
+    entries fall back to the default.
+    """
+    pal = dict(DEFAULT_PALETTE)
+    if palette:
+        pal.update({k: v for k, v in palette.items() if v})
+    weekend_hue = _hex_to_rgb(pal["weekend"])
+    point_hue = _hex_to_rgb(pal["points"])
+    senior_hue = _hex_to_rgb(pal["senior"])
+    junior_hue = _hex_to_rgb(pal["junior"])
+    unfilled = pal["unfilled"]
+
     records = df.to_dict("records")
     weekend_dates = weekend_holiday_dates(data)
     max_pts = 1.0
@@ -52,7 +76,7 @@ def schedule_cell_colors(df, data: InputData, mode: str = "auto") -> Dict[Tuple[
         for shift in data.shifts:
             value = row.get(shift.label)
             if value in (None, "Unfilled"):
-                colors[(i, shift.label)] = _UNFILLED
+                colors[(i, shift.label)] = unfilled
                 continue
             if mode == "none":
                 continue
@@ -60,15 +84,15 @@ def schedule_cell_colors(df, data: InputData, mode: str = "auto") -> Dict[Tuple[
             ratio = effective_points(day, shift, data) / max_pts
             if mode == "role":
                 colors[(i, shift.label)] = _blend(
-                    _SENIOR_HUE if shift.role == "Senior" else _JUNIOR_HUE, 0.35
+                    senior_hue if shift.role == "Senior" else junior_hue, 0.35
                 )
             elif mode == "weekend":
                 if weekend:
-                    colors[(i, shift.label)] = _blend(_WEEKEND_HUE, 0.5)
+                    colors[(i, shift.label)] = _blend(weekend_hue, 0.5)
             elif mode == "points":
-                colors[(i, shift.label)] = _blend(_POINT_HUE, 0.2 + 0.6 * ratio)
+                colors[(i, shift.label)] = _blend(point_hue, 0.2 + 0.6 * ratio)
             else:  # "auto": weekend hue vs weekday hue, intensity by points
-                hue = _WEEKEND_HUE if weekend else _POINT_HUE
+                hue = weekend_hue if weekend else point_hue
                 base = 0.25 if weekend else 0.08
                 colors[(i, shift.label)] = _blend(hue, base + 0.55 * ratio)
     return colors
