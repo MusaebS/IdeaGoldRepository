@@ -1,7 +1,11 @@
 from dataclasses import replace
 from datetime import timedelta
 import os
-from typing import Dict, Tuple
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
+
+# CP-SAT variable handles are opaque (real ortools IntVar or the _Var stub
+# below), so they are typed as Any throughout.
+CpVar = Any
 
 ORTOOLS_AVAILABLE = True
 try:
@@ -127,31 +131,39 @@ except ImportError:  # pragma: no cover - simple fallback if ortools missing
         },
     )
 
-from .data_models import InputData, normalized_leaves
+from .data_models import InputData, normalized_leaves, normalized_rotators
 from .nf_blocks import respects_nf_blocks
-from .utils import effective_points, is_weekend, weekend_holiday_dates
+from .points import POINT_SCALE, SlotPoints, block_days, classify_slot, scaled, slot_points
+from .utils import weekend_holiday_dates
 
 
 class SchedulerSolver:
     def __init__(self, data: InputData):
         self.data = data
         self.model = cp_model.CpModel()
-        self.SCALE = 100
+        self.SCALE = POINT_SCALE
         self.people = data.juniors + data.seniors + ["Unfilled"]
-        self.days = [data.start_date + timedelta(days=i)
-                     for i in range((data.end_date - data.start_date).days + 1)]
+        self.days = block_days(data)
         self.shifts = data.shifts
         self.labels = sorted({s.label for s in data.shifts})
-        self.vars: Dict[Tuple[int, int, int], object] = {}
-        self.label_pts: Dict[Tuple[int, str], object] = {}
-        self.total_pts: Dict[int, object] = {}
-        self.weekend_pts: Dict[int, object] = {}
-        self.nf_pts: Dict[int, object] = {}
-        self.dev_label: Dict[Tuple[int, str], object] = {}
-        self.dev_total: Dict[int, object] = {}
-        self.dev_weekend: Dict[int, object] = {}
-        self.dev_night_float: Dict[int, object] = {}
-        self.max_dev: object | None = None
+        # Every (day, shift) slot classified once — value, weekend, night-float —
+        # so the solver and fairness reporting agree by construction.
+        weekend_dates = weekend_holiday_dates(data)
+        self.slots: Dict[Tuple[int, int], SlotPoints] = {
+            (d_idx, s_idx): classify_slot(day, sh, data, weekend_dates)
+            for d_idx, day in enumerate(self.days)
+            for s_idx, sh in enumerate(self.shifts)
+        }
+        self.vars: Dict[Tuple[int, int, int], CpVar] = {}
+        self.label_pts: Dict[Tuple[int, str], CpVar] = {}
+        self.total_pts: Dict[int, CpVar] = {}
+        self.weekend_pts: Dict[int, CpVar] = {}
+        self.nf_pts: Dict[int, CpVar] = {}
+        self.dev_label: Dict[Tuple[int, str], CpVar] = {}
+        self.dev_total: Dict[int, CpVar] = {}
+        self.dev_weekend: Dict[int, CpVar] = {}
+        self.dev_night_float: Dict[int, CpVar] = {}
+        self.max_dev: CpVar | None = None
         self.build_variables()
         self.compute_points()
         # expose internals for stub solver (may fail on real CpModel)
@@ -188,29 +200,28 @@ class SchedulerSolver:
     def _max_points(self) -> int:
         """Return scaled upper bound for point totals (uses effective points so
         weekday overrides / holiday bonuses never overflow the variable bounds)."""
-        total = sum(
-            effective_points(day, sh, self.data)
-            for day in self.days
-            for sh in self.shifts
-        )
-        return max(1, int(round(100 * total)))
+        return max(1, scaled(sum(slot.points for slot in self.slots.values())))
 
     def compute_points(self) -> None:
-        scale = self.SCALE
         max_val = self._max_points()
-        weekend_dates = weekend_holiday_dates(self.data)
         for p_idx, _ in enumerate(self.people[:-1]):
+            # One pass over the classified slots accumulates the per-label,
+            # weekend and night-float expressions together.
+            label_parts: Dict[str, list] = {label: [] for label in self.labels}
+            wk_parts: List[CpVar] = []
+            nf_parts: List[CpVar] = []
+            for (d_idx, s_idx), slot in self.slots.items():
+                term = scaled(slot.points) * self.vars[(p_idx, d_idx, s_idx)]
+                label_parts[slot.shift.label].append(term)
+                if slot.weekend:
+                    wk_parts.append(term)
+                if slot.night_float:
+                    nf_parts.append(term)
+
             for label in self.labels:
-                parts = []
-                for d_idx, day in enumerate(self.days):
-                    for s_idx, sh in enumerate(self.shifts):
-                        if sh.label != label:
-                            continue
-                        coef = int(round(effective_points(day, sh, self.data) * scale))
-                        parts.append(coef * self.vars[(p_idx, d_idx, s_idx)])
-                expr = sum(parts) if parts else 0
+                parts = label_parts[label]
                 var = self.model.NewIntVar(0, max_val, f"labelpts_{p_idx}_{label}")
-                self.model.Add(var == expr)
+                self.model.Add(var == (sum(parts) if parts else 0))
                 self.label_pts[(p_idx, label)] = var
 
             tot_expr = sum(self.label_pts[(p_idx, lbl)] for lbl in self.labels)
@@ -218,32 +229,15 @@ class SchedulerSolver:
             self.model.Add(tvar == tot_expr)
             self.total_pts[p_idx] = tvar
 
-            wk_parts = []
-            for d_idx, day in enumerate(self.days):
-                for s_idx, sh in enumerate(self.shifts):
-                    if not is_weekend(day, sh, self.data.weekend_days, weekend_dates):
-                        continue
-                    coef = int(round(effective_points(day, sh, self.data) * scale))
-                    wk_parts.append(coef * self.vars[(p_idx, d_idx, s_idx)])
-            wk_expr = sum(wk_parts) if wk_parts else 0
             wvar = self.model.NewIntVar(0, max_val, f"weekendpts_{p_idx}")
-            self.model.Add(wvar == wk_expr)
+            self.model.Add(wvar == (sum(wk_parts) if wk_parts else 0))
             self.weekend_pts[p_idx] = wvar
 
-            nf_parts = []
-            for d_idx, day in enumerate(self.days):
-                for s_idx, sh in enumerate(self.shifts):
-                    if not sh.night_float:
-                        continue
-                    coef = int(round(effective_points(day, sh, self.data) * scale))
-                    nf_parts.append(coef * self.vars[(p_idx, d_idx, s_idx)])
-            nf_expr = sum(nf_parts) if nf_parts else 0
             nfvar = self.model.NewIntVar(0, max_val, f"nfpts_{p_idx}")
-            self.model.Add(nfvar == nf_expr)
+            self.model.Add(nfvar == (sum(nf_parts) if nf_parts else 0))
             self.nf_pts[p_idx] = nfvar
 
     def add_deviation_constraints(self) -> None:
-        scale = self.SCALE
         max_val = self._max_points()
 
         target_total_map = self.data.target_total_map
@@ -255,7 +249,7 @@ class SchedulerSolver:
                     person_target = self.data.target_total
                 if person_target is None:
                     continue
-                target = int(round(person_target * scale))
+                target = scaled(person_target)
                 var = self.model.NewIntVar(0, max_val, f"dev_total_{p_idx}")
                 self.model.Add(var >= self.total_pts[p_idx] - target)
                 self.model.Add(var >= target - self.total_pts[p_idx])
@@ -269,7 +263,7 @@ class SchedulerSolver:
             for p_idx, person in enumerate(self.people[:-1]):
                 if person not in self.data.target_weekend:
                     continue
-                target = int(round(self.data.target_weekend[person] * scale))
+                target = scaled(self.data.target_weekend[person])
                 var = self.model.NewIntVar(0, max_val, f"dev_weekend_{p_idx}")
                 self.model.Add(var >= self.weekend_pts[p_idx] - target)
                 self.model.Add(var >= target - self.weekend_pts[p_idx])
@@ -279,7 +273,7 @@ class SchedulerSolver:
             for p_idx, person in enumerate(self.people[:-1]):
                 if person not in self.data.target_night_float:
                     continue
-                target = int(round(self.data.target_night_float[person] * scale))
+                target = scaled(self.data.target_night_float[person])
                 var = self.model.NewIntVar(0, max_val, f"dev_nf_{p_idx}")
                 self.model.Add(var >= self.nf_pts[p_idx] - target)
                 self.model.Add(var >= target - self.nf_pts[p_idx])
@@ -291,7 +285,7 @@ class SchedulerSolver:
                     key = (person, label)
                     if key not in self.data.target_label:
                         continue
-                    target = int(round(self.data.target_label[key] * scale))
+                    target = scaled(self.data.target_label[key])
                     var = self.model.NewIntVar(0, max_val, f"dev_label_{p_idx}_{label}")
                     lp = self.label_pts[(p_idx, label)]
                     self.model.Add(var >= lp - target)
@@ -305,14 +299,11 @@ class SchedulerSolver:
         cap never makes the model infeasible). Caps override fairness — a capped
         resident's deviation from their fair share is accepted.
         """
-        scale = self.SCALE
         for p_idx, person in enumerate(self.people[:-1]):
             if self.data.max_total and person in self.data.max_total:
-                cap = int(round(self.data.max_total[person] * scale))
-                self.model.Add(self.total_pts[p_idx] <= cap)
+                self.model.Add(self.total_pts[p_idx] <= scaled(self.data.max_total[person]))
             if self.data.max_nights and person in self.data.max_nights:
-                cap = int(round(self.data.max_nights[person] * scale))
-                self.model.Add(self.nf_pts[p_idx] <= cap)
+                self.model.Add(self.nf_pts[p_idx] <= scaled(self.data.max_nights[person]))
 
     def add_extra_point_constraints(self) -> None:
         """Hard floor enforcing mandatory extra points on punished residents.
@@ -323,49 +314,77 @@ class SchedulerSolver:
         so — i.e. you learn the penalty can't be applied rather than it silently
         being skipped.
         """
-        scale = self.SCALE
         extra = self.data.extra_points or {}
         tmap = self.data.target_total_map or {}
         for p_idx, person in enumerate(self.people[:-1]):
             if extra.get(person, 0.0) > 0 and person in tmap:
-                floor = int(round(tmap[person] * scale))
-                self.model.Add(self.total_pts[p_idx] >= floor)
+                self.model.Add(self.total_pts[p_idx] >= scaled(tmap[person]))
 
     def add_constraints(self) -> None:
-        rotator_windows: Dict[str, list] = {}
-        for res, start, end in self.data.rotators:
-            rotator_windows.setdefault(res, []).append((start, end))
+        self._add_slot_coverage_and_eligibility()
+        self._add_one_shift_per_day()
+        self._add_min_gap_windows()
+        self._add_nf_block_constraints()
+        self._add_nf_rest_constraints()
 
-        for d_idx, day in enumerate(self.days):
-            for s_idx, shift in enumerate(self.shifts):
+    def _blocked_day_indices(self) -> Dict[int, set]:
+        """Person index -> day indices that person cannot work.
+
+        A day is blocked by any leave covering it, or — for a rotator — by
+        falling outside all of that resident's active windows. Precomputed once
+        so the constraint loop does an O(1) membership check instead of
+        re-scanning every leave per (day, shift, person) triple.
+        """
+        rotator_windows: Dict[str, list] = {}
+        for res, start, end in normalized_rotators(self.data.rotators):
+            rotator_windows.setdefault(res, []).append((start, end))
+        leave_windows: Dict[str, list] = {}
+        for res, start, end, _comp in normalized_leaves(self.data.leaves):
+            leave_windows.setdefault(res, []).append((start, end))
+
+        blocked: Dict[int, set] = {}
+        for p_idx, person in enumerate(self.people[:-1]):  # exclude Unfilled
+            windows = rotator_windows.get(person)
+            leaves = leave_windows.get(person, [])
+            days_blocked = set()
+            for d_idx, day in enumerate(self.days):
+                if windows and not any(s <= day <= e for s, e in windows):
+                    days_blocked.add(d_idx)  # outside rotator active window
+                elif any(s <= day <= e for s, e in leaves):
+                    days_blocked.add(d_idx)  # on leave (compensated or not)
+            if days_blocked:
+                blocked[p_idx] = days_blocked
+        return blocked
+
+    def _eligible_person_indices(self) -> Dict[int, set]:
+        """Shift index -> person indices allowed on that shift (role + NF)."""
+        juniors, seniors = set(self.data.juniors), set(self.data.seniors)
+        nf_juniors, nf_seniors = set(self.data.nf_juniors), set(self.data.nf_seniors)
+        eligible: Dict[int, set] = {}
+        for s_idx, shift in enumerate(self.shifts):
+            pool = juniors if shift.role == "Junior" else seniors
+            if shift.night_float:
+                pool = pool & (nf_juniors if shift.role == "Junior" else nf_seniors)
+            eligible[s_idx] = {
+                p_idx for p_idx, person in enumerate(self.people[:-1]) if person in pool
+            }
+        return eligible
+
+    def _add_slot_coverage_and_eligibility(self) -> None:
+        blocked = self._blocked_day_indices()
+        eligible = self._eligible_person_indices()
+        for d_idx in range(len(self.days)):
+            for s_idx in range(len(self.shifts)):
                 # exactly one assignment per slot
                 self.model.Add(
                     sum(self.vars[(p_idx, d_idx, s_idx)]
                         for p_idx in range(len(self.people))) == 1
                 )
-                for p_idx, person in enumerate(self.people[:-1]):  # exclude Unfilled
-                    # role eligibility
-                    if shift.role == "Junior" and person not in self.data.juniors:
-                        self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
-                    if shift.role == "Senior" and person not in self.data.seniors:
-                        self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
-                    # night float eligibility
-                    if shift.night_float:
-                        if shift.role == "Junior" and person not in self.data.nf_juniors:
-                            self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
-                        if shift.role == "Senior" and person not in self.data.nf_seniors:
-                            self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
-                    # leaves (compensated or not, the days are blocked)
-                    for res, start, end, _comp in normalized_leaves(self.data.leaves):
-                        if res == person and start <= day <= end:
-                            self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
-                    # rotators: only available within their active window(s);
-                    # this is the inverse of a leave (force 0 *outside* the span)
-                    if person in rotator_windows and not any(
-                        start <= day <= end for start, end in rotator_windows[person]
-                    ):
+                for p_idx in range(len(self.people) - 1):  # exclude Unfilled
+                    if p_idx not in eligible[s_idx] or d_idx in blocked.get(p_idx, ()):
                         self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
 
+    def _add_one_shift_per_day(self) -> None:
         # At most one shift per resident per day (night-float or regular).
         for p_idx in range(len(self.people) - 1):  # exclude Unfilled
             for d_idx in range(len(self.days)):
@@ -377,6 +396,7 @@ class SchedulerSolver:
                     <= 1
                 )
 
+    def _add_min_gap_windows(self) -> None:
         # Regular-shift spacing: in any window of (gap + 1) consecutive days a
         # resident works at most one non-night-float shift. Night-float shifts
         # are excluded *here* because nights within a block are intentionally
@@ -398,27 +418,22 @@ class SchedulerSolver:
                         <= 1
                     )
 
+    def _add_nf_block_constraints(self) -> None:
         # night float blocks must have exact length
         block_len = self.data.nf_block_length
         if block_len > 1:
             nf_shift_idxs = [i for i, s in enumerate(self.shifts) if s.night_float]
             for s_idx in nf_shift_idxs:
                 for block_start in range(0, len(self.days), block_len):
-                    block_days = list(range(block_start, min(block_start + block_len, len(self.days))))
-                    if len(block_days) < block_len:
-                        # Trailing partial block: cover it with a single resident
-                        # for the remaining days instead of forcing the nights
-                        # unfilled (which previously dropped coverage at the end
-                        # of the horizon). The post-solve validator allows this
-                        # short final run.
-                        for p_idx in range(len(self.people)):
-                            first_var = self.vars[(p_idx, block_days[0], s_idx)]
-                            for d_idx in block_days[1:]:
-                                self.model.Add(first_var == self.vars[(p_idx, d_idx, s_idx)])
-                        continue
+                    block_idxs = list(range(block_start, min(block_start + block_len, len(self.days))))
+                    # A trailing partial block is still covered by a single
+                    # resident for the remaining days instead of forcing the
+                    # nights unfilled (which previously dropped coverage at the
+                    # end of the horizon); the post-solve validator allows this
+                    # short final run.
                     for p_idx in range(len(self.people)):
-                        first_var = self.vars[(p_idx, block_days[0], s_idx)]
-                        for d_idx in block_days[1:]:
+                        first_var = self.vars[(p_idx, block_idxs[0], s_idx)]
+                        for d_idx in block_idxs[1:]:
                             self.model.Add(first_var == self.vars[(p_idx, d_idx, s_idx)])
                 for boundary in range(block_len, len(self.days), block_len):
                     if boundary >= len(self.days):
@@ -430,16 +445,19 @@ class SchedulerSolver:
                             self.vars[(p_idx, prev_day, s_idx)] + self.vars[(p_idx, next_day, s_idx)] <= 1
                         )
 
+    def _add_nf_rest_constraints(self) -> None:
         # Rest around night-float blocks. A resident who works the first/last
         # night of a block gets ``gap`` idle days before/after that block versus
         # *any* shift (NF or regular), matching the spec's "min_gap between any
-        # two shifts" intent. Nights stay consecutive within a block (above);
-        # this only spaces a block from adjacent regular shifts and other blocks.
-        # Block boundaries are deterministic from the day-0-aligned partition, so
-        # this also covers block_len == 1 (each NF night is its own block).
+        # two shifts" intent. Nights stay consecutive within a block (enforced in
+        # _add_nf_block_constraints); this only spaces a block from adjacent
+        # regular shifts and other blocks. Block boundaries are deterministic
+        # from the day-0-aligned partition, so this also covers block_len == 1
+        # (each NF night is its own block).
+        gap = self.data.min_gap
         nf_shift_idxs = [i for i, s in enumerate(self.shifts) if s.night_float]
         n_days = len(self.days)
-        block_span = max(1, block_len)
+        block_span = max(1, self.data.nf_block_length)
         if gap > 0 and nf_shift_idxs:
             for s_idx in nf_shift_idxs:
                 for bs in range(0, n_days, block_span):
@@ -578,7 +596,17 @@ class SchedulerSolver:
         return df
 
 
-def _carryover_targets(prior, block_points, members, weights, weight_sum, clamp_max):
+Ledger = Mapping[str, Mapping[str, float]]
+
+
+def _carryover_targets(
+    prior: Mapping[str, float],
+    block_points: float,
+    members: Sequence[str],
+    weights: Mapping[str, int],
+    weight_sum: float,
+    clamp_max: float,
+) -> Dict[str, float]:
     """Per-member this-block target that balances *cumulative* load.
 
     Each member's cumulative fair share (prior + this block, weighted) minus what
@@ -595,71 +623,88 @@ def _carryover_targets(prior, block_points, members, weights, weight_sum, clamp_
     }
 
 
-def build_schedule(data: InputData, env: str | None = None, ledger=None) -> pd.DataFrame:
-    """Build schedule with optional environment based time limit.
+def _availability_weights(data: InputData) -> Dict[str, int]:
+    """Active-day count per participant, used as the fairness weight.
 
-    ``ledger`` (resident -> accumulated total/weekend/night_float points from
-    prior blocks) switches fairness from per-block to cumulative: residents who
-    carried extra previously get lighter targets this block.
+    A rotator is only present within their active window(s) and an
+    *uncompensated* leave removes those days too, so the resident fairly
+    carries a proportionally smaller share while the others absorb the rest.
+    With no rotators and only compensated leaves every weight equals the block
+    length and the targets reduce to an equal split.
     """
-    # Lazy import avoids a module-level cycle (validation imports this module).
-    from .validation import validate_input
+    rotator_windows: Dict[str, list] = {}
+    for res, start, end in normalized_rotators(data.rotators):
+        rotator_windows.setdefault(res, []).append((start, end))
+    uncomp_windows: Dict[str, list] = {}
+    for name, start, end, compensated in normalized_leaves(data.leaves):
+        if not compensated:
+            uncomp_windows.setdefault(name, []).append((start, end))
 
-    problems = validate_input(data)
-    if problems:
-        detail = "\n".join(f"- {p}" for p in problems)
-        raise ValueError(f"Invalid configuration:\n{detail}")
+    days = block_days(data)
 
-    day_count = (data.end_date - data.start_date).days + 1
+    def _active_days(person: str) -> int:
+        windows = rotator_windows.get(person)
+        uncomp = uncomp_windows.get(person, [])
+        active = 0
+        for day in days:
+            if windows and not any(s <= day <= e for s, e in windows):
+                continue  # outside rotator active window
+            if any(s <= day <= e for s, e in uncomp):
+                continue  # uncompensated leave day -> quota reduced
+            active += 1
+        return active
+
+    return {p: _active_days(p) for p in data.juniors + data.seniors}
+
+
+def _apply_extra_points(
+    target_total_map: Dict[str, float],
+    extra_points: Mapping[str, float],
+    participants: Sequence[str],
+) -> Dict[str, float]:
+    """Fold mandatory extra points (e.g. a penalty) into the total targets.
+
+    Raises the punished residents' targets by their extra and lowers everyone
+    else's proportionally so the targets still sum to the work available. A
+    hard floor in the solver then enforces it.
+    """
+    extra = {p: extra_points.get(p, 0.0) for p in participants}
+    extra_sum = sum(extra.values())
+    base_sum = sum(target_total_map.values())
+    if base_sum > 0 and extra_sum < base_sum:
+        factor = (base_sum - extra_sum) / base_sum
+        return {p: target_total_map[p] * factor + extra[p] for p in participants}
+    # extreme: the extras alone exceed the available work
+    return {p: extra[p] for p in participants}
+
+
+def resolve_targets(data: InputData, ledger: Ledger | None = None) -> InputData:
+    """Return a copy of ``data`` with all fairness targets resolved.
+
+    Targets the caller left unset are auto-computed (equal shares weighted by
+    availability); a ``ledger`` of prior-block points switches the totals to
+    cumulative carryover balancing; ``extra_points`` penalties are folded into
+    the total map. The caller's ``InputData`` is never mutated.
+    """
     participants = data.juniors + data.seniors
     target_total = data.target_total
     target_total_map = data.target_total_map
     target_weekend = data.target_weekend
     target_night_float = data.target_night_float
-    block_days = [data.start_date + timedelta(days=i) for i in range(day_count)]
-    weekend_dates = weekend_holiday_dates(data)
+
     if participants:
-        total_points = sum(
-            effective_points(day, s, data) for day in block_days for s in data.shifts
-        )
+        total_points = 0.0
         weekend_points = 0.0
-        nf_points_by_role = {"Junior": 0.0, "Senior": 0.0}
-        for day in block_days:
-            for s in data.shifts:
-                if is_weekend(day, s, data.weekend_days, weekend_dates):
-                    weekend_points += effective_points(day, s, data)
-                if s.night_float:
-                    nf_points_by_role[s.role] = (
-                        nf_points_by_role.get(s.role, 0.0) + effective_points(day, s, data)
-                    )
-        # Availability weights: a rotator is only present within their active
-        # window(s) and an *uncompensated* leave removes those days too, so the
-        # resident fairly carries a proportionally smaller share while the others
-        # absorb the rest. With no rotators and only compensated leaves every
-        # weight equals ``day_count`` and the targets reduce to an equal split
-        # (preserving previous behaviour).
-        rotator_windows: Dict[str, list] = {}
-        for res, start, end in data.rotators:
-            rotator_windows.setdefault(res, []).append((start, end))
-        uncomp_windows: Dict[str, list] = {}
-        for name, start, end, compensated in normalized_leaves(data.leaves):
-            if not compensated:
-                uncomp_windows.setdefault(name, []).append((start, end))
+        nf_points_by_role: Dict[str, float] = {"Junior": 0.0, "Senior": 0.0}
+        for slot in slot_points(data):
+            total_points += slot.points
+            if slot.weekend:
+                weekend_points += slot.points
+            if slot.night_float:
+                role = slot.shift.role
+                nf_points_by_role[role] = nf_points_by_role.get(role, 0.0) + slot.points
 
-        def _active_days(person: str) -> int:
-            windows = rotator_windows.get(person)
-            uncomp = uncomp_windows.get(person, [])
-            active = 0
-            for i in range(day_count):
-                day = data.start_date + timedelta(days=i)
-                if windows and not any(s <= day <= e for s, e in windows):
-                    continue  # outside rotator active window
-                if any(s <= day <= e for s, e in uncomp):
-                    continue  # uncompensated leave day -> quota reduced
-                active += 1
-            return active
-
-        availability = {p: _active_days(p) for p in participants}
+        availability = _availability_weights(data)
         weight_sum = sum(availability.values())
 
         if target_total is None:
@@ -709,31 +754,44 @@ def build_schedule(data: InputData, env: str | None = None, ledger=None) -> pd.D
                 )
 
         if data.extra_points and target_total_map:
-            # Mandatory extra points (e.g. a penalty): raise the punished
-            # residents' total target by their extra and lower everyone else's
-            # proportionally so the targets still sum to the work available. A
-            # hard floor in the solver then enforces it.
-            extra = {p: data.extra_points.get(p, 0.0) for p in participants}
-            extra_sum = sum(extra.values())
-            base_sum = sum(target_total_map.values())
-            if base_sum > 0 and extra_sum < base_sum:
-                factor = (base_sum - extra_sum) / base_sum
-                target_total_map = {
-                    p: target_total_map[p] * factor + extra[p] for p in participants
-                }
-            else:  # extreme: the extras alone exceed the available work
-                target_total_map = {p: extra[p] for p in participants}
+            target_total_map = _apply_extra_points(
+                target_total_map, data.extra_points, participants
+            )
 
-    # Solve against a copy carrying the resolved targets so the caller's
-    # ``InputData`` is never mutated (re-running with changed dates previously
-    # reused stale auto-targets). The resolved targets are exposed on ``df.attrs``.
-    solve_data = replace(
+    # A copy so the caller's ``InputData`` is never mutated (re-running with
+    # changed dates previously reused stale auto-targets).
+    return replace(
         data,
         target_total=target_total,
         target_total_map=target_total_map,
         target_weekend=target_weekend,
         target_night_float=target_night_float,
     )
+
+
+def build_schedule(data: InputData, env: str | None = None, ledger: Ledger | None = None) -> pd.DataFrame:
+    """Build schedule with optional environment based time limit.
+
+    ``ledger`` (resident -> accumulated total/weekend/night_float points from
+    prior blocks) switches fairness from per-block to cumulative: residents who
+    carried extra previously get lighter targets this block.
+    """
+    # Lazy import avoids a module-level cycle (validation imports this module).
+    from .validation import validate_input
+
+    problems = validate_input(data)
+    if problems:
+        detail = "\n".join(f"- {p}" for p in problems)
+        raise ValueError(f"Invalid configuration:\n{detail}")
+
+    day_count = (data.end_date - data.start_date).days + 1
+    participants = data.juniors + data.seniors
+    # The resolved targets are exposed on ``df.attrs`` below.
+    solve_data = resolve_targets(data, ledger)
+    target_total = solve_data.target_total
+    target_total_map = solve_data.target_total_map
+    target_weekend = solve_data.target_weekend
+    target_night_float = solve_data.target_night_float
     using_stub = not ORTOOLS_AVAILABLE
     solver = SchedulerSolver(solve_data)
     env = (env or os.environ.get("ENV", "prod")).lower()

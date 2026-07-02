@@ -1,21 +1,46 @@
 from dataclasses import dataclass
 from datetime import date
-from typing import List, Tuple, Dict
+from typing import List, NamedTuple, Tuple, Dict
+
+
+class Leave(NamedTuple):
+    """A leave window. Being a NamedTuple it compares equal to, unpacks like,
+    and serialises exactly as the plain tuples used historically."""
+
+    name: str
+    start: date
+    end: date
+    compensated: bool = True
+
+
+class RotatorWindow(NamedTuple):
+    """An active window for a rotating resident (only available inside it)."""
+
+    name: str
+    start: date
+    end: date
 
 
 def normalized_leaves(leaves):
-    """Yield ``(name, start, end, compensated)`` for each leave entry.
+    """Yield a :class:`Leave` for each leave entry.
 
-    Leaves may be stored as 4-tuples carrying a per-leave ``compensated`` flag, or
-    as legacy 3-tuples (treated as compensated — full quota, the original
-    behaviour). ``compensated`` leaves block the days but keep the resident's fair
-    share; ``uncompensated`` leaves additionally scale that share down (like a
-    rotator), so the resident is not penalised for the absence.
+    Leaves may be stored as :class:`Leave`, 4-tuples carrying a per-leave
+    ``compensated`` flag, or legacy 3-tuples (treated as compensated — full
+    quota, the original behaviour). ``compensated`` leaves block the days but
+    keep the resident's fair share; ``uncompensated`` leaves additionally scale
+    that share down (like a rotator), so the resident is not penalised for the
+    absence.
     """
     for entry in leaves or []:
         name, start, end = entry[0], entry[1], entry[2]
         compensated = bool(entry[3]) if len(entry) > 3 else True
-        yield name, start, end, compensated
+        yield Leave(name, start, end, compensated)
+
+
+def normalized_rotators(rotators):
+    """Yield a :class:`RotatorWindow` for each rotator entry (tuple or typed)."""
+    for entry in rotators or []:
+        yield RotatorWindow(entry[0], entry[1], entry[2])
 
 
 @dataclass
@@ -36,8 +61,11 @@ class InputData:
     seniors: List[str]
     nf_juniors: List[str]
     nf_seniors: List[str]
-    leaves: List[Tuple[str, date, date]]
-    rotators: List[Tuple[str, date, date]]
+    # Preferred element type is Leave / RotatorWindow; plain 3- or 4-tuples are
+    # accepted everywhere for backward compatibility (see normalized_leaves /
+    # normalized_rotators).
+    leaves: List[Leave | Tuple[str, date, date] | Tuple[str, date, date, bool]]
+    rotators: List[RotatorWindow | Tuple[str, date, date]]
     min_gap: int = 1
     nf_block_length: int = 5
     seed: int = 0

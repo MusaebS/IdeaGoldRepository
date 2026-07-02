@@ -4,7 +4,7 @@ import json
 from datetime import date
 from typing import List, Tuple
 
-from .data_models import ShiftTemplate, InputData, normalized_leaves
+from .data_models import Leave, RotatorWindow, ShiftTemplate, InputData, normalized_leaves
 
 __all__ = ["input_data_to_json", "input_data_from_json"]
 
@@ -13,10 +13,10 @@ def _windows_to_json(windows: List[Tuple[str, date, date]]) -> List[list]:
     return [[name, start.isoformat(), end.isoformat()] for name, start, end in windows]
 
 
-def _windows_from_json(items) -> List[Tuple[str, date, date]]:
-    out: List[Tuple[str, date, date]] = []
+def _windows_from_json(items) -> List[RotatorWindow]:
+    out: List[RotatorWindow] = []
     for name, start, end in items or []:
-        out.append((name, date.fromisoformat(start), date.fromisoformat(end)))
+        out.append(RotatorWindow(name, date.fromisoformat(start), date.fromisoformat(end)))
     return out
 
 
@@ -27,12 +27,12 @@ def _leaves_to_json(leaves) -> List[list]:
     ]
 
 
-def _leaves_from_json(items) -> List[Tuple[str, date, date, bool]]:
-    out: List[Tuple[str, date, date, bool]] = []
+def _leaves_from_json(items) -> List[Leave]:
+    out: List[Leave] = []
     for entry in items or []:
         name, start, end = entry[0], entry[1], entry[2]
         compensated = bool(entry[3]) if len(entry) > 3 else True
-        out.append((name, date.fromisoformat(start), date.fromisoformat(end), compensated))
+        out.append(Leave(name, date.fromisoformat(start), date.fromisoformat(end), compensated))
     return out
 
 

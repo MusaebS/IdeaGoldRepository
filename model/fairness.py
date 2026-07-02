@@ -8,6 +8,7 @@ except ImportError:  # pragma: no cover - fallback when pandas missing
     from .pandas_stub import pd
 
 from .data_models import ShiftTemplate, InputData
+from .points import classify_slot
 from .utils import effective_points, is_weekend, weekend_holiday_dates
 
 __all__ = [
@@ -32,14 +33,16 @@ def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, f
             person = row.get(sh.label)
             if person in (None, "Unfilled"):
                 continue
-            pts = effective_points(day, sh, data)
+            # Shared classification (model.points) — the same source the solver
+            # optimises against, so reporting can never drift from it.
+            slot = classify_slot(day, sh, data, weekend_dates)
             info = summary.setdefault(person, {"total": 0.0, "weekend": 0.0, "labels": {}, "night_float": 0.0})
-            info["total"] += pts
-            info["labels"][sh.label] = info["labels"].get(sh.label, 0.0) + pts
-            if sh.night_float:
-                info["night_float"] += pts
-            if is_weekend(day, sh, data.weekend_days, weekend_dates):
-                info["weekend"] += pts
+            info["total"] += slot.points
+            info["labels"][sh.label] = info["labels"].get(sh.label, 0.0) + slot.points
+            if slot.night_float:
+                info["night_float"] += slot.points
+            if slot.weekend:
+                info["weekend"] += slot.points
     return summary
 
 
