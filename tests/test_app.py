@@ -171,3 +171,38 @@ def test_edited_schedule_flows_into_fairness_log():
     alice = next(line for line in log.splitlines() if line.split(" ")[0] == "Alice")
     assert "total 2.0" in alice  # reflects the edit, against preserved targets
     assert "(target 1.0" in alice
+
+
+# --- seniority groups / perks / exemptions -----------------------------------
+
+def test_seniority_editors_store_to_session():
+    at = _at()
+    at.run()
+    # Seed a roster so the editors render their inputs.
+    at.session_state["juniors"] = ["Alice", "Bob"]
+    at.run()
+    at.text_input(key="grp_name").set_value("R2")
+    at.number_input(key="grp_pct").set_value(90)
+    grp_add = [b for b in at.button if b.key == "grp_add"]
+    grp_add[0].click()
+    at.run()
+    assert at.session_state["group_factors"] == {"R2": 0.9}
+    # Assign Alice to R2.
+    at.multiselect(key="grp_who").set_value(["Alice"])
+    assign = [b for b in at.button if b.key == "grp_assign"]
+    assign[0].click()
+    at.run()
+    assert at.session_state["resident_groups"] == {"Alice": "R2"}
+    assert not at.exception
+
+
+def test_shift_cell_options_exclude_exempt():
+    from ui.results import _shift_cell_options
+
+    _, data = _result_fixture()
+    from dataclasses import replace
+    data = replace(data, exempt_shifts={"Alice": ["D"]})
+    shift = data.shifts[0]
+    options = _shift_cell_options(data, shift)
+    assert "Alice" not in options
+    assert options == ["Bob", "Unfilled"]

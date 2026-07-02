@@ -18,9 +18,12 @@ from ui.editors import (
     WEEKDAY_LABELS,
     caps_editor,
     date_range_editor,
+    exemptions_editor,
     extra_points_editor,
     holidays_editor,
+    perks_editor,
     roster_editor,
+    seniority_editor,
     shift_template_editor,
     weekday_points_editor,
 )
@@ -63,7 +66,23 @@ def _active_config_maps() -> tuple:
         k: v for k, v in st.session_state[Keys.WEEKDAY_POINTS].items() if k[0] in shift_labels
     }
     holidays = list(st.session_state[Keys.HOLIDAYS])
-    return max_total, max_nights, extra_points, weekday_points, holidays
+    group_factors = dict(st.session_state[Keys.GROUP_FACTORS])
+    resident_groups = {
+        p: g
+        for p, g in st.session_state[Keys.RESIDENT_GROUPS].items()
+        if p in active_people and g in group_factors
+    }
+    perks = [p for p in st.session_state[Keys.PERKS] if p.name in active_people]
+    exempt_shifts = {
+        p: [lbl for lbl in labels if lbl in shift_labels]
+        for p, labels in st.session_state[Keys.EXEMPT_SHIFTS].items()
+        if p in active_people
+    }
+    exempt_shifts = {p: labels for p, labels in exempt_shifts.items() if labels}
+    return (
+        max_total, max_nights, extra_points, weekday_points, holidays,
+        group_factors, resident_groups, perks, exempt_shifts,
+    )
 
 
 def _inline_config_hints(config: InputData) -> list:
@@ -143,12 +162,22 @@ def render_config_tabs() -> tuple:
         st.divider()
         extra_points_editor(people)
         st.divider()
+        st.subheader("Seniority groups, perks & exemptions")
+        seniority_editor(people)
+        st.divider()
+        perks_editor(people, default_start=start_date, default_end=end_date)
+        st.divider()
+        exemptions_editor(people, [s.label for s in st.session_state[Keys.SHIFTS]])
+        st.divider()
         st.subheader("Point overrides & holidays")
         weekday_points_editor([s.label for s in st.session_state[Keys.SHIFTS]])
         st.divider()
         holidays_editor(default_date=start_date)
 
-    max_total, max_nights, extra_points, weekday_points, holidays = _active_config_maps()
+    (
+        max_total, max_nights, extra_points, weekday_points, holidays,
+        group_factors, resident_groups, perks, exempt_shifts,
+    ) = _active_config_maps()
     session_config = InputData(
         start_date=start_date,
         end_date=end_date,
@@ -168,6 +197,10 @@ def render_config_tabs() -> tuple:
         extra_points=extra_points or None,
         weekday_points=weekday_points or None,
         holidays=holidays or None,
+        group_factors=group_factors or None,
+        resident_groups=resident_groups or None,
+        perks=perks or None,
+        exempt_shifts=exempt_shifts or None,
     )
 
     # Early feedback: misconfigurations surface here as warnings while the

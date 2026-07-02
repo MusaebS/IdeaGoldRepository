@@ -26,6 +26,10 @@ class Keys:
     EXTRA_POINTS = "extra_points"
     WEEKDAY_POINTS = "weekday_points"
     HOLIDAYS = "holidays"
+    GROUP_FACTORS = "group_factors"
+    RESIDENT_GROUPS = "resident_groups"
+    PERKS = "perks"
+    EXEMPT_SHIFTS = "exempt_shifts"
     DEMO_LOADED = "demo_loaded"
     RETRY_CONFIG = "retry_config"
 
@@ -61,6 +65,10 @@ def _defaults() -> dict:
         Keys.EXTRA_POINTS: {},
         Keys.WEEKDAY_POINTS: {},
         Keys.HOLIDAYS: [],
+        Keys.GROUP_FACTORS: {},
+        Keys.RESIDENT_GROUPS: {},
+        Keys.PERKS: [],
+        Keys.EXEMPT_SHIFTS: {},
         Keys.RESULT_DF: None,
         Keys.SOLVER_DF: None,
         Keys.RESULT_DATA: None,

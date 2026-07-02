@@ -234,11 +234,13 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
 
 
 def _shift_cell_options(data, shift) -> list:
-    """Residents allowed in a shift column's dropdown (role + NF), plus Unfilled."""
+    """Residents allowed in a shift column's dropdown (role + NF + exemptions)."""
     pool = data.juniors if shift.role == "Junior" else data.seniors
     if shift.night_float:
         eligible = set(data.nf_juniors if shift.role == "Junior" else data.nf_seniors)
         pool = [p for p in pool if p in eligible]
+    exempt = data.exempt_shifts or {}
+    pool = [p for p in pool if shift.label not in exempt.get(p, ())]
     return list(pool) + ["Unfilled"]
 
 

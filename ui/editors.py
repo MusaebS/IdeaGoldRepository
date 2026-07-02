@@ -11,7 +11,7 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from model.data_models import ShiftTemplate
+from model.data_models import Perk, ShiftTemplate
 from ui.state import Keys
 
 WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -204,6 +204,139 @@ def holidays_editor(default_date: date | None = None) -> None:
         )
         if removed is not None:
             st.session_state[Keys.HOLIDAYS].pop(removed)
+
+
+def seniority_editor(people: list) -> None:
+    """Groups with a load percentage (e.g. R2 = 90%) and resident assignment."""
+    st.markdown("**Seniority groups — a load % per group (R2 at 90% carries ~10% less)**")
+    gc = st.columns([3, 2, 1])
+    with gc[0]:
+        gname = st.text_input("Group name (e.g. R2)", key="grp_name")
+    with gc[1]:
+        gpct = st.number_input("Load %", 10, 200, 100, 5, key="grp_pct")
+    with gc[2]:
+        if _add_button("grp_add"):
+            name = gname.strip()
+            if name:
+                st.session_state[Keys.GROUP_FACTORS][name] = gpct / 100.0
+            else:
+                st.warning("Give the group a name.")
+    groups = st.session_state[Keys.GROUP_FACTORS]
+    if groups:
+        st.table(pd.DataFrame(
+            [{"Group": g, "Load %": f"{f * 100:g}%"} for g, f in groups.items()]
+        ))
+        removed = _remove_control(list(groups.keys()), "Remove group", "grp_rm")
+        if removed is not None:
+            groups.pop(removed, None)
+            st.session_state[Keys.RESIDENT_GROUPS] = {
+                p: g for p, g in st.session_state[Keys.RESIDENT_GROUPS].items()
+                if g != removed
+            }
+
+    if not people or not groups:
+        if not groups:
+            st.caption("Define a group above, then assign residents to it.")
+        return
+    ac = st.columns([3, 2, 1])
+    with ac[0]:
+        who = st.multiselect("Residents", people, key="grp_who")
+    with ac[1]:
+        target_group = st.selectbox("Group", list(groups.keys()), key="grp_target")
+    with ac[2]:
+        st.markdown("&nbsp;")
+        if st.button("Assign", key="grp_assign"):
+            for p in who:
+                st.session_state[Keys.RESIDENT_GROUPS][p] = target_group
+    assigned = st.session_state[Keys.RESIDENT_GROUPS]
+    if assigned:
+        st.table(pd.DataFrame(
+            [{"Resident": p, "Group": g} for p, g in assigned.items()]
+        ))
+        removed = _remove_control(list(assigned.keys()), "Unassign resident", "grp_unassign")
+        if removed is not None:
+            assigned.pop(removed, None)
+
+
+def perks_editor(
+    people: list,
+    default_start: date | None = None,
+    default_end: date | None = None,
+) -> None:
+    """Individual load reductions, optionally time-bounded (or forever)."""
+    st.markdown(
+        "**Perks — an individual load % for a window or forever "
+        "(e.g. 80% for a month). Stacks with the group %.**"
+    )
+    if not people:
+        st.caption("Add participants first to configure perks.")
+        return
+    c = st.columns([3, 2, 2, 2, 2, 1])
+    with c[0]:
+        who = st.selectbox("Resident", people, key="perk_who")
+    with c[1]:
+        pct = st.number_input("Load %", 10, 200, 80, 5, key="perk_pct")
+    with c[2]:
+        forever = st.checkbox("Forever", value=False, key="perk_forever")
+    start = end = None
+    if not forever:
+        with c[3]:
+            start = st.date_input("From", default_start or date.today(), key="perk_start")
+        with c[4]:
+            end = st.date_input("To", default_end or default_start or date.today(), key="perk_end")
+    with c[-1]:
+        if _add_button("perk_add"):
+            st.session_state[Keys.PERKS].append(Perk(who, pct / 100.0, start, end))
+    perks = st.session_state[Keys.PERKS]
+    if perks:
+        st.table(pd.DataFrame([
+            {
+                "Resident": p.name,
+                "Load %": f"{p.factor * 100:g}%",
+                "From": p.start or "—",
+                "To": p.end or ("forever" if p.start is None else "—"),
+            }
+            for p in perks
+        ]))
+        removed = _remove_control(
+            list(range(len(perks))), "Remove perk", "perk_rm",
+            format_func=lambda i: f"{perks[i].name} ×{perks[i].factor:g}",
+        )
+        if removed is not None:
+            perks.pop(removed)
+
+
+def exemptions_editor(people: list, shift_labels: list) -> None:
+    """Residents who never work specific shift types (hard block)."""
+    st.markdown("**Exemptions — a resident never works these shift types**")
+    st.caption(
+        "Exempt residents keep their full fairness target — they carry their "
+        "share on the other shift types (same rule as night-float eligibility). "
+        "Add a perk too if their overall share should also be lower."
+    )
+    if not people or not shift_labels:
+        st.caption("Add participants and shift templates first.")
+        return
+    c = st.columns([3, 3, 1])
+    with c[0]:
+        who = st.selectbox("Resident", people, key="ex_who")
+    with c[1]:
+        labels = st.multiselect("Never works", shift_labels, key="ex_labels")
+    with c[2]:
+        st.markdown("&nbsp;")
+        if st.button("Set", key="ex_add"):
+            if labels:
+                st.session_state[Keys.EXEMPT_SHIFTS][who] = sorted(labels)
+            else:
+                st.session_state[Keys.EXEMPT_SHIFTS].pop(who, None)
+    ex = st.session_state[Keys.EXEMPT_SHIFTS]
+    if ex:
+        st.table(pd.DataFrame(
+            [{"Resident": p, "Exempt from": ", ".join(v)} for p, v in ex.items()]
+        ))
+        removed = _remove_control(list(ex.keys()), "Remove exemption", "ex_rm")
+        if removed is not None:
+            ex.pop(removed, None)
 
 
 def shift_template_editor() -> None:
