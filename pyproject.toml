@@ -26,7 +26,7 @@ dev = [
 
 [tool.setuptools]
 # app.py stays a top-level Streamlit entry script; only the libraries install.
-packages = ["model"]
+packages = ["model", "ui"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
