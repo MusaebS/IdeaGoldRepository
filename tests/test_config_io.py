@@ -1,5 +1,8 @@
 import sys, os
+import json
 from datetime import date
+
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -79,3 +82,37 @@ def test_legacy_three_tuple_leave_normalizes_to_compensated():
     )
     data = input_data_from_json(text)
     assert data.leaves == [("A", date(2023, 2, 2), date(2023, 2, 3), True)]
+
+
+def test_solver_derived_targets_are_not_serialized():
+    data = _sample_data()
+    data.target_total = 12.0
+    data.target_total_map = {"A": 6.0, "B": 6.0}
+    data.target_weekend = {"A": 2.0}
+    data.target_night_float = {"A": 1.0}
+    data.target_label = {("A", "NF"): 1.0}
+
+    raw = json.loads(input_data_to_json(data))
+    assert not any(key.startswith("target_") for key in raw)
+
+    restored = input_data_from_json(input_data_to_json(data))
+    assert restored.target_total is None
+    assert restored.target_total_map is None
+    assert restored.target_weekend is None
+    assert restored.target_night_float is None
+    assert restored.target_label is None
+
+
+def test_malformed_json_raises_decode_error():
+    with pytest.raises(json.JSONDecodeError):
+        input_data_from_json("{not valid json")
+
+
+def test_missing_required_date_key_raises_key_error():
+    with pytest.raises(KeyError):
+        input_data_from_json('{"end_date": "2023-02-02", "shifts": []}')
+
+
+def test_invalid_date_string_raises_value_error():
+    with pytest.raises(ValueError):
+        input_data_from_json('{"start_date": "not-a-date", "end_date": "2023-02-02"}')

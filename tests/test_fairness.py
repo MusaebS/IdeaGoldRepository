@@ -16,6 +16,18 @@ from model.fairness import (
 )
 
 
+def _resident_line(log: str, name: str) -> str:
+    """Return the per-resident line for ``name`` from a fairness log.
+
+    Keys on the first token only, so tests stay stable across cosmetic
+    format changes to the rest of the line.
+    """
+    for line in log.splitlines():
+        if line.split(" ")[0] == name:
+            return line
+    raise AssertionError(f"no line for resident {name!r} in log:\n{log}")
+
+
 def _sample_df_and_shifts():
     shifts = [
         ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
@@ -281,8 +293,8 @@ def test_fairness_log_flags_overloaded_resident():
         {"Date": date(2023, 1, 5), "S": "A"},  # A = 4 (dev +2 -> OVER); B = 0 (dev -2 -> UNDER)
     ])
     log = format_fairness_log(df, data)
-    assert any(line.startswith("A ") and line.endswith("[OVER]") for line in log.splitlines())
-    assert any(line.startswith("B ") and line.endswith("[UNDER]") for line in log.splitlines())
+    assert "[OVER]" in _resident_line(log, "A")
+    assert "[UNDER]" in _resident_line(log, "B")
 
 
 def test_fairness_log_surfaces_constraint_violations():
@@ -353,5 +365,5 @@ def test_fairness_log_annotates_penalty():
         {"Date": date(2023, 1, 5), "S": "B"},
     ])
     log = format_fairness_log(df, data)
-    assert any(line.startswith("A ") and "[+2 penalty applied]" in line for line in log.splitlines())
-    assert not any("penalty applied" in line and line.startswith("B ") for line in log.splitlines())
+    assert "[+2 penalty applied]" in _resident_line(log, "A")
+    assert "penalty applied" not in _resident_line(log, "B")
