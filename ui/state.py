@@ -97,3 +97,68 @@ def set_result(df, data, prior_ledger) -> None:
     st.session_state[Keys.RESULT_PRIOR_LEDGER] = prior_ledger
     st.session_state[Keys.MANUALLY_EDITED] = False
     bump_result_version()
+
+
+def with_attrs(new_df, source_df):
+    """Copy ``source_df.attrs`` onto ``new_df`` and return it.
+
+    ``st.data_editor`` returns a fresh Arrow-roundtripped frame without
+    ``attrs`` — but the solver-resolved fairness targets live there, and the
+    fairness log / exports read them. Losing them silently would blank every
+    target/deviation column.
+    """
+    try:
+        new_df.attrs = dict(source_df.attrs)
+    except (AttributeError, TypeError):  # pragma: no cover - stub frames
+        pass
+    return new_df
+
+
+def _normalize_cell(value) -> str:
+    """An empty/cleared editor cell means the slot is unfilled."""
+    if value is None:
+        return "Unfilled"
+    if isinstance(value, float) and value != value:  # NaN from a cleared cell
+        return "Unfilled"
+    text = str(value).strip()
+    return text if text else "Unfilled"
+
+
+def normalize_edited_schedule(edited, base):
+    """Return an edited schedule frame cleaned up for use as the live result.
+
+    - ``Date`` / ``Day`` are restored from ``base``: they are disabled in the
+      editor so their values are unchanged by construction, but the Arrow
+      round-trip turns dates into Timestamps, which would break holiday /
+      weekend matching downstream.
+    - Blank or cleared shift cells become ``"Unfilled"``.
+    - ``base.attrs`` (solver targets) are carried over.
+    """
+    out = edited.copy()
+    for col in ("Date", "Day"):
+        if col in out.columns and col in base.columns:
+            out[col] = list(base[col])
+    for col in out.columns:
+        if col in ("Date", "Day"):
+            continue
+        out[col] = [_normalize_cell(v) for v in out[col]]
+    return with_attrs(out, base)
+
+
+def apply_manual_edits(edited) -> None:
+    """Make an edited schedule the live result (fairness/exports follow it)."""
+    base = st.session_state[Keys.RESULT_DF]
+    cleaned = normalize_edited_schedule(edited, base)
+    cleaned.attrs["manually_edited"] = True
+    st.session_state[Keys.RESULT_DF] = cleaned
+    st.session_state[Keys.MANUALLY_EDITED] = True
+    bump_result_version()  # invalidates the cached Excel/PDF exports
+    st.session_state.pop(Keys.SCHEDULE_EDITOR, None)
+
+
+def revert_manual_edits() -> None:
+    """Restore the pristine solver result."""
+    st.session_state[Keys.RESULT_DF] = st.session_state[Keys.SOLVER_DF]
+    st.session_state[Keys.MANUALLY_EDITED] = False
+    bump_result_version()
+    st.session_state.pop(Keys.SCHEDULE_EDITOR, None)

@@ -139,6 +139,22 @@ def _run_checks() -> list[str]:
         page.wait_for_timeout(1500)
         check(page.locator('[data-testid="stDataFrame"], [data-testid="stDataFrameResizable"]').count() > 0,
               "results persist after a download click")
+        # Manual-edit persistence: Apply flags the schedule as edited (badge +
+        # revert button), Revert restores the solver result and clears both.
+        try:
+            page.get_by_text("Manual edit & revalidate").click()
+            page.get_by_role("button", name="Apply edits").wait_for(timeout=10000)
+            page.get_by_role("button", name="Apply edits").click()
+            page.get_by_text("Schedule manually edited").first.wait_for(timeout=15000)
+            check(True, "Apply edits marks the schedule as edited")
+            page.get_by_role("button", name="Revert to solver result").click()
+            page.wait_for_timeout(2500)
+            check(page.get_by_text("Schedule manually edited").count() == 0,
+                  "Revert restores the solver result")
+            check(page.get_by_role("button", name="Download CSV (schedule)").count() > 0,
+                  "exports still available after edit round-trip")
+        except Exception:
+            check(False, "manual edit apply/revert round-trip")
         check(page.locator('[data-testid="stException"]').count() == 0,
               "no uncaught exception on the page")
         page.close()

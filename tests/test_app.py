@@ -106,3 +106,68 @@ def test_seeded_results_survive_rerun():
     at.run()
     assert at.session_state["result_df"] is not None
     assert at.session_state["result_version"] == 1
+
+
+# --- manual-edit persistence -------------------------------------------------
+
+def test_normalize_edited_schedule_restores_dates_attrs_and_blanks():
+    from ui.state import normalize_edited_schedule
+
+    base, _ = _result_fixture()
+    # Simulate what st.data_editor returns: Timestamps, lost attrs, a cleared cell.
+    edited = base.copy()
+    edited["Date"] = pd.to_datetime(edited["Date"])
+    edited.attrs = {}
+    edited.loc[1, "D"] = None
+
+    cleaned = normalize_edited_schedule(edited, base)
+    assert list(cleaned["Date"]) == list(base["Date"])  # real date objects again
+    assert cleaned["D"][1] == "Unfilled"                # cleared cell normalised
+    assert cleaned.attrs["target_total_map"] == {"Alice": 1.0, "Bob": 1.0}
+    assert base.attrs  # source untouched
+
+
+def test_apply_edits_persists_and_revert_restores():
+    df, data = _result_fixture()
+    at = _at()
+    at.run()
+    _seed_result(at, df, data)
+    at.run()
+
+    apply_btn = [b for b in at.button if b.key == "apply_edits"]
+    assert apply_btn, "Apply edits button not rendered"
+    apply_btn[0].click()
+    at.run()
+    assert not at.exception
+    assert at.session_state["manually_edited"] is True
+    assert at.session_state["result_version"] == 2  # export cache invalidated
+    # Solver targets survive the apply (attrs restored onto the edited frame).
+    assert at.session_state["result_df"].attrs["target_total_map"] == {
+        "Alice": 1.0, "Bob": 1.0,
+    }
+    assert any("manually edited" in w.value for w in at.warning)
+
+    revert_btn = [b for b in at.button if b.key == "revert_edits"]
+    assert revert_btn, "Revert button not rendered after apply"
+    revert_btn[0].click()
+    at.run()
+    assert not at.exception
+    assert at.session_state["manually_edited"] is False
+    assert at.session_state["result_version"] == 3
+    assert not any("manually edited" in w.value for w in at.warning)
+
+
+def test_edited_schedule_flows_into_fairness_log():
+    from model.fairness import format_fairness_log
+    from ui.state import normalize_edited_schedule
+
+    base, data = _result_fixture()
+    edited = base.copy()
+    edited.attrs = {}
+    edited.loc[1, "D"] = "Alice"  # Alice now works both days
+
+    cleaned = normalize_edited_schedule(edited, base)
+    log = format_fairness_log(cleaned, data)
+    alice = next(line for line in log.splitlines() if line.split(" ")[0] == "Alice")
+    assert "total 2.0" in alice  # reflects the edit, against preserved targets
+    assert "(target 1.0" in alice

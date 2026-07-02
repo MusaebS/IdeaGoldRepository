@@ -17,7 +17,7 @@ from model.ledger import ledger_to_json, update_ledger
 from model.validation import validate_schedule
 
 from ui.editors import custom_columns_editor
-from ui.state import Keys
+from ui.state import Keys, apply_manual_edits, normalize_edited_schedule, revert_manual_edits
 
 
 def style_schedule(df, data, color_mode, palette=None):
@@ -233,24 +233,57 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
         st.text(log_text)
 
 
+def _shift_cell_options(data, shift) -> list:
+    """Residents allowed in a shift column's dropdown (role + NF), plus Unfilled."""
+    pool = data.juniors if shift.role == "Junior" else data.seniors
+    if shift.night_float:
+        eligible = set(data.nf_juniors if shift.role == "Junior" else data.nf_seniors)
+        pool = [p for p in pool if p in eligible]
+    return list(pool) + ["Unfilled"]
+
+
 def _render_manual_edit(df, result_data) -> None:
-    with st.expander("Manual edit & revalidate", expanded=False):
-        st.caption("Edit the shift assignments below, then review any constraint issues.")
+    with st.expander("Manual edit & revalidate", expanded=st.session_state[Keys.MANUALLY_EDITED]):
+        st.caption(
+            "Change assignments below, review the live preview, then click "
+            "**Apply edits** to make them the schedule — fairness, the log, and "
+            "every download will follow. Nothing changes until you apply."
+        )
+        # Dropdown cells restricted to role/NF-eligible residents stop typos at
+        # the source; constraint issues (min-gap etc.) are still surfaced below.
+        column_config = {
+            sh.label: st.column_config.SelectboxColumn(
+                sh.label, options=_shift_cell_options(result_data, sh), required=False
+            )
+            for sh in result_data.shifts
+            if sh.label in df.columns
+        }
         edited = st.data_editor(
             df,
             key=Keys.SCHEDULE_EDITOR,
             disabled=["Date", "Day"],
+            column_config=column_config,
         )
-        issues = validate_schedule(edited, result_data)
+        preview = normalize_edited_schedule(edited, df)
+        issues = validate_schedule(preview, result_data)
         if issues:
             st.error(f"{len(issues)} constraint issue(s):")
             for issue in issues:
                 st.write(f"- {issue}")
         else:
             st.success("No constraint violations.")
-        edited_points = calculate_points(edited, result_data)
-        edited_quality = schedule_quality(edited, result_data, points=edited_points)
+        edited_points = calculate_points(preview, result_data)
+        edited_quality = schedule_quality(preview, result_data, points=edited_points)
         st.caption(f"Edited schedule quality: {edited_quality['score']} / 100")
+
+        bcols = st.columns(2)
+        if bcols[0].button("Apply edits", type="primary", key="apply_edits"):
+            apply_manual_edits(edited)
+            st.rerun()
+        if st.session_state[Keys.MANUALLY_EDITED]:
+            if bcols[1].button("Revert to solver result", key="revert_edits"):
+                revert_manual_edits()
+                st.rerun()
 
 
 def _render_rationale(df, result_data) -> None:
@@ -279,6 +312,19 @@ def render_results() -> None:
     prior_ledger = st.session_state.get(Keys.RESULT_PRIOR_LEDGER)
 
     _render_solver_caption(df, data)
+
+    if st.session_state[Keys.MANUALLY_EDITED]:
+        st.warning(
+            "Schedule manually edited — fairness, the log, and all downloads "
+            "reflect your edits, not the raw solver output. Use 'Revert to "
+            "solver result' in the manual-edit panel to undo."
+        )
+        edit_issues = validate_schedule(df, data)
+        if edit_issues:
+            st.error(
+                f"The edited schedule violates {len(edit_issues)} constraint(s); "
+                "details in the manual-edit panel and the fairness log."
+            )
 
     points = calculate_points(df, data)
     quality = schedule_quality(df, data, points=points)

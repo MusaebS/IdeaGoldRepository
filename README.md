@@ -77,6 +77,19 @@ only.
 Downloads are cached per (result + colours + columns), so clicking a download is
 instant and no longer momentarily blanks the results while a large Excel/PDF rebuilds.
 
+## Manual edits (hand-tweaking the schedule)
+
+The **Manual edit & revalidate** panel lets you change any assignment after
+solving. Cells are dropdowns restricted to role/night-float-eligible residents
+(plus *Unfilled*), a live preview shows the constraint issues and quality score
+your changes would cause, and nothing is saved until you click **Apply edits**.
+Once applied, the edited schedule *is* the result: the fairness summary, the
+log, the ledger, and every download reflect it, and a banner reminds you the
+solver output was overridden. **Revert to solver result** restores the pristine
+schedule at any time. Constraint violations introduced by hand (a min-gap
+break, a role mismatch) are flagged on screen and recorded in the fairness log
+rather than silently accepted.
+
 ## Configuration validation
 
 Before solving, the configuration is checked with `model.validation.validate_input`.
@@ -193,7 +206,34 @@ the validation-error path, and the infeasible relax-and-retry recovery. It needs
 `pip install playwright` and a Chromium binary; it is an on-demand check, not part
 of the `pytest` run.
 
+## Development
+
+```bash
+pip install -e .[dev]   # app + pytest, pytest-cov, ruff, mypy, playwright
+pytest                  # unit + headless AppTest suite
+ruff check .            # lint
+mypy                    # type check (model/)
+python scripts/smoke_app.py   # real-browser end-to-end smoke test
+```
+
+The code is laid out as `model/` (solver, fairness, validation, exports — no
+Streamlit imports), `ui/` (session state, editors, tabs, results rendering),
+and `app.py` (the thin `streamlit run` entry point). `model/points.py` is the
+single source of per-slot point values shared by the solver and all reporting.
+CI runs ruff, mypy, and pytest on Python 3.11/3.12 — plus a stub-only job with
+no pandas/OR-Tools installed to guard the graceful-degradation path.
+
 ## Changelog
+- Manual edits now persist: an Apply/Revert flow with eligibility-restricted
+  dropdown cells; the edited schedule flows into fairness, the log, the ledger
+  and all exports, with a banner and violation flags. (Previously edits were
+  silently discarded.)
+- Split the monolithic `app.py` into a `ui/` package; names de-duplicate on
+  entry, dual-role names and duplicate shift labels warn before Generate, and
+  leave/rotator/holiday date pickers default to the schedule block.
+- Single points source (`model/points.py`) shared by solver and reporting;
+  faster model construction (precomputed availability); typed `Leave` /
+  `RotatorWindow`; installable package with bounded pins; mypy in CI.
 - Added editable colour pickers for the five schedule colours, cosmetic custom columns (e.g. on-call team / consultant, labelled per day and carried into the downloads without touching the maths), and column reorder/hide. Exports are now cached per result+display so a download no longer blanks the results while a large Excel/PDF rebuilds.
 - Added customisable results colour-coding (`model/coloring.py`): weekend/points/role/none modes shading the on-screen grid, with matching colours in the Excel and PDF exports; results now render from `session_state` so changing the colour mode doesn't re-solve.
 - Reorganised the app UI into tabs (Shifts & people / Dates & rules / Advanced / Save & carryover), with a primary Generate button, summary metrics, and unfilled-slot highlighting.
