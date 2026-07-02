@@ -21,6 +21,30 @@ class RotatorWindow(NamedTuple):
     end: date
 
 
+class Perk(NamedTuple):
+    """An individual load reduction (or increase) for a resident.
+
+    ``factor`` multiplies the resident's fair-share weight on days the perk is
+    active (e.g. 0.8 = 20% fewer points). ``start``/``end`` bound the window;
+    ``None`` means unbounded on that side, so a perk with neither date applies
+    forever. Overlapping perks multiply.
+    """
+
+    name: str
+    factor: float
+    start: date | None = None
+    end: date | None = None
+
+
+def normalized_perks(perks):
+    """Yield a :class:`Perk` for each entry (typed or 2/3/4-tuple)."""
+    for entry in perks or []:
+        name, factor = entry[0], float(entry[1])
+        start = entry[2] if len(entry) > 2 else None
+        end = entry[3] if len(entry) > 3 else None
+        yield Perk(name, factor, start, end)
+
+
 def normalized_leaves(leaves):
     """Yield a :class:`Leave` for each leave entry.
 
@@ -88,6 +112,20 @@ class InputData:
     # the date also counts toward weekend balance.
     weekday_points: Dict[Tuple[str, int], float] | None = None
     holidays: List[Tuple[date, float, bool]] | None = None
+    # Seniority groups: a named group (e.g. "R2") maps to a load factor and
+    # residents are assigned to groups. An R2 at 0.9 fairly carries ~10% fewer
+    # points than an R1 at 1.0; the reduction flows through every fairness
+    # target (total / weekend / night-float) via the availability weights.
+    group_factors: Dict[str, float] | None = None
+    resident_groups: Dict[str, str] | None = None
+    # Individual perks: per-resident load factors, optionally time-bounded
+    # (see Perk). Composes multiplicatively with the group factor.
+    perks: Sequence[Perk | Tuple] | None = None
+    # Shift-type exemptions: resident -> shift labels never assigned to them
+    # (a hard block). Follows the night-float-eligibility precedent: the
+    # resident's targets are UNCHANGED — they carry their full share on the
+    # remaining shift types. Combine with a perk to also lower the share.
+    exempt_shifts: Dict[str, List[str]] | None = None
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None
     target_weekend: Dict[str, float] | None = None

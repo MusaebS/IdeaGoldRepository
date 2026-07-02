@@ -367,3 +367,54 @@ def test_fairness_log_annotates_penalty():
     log = format_fairness_log(df, data)
     assert "[+2 penalty applied]" in _resident_line(log, "A")
     assert "penalty applied" not in _resident_line(log, "B")
+
+
+def test_fairness_log_annotates_group_perk_exemption():
+    from model.data_models import Perk
+
+    shifts = [ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 2),
+        end_date=date(2023, 1, 3),
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+        group_factors={"R2": 0.9},
+        resident_groups={"A": "R2"},
+        perks=[Perk("A", 0.8, None, date(2023, 1, 31))],
+        exempt_shifts={"B": ["S"]},
+    )
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 2), "S": "A"},
+        {"Date": date(2023, 1, 3), "S": "B"},
+    ])
+    log = format_fairness_log(df, data)
+    a_line = _resident_line(log, "A")
+    assert "[R2 ×0.90]" in a_line
+    assert "[perk ×0.80 →2023-01-31]" in a_line
+    b_line = _resident_line(log, "B")
+    assert "[exempt: S]" in b_line
+    assert "[R2" not in b_line
+
+
+def test_fairness_log_line_unchanged_without_load_features():
+    df, shifts = _sample_df_and_shifts()
+    data = InputData(
+        start_date=date(2023, 1, 7),
+        end_date=date(2023, 1, 8),
+        shifts=shifts,
+        juniors=["Alice", "Bob"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+    )
+    log = format_fairness_log(df, data)
+    assert "[" not in _resident_line(log, "Alice")  # no annotations rendered

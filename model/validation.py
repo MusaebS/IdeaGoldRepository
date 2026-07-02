@@ -8,7 +8,7 @@ try:
 except ImportError:  # pragma: no cover - fallback when pandas missing
     from .pandas_stub import pd
 
-from .data_models import InputData, normalized_leaves
+from .data_models import InputData, normalized_leaves, normalized_perks
 from .nf_blocks import respects_nf_blocks
 from .optimiser import respects_min_gap
 
@@ -69,7 +69,62 @@ def config_warnings(data: InputData) -> List[str]:
             )
 
     warnings.extend(_leave_rotator_warnings(data))
+    warnings.extend(_exemption_perk_warnings(data))
     return warnings
+
+
+def _exemption_perk_warnings(data: InputData) -> List[str]:
+    """Advisories for exemptions/perks that are likely mistakes."""
+    out: List[str] = []
+    exempt = data.exempt_shifts or {}
+
+    for shift in data.shifts:
+        pool = set(data.juniors if shift.role == "Junior" else data.seniors)
+        if shift.night_float:
+            pool &= set(data.nf_juniors if shift.role == "Junior" else data.nf_seniors)
+        if not pool:
+            continue  # empty-pool cases are covered by the NF advisory above
+        remaining = {p for p in pool if shift.label not in exempt.get(p, ())}
+        if not remaining:
+            out.append(
+                f"Every eligible resident is exempt from '{shift.label}'; it "
+                "will always be unfilled."
+            )
+
+    role_labels: dict = {"Junior": set(), "Senior": set()}
+    for shift in data.shifts:
+        role_labels[shift.role].add(shift.label)
+    for name, labels in exempt.items():
+        role = "Junior" if name in data.juniors else "Senior"
+        own = role_labels.get(role, set())
+        if own and own <= set(labels):
+            out.append(
+                f"'{name}' is exempt from every {role} shift but keeps a full "
+                "fairness target; expect a large deviation (add a perk if their "
+                "share should be lower)."
+            )
+
+    nf_pools = {"Junior": set(data.nf_juniors), "Senior": set(data.nf_seniors)}
+    for shift in data.shifts:
+        if not shift.night_float:
+            continue
+        for name in nf_pools.get(shift.role, ()):  # NF-eligible yet exempt: pick one
+            if shift.label in exempt.get(name, ()):
+                out.append(
+                    f"'{name}' is night-float eligible but exempt from "
+                    f"'{shift.label}'; remove one of the two."
+                )
+
+    for perk in normalized_perks(data.perks):
+        start = perk.start or data.start_date
+        end = perk.end or data.end_date
+        if end < data.start_date or start > data.end_date:
+            out.append(
+                f"{perk.name}'s perk window {perk.start}–{perk.end} is outside "
+                f"the schedule dates ({data.start_date}–{data.end_date}) and has "
+                "no effect this block."
+            )
+    return out
 
 
 def _leave_rotator_warnings(data: InputData) -> List[str]:
@@ -246,6 +301,44 @@ def validate_input(data: InputData) -> List[str]:
                 f"{weekday} (expected 0=Mon .. 6=Sun)."
             )
 
+    group_factors = data.group_factors or {}
+    for group, factor in group_factors.items():
+        if not 0 < factor <= 2.0:
+            issues.append(
+                f"Group '{group}' load factor must be > 0 and ≤ 2 (got {factor:g})."
+            )
+    for name, group in (data.resident_groups or {}).items():
+        if name not in roster:
+            issues.append(f"Group assignment references unknown resident '{name}'.")
+        if group not in group_factors:
+            issues.append(
+                f"'{name}' is assigned to undefined group '{group}'; define the "
+                "group and its load factor first."
+            )
+
+    for perk in normalized_perks(data.perks):
+        if perk.name not in roster:
+            issues.append(f"Perk references unknown resident '{perk.name}'.")
+        if not 0 < perk.factor <= 2.0:
+            issues.append(
+                f"Perk load factor for '{perk.name}' must be > 0 and ≤ 2 "
+                f"(got {perk.factor:g})."
+            )
+        if perk.start is not None and perk.end is not None and perk.end < perk.start:
+            issues.append(
+                f"Perk window for '{perk.name}' ends ({perk.end}) before it "
+                f"starts ({perk.start})."
+            )
+
+    for name, labels in (data.exempt_shifts or {}).items():
+        if name not in roster:
+            issues.append(f"Shift exemption references unknown resident '{name}'.")
+        for label in labels:
+            if label not in shift_labels:
+                issues.append(
+                    f"'{name}' is exempted from unknown shift '{label}'."
+                )
+
     return issues
 
 
@@ -287,6 +380,11 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
                     issues.append(
                         f"{day}: {person} on night-float '{shift.label}' is not NF-eligible"
                     )
+
+            if shift.label in (data.exempt_shifts or {}).get(person, ()):
+                issues.append(
+                    f"{day}: {person} on '{shift.label}' is exempt from this shift"
+                )
 
             for nm, ls, le, _comp in normalized_leaves(data.leaves):
                 if nm == person and ls <= day <= le:

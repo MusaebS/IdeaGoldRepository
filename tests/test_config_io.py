@@ -116,3 +116,30 @@ def test_missing_required_date_key_raises_key_error():
 def test_invalid_date_string_raises_value_error():
     with pytest.raises(ValueError):
         input_data_from_json('{"start_date": "not-a-date", "end_date": "2023-02-02"}')
+
+
+def test_groups_perks_exemptions_round_trip():
+    from model.data_models import Perk
+
+    data = _sample_data()
+    data.group_factors = {"R1": 1.0, "R2": 0.9}
+    data.resident_groups = {"A": "R2", "B": "R1"}
+    data.perks = [
+        Perk("A", 0.8, date(2023, 1, 5), date(2023, 1, 20)),
+        Perk("B", 0.9),  # forever
+    ]
+    data.exempt_shifts = {"A": ["NF"]}
+
+    restored = input_data_from_json(input_data_to_json(data))
+    assert restored.group_factors == data.group_factors
+    assert restored.resident_groups == data.resident_groups
+    assert restored.perks == data.perks  # Perk is a NamedTuple: tuple equality
+    assert restored.exempt_shifts == data.exempt_shifts
+
+
+def test_legacy_config_without_new_fields_loads_none():
+    restored = input_data_from_json(input_data_to_json(_sample_data()))
+    assert restored.group_factors is None
+    assert restored.resident_groups is None
+    assert restored.perks is None
+    assert restored.exempt_shifts is None

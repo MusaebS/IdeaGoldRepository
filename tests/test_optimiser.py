@@ -891,3 +891,39 @@ def test_resolve_targets_extra_points_reconcile():
     assert tmap["A"] > tmap["B"]
     assert tmap["A"] - 2.0 == pytest.approx(tmap["B"])
     assert sum(tmap.values()) == pytest.approx(4.0)
+
+
+def test_resolve_targets_group_factor_scales_share():
+    from model.optimiser import resolve_targets
+
+    # B in a 0.5 group -> weights A=4, B=2 over the 4-day block.
+    data = _rt_data(group_factors={"half": 0.5}, resident_groups={"B": "half"})
+    resolved = resolve_targets(data)
+    assert resolved.target_total_map["A"] == pytest.approx(4 * 4 / 6)
+    assert resolved.target_total_map["B"] == pytest.approx(4 * 2 / 6)
+
+
+def test_resolve_targets_perk_window_scales_share():
+    from model.data_models import Perk
+    from model.optimiser import resolve_targets
+
+    # Perk 0.5 covers 2 of B's 4 days -> weights A=4, B=3.
+    data = _rt_data(perks=[Perk("B", 0.5, date(2023, 1, 2), date(2023, 1, 3))])
+    resolved = resolve_targets(data)
+    assert resolved.target_total_map["A"] == pytest.approx(4 * 4 / 7)
+    assert resolved.target_total_map["B"] == pytest.approx(4 * 3 / 7)
+
+
+def test_exemption_leaves_targets_unchanged():
+    from model.optimiser import resolve_targets
+
+    resolved = resolve_targets(_rt_data(exempt_shifts={"B": ["S"]}))
+    assert resolved.target_total_map == {"A": 2.0, "B": 2.0}
+
+
+def test_solver_never_assigns_exempt_resident():
+    pytest.importorskip("ortools")
+    data = _rt_data(exempt_shifts={"B": ["S"]}, min_gap=0)
+    df = build_schedule(data, env="test")
+    assert "B" not in set(df["S"])
+    assert set(df["S"]) <= {"A", "Unfilled"}

@@ -7,7 +7,7 @@ try:
 except ImportError:  # pragma: no cover - fallback when pandas missing
     from .pandas_stub import pd
 
-from .data_models import ShiftTemplate, InputData
+from .data_models import ShiftTemplate, InputData, normalized_perks
 from .points import classify_slot
 from .utils import effective_points, is_weekend, weekend_holiday_dates
 
@@ -100,6 +100,31 @@ def _resolved_target(df, key: str, fallback):
     return attrs[key] if key in attrs and attrs[key] is not None else fallback
 
 
+def _load_annotations(person: str, data: InputData) -> str:
+    """Group / perk / exemption notes for a resident's log line.
+
+    The fairness targets already embed the group and perk factors (via the
+    availability weights), so deviations stay honest against the reduced or
+    raised share — these notes just make the *why* visible in the log.
+    """
+    notes: List[str] = []
+    group = (data.resident_groups or {}).get(person)
+    if group is not None:
+        factor = (data.group_factors or {}).get(group)
+        if factor is not None and factor != 1.0:
+            notes.append(f"[{group} ×{factor:.2f}]")
+    for perk in normalized_perks(data.perks):
+        if perk.name != person:
+            continue
+        start = perk.start.isoformat() if perk.start else ""
+        end = perk.end.isoformat() if perk.end else "forever"
+        notes.append(f"[perk ×{perk.factor:.2f} {start}→{end}]")
+    labels = (data.exempt_shifts or {}).get(person)
+    if labels:
+        notes.append(f"[exempt: {', '.join(sorted(labels))}]")
+    return (" " + " ".join(notes)) if notes else ""
+
+
 def format_fairness_log(
     df: pd.DataFrame, data: InputData, points: Dict[str, ResidentPoints] | None = None
 ) -> str:
@@ -184,7 +209,7 @@ def format_fairness_log(
                 line += f" (dev {ldev:+.1f})"
         penalty = (data.extra_points or {}).get(person, 0.0)
         penalty_note = f" [+{penalty:g} penalty applied]" if penalty > 0 else ""
-        lines.append(line + penalty_note + total_flag)
+        lines.append(line + penalty_note + _load_annotations(person, data) + total_flag)
     lines.extend(fairness_range_lines(pts))
 
     # Fold constraint checks in so a hand-edited schedule's violations surface here.

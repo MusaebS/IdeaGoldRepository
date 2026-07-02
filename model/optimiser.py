@@ -135,6 +135,7 @@ from .data_models import InputData, normalized_leaves, normalized_rotators
 from .nf_blocks import respects_nf_blocks
 from .points import POINT_SCALE, SlotPoints, block_days, classify_slot, scaled, slot_points
 from .utils import weekend_holiday_dates
+from .weights import availability_weights
 
 
 class SchedulerSolver:
@@ -358,16 +359,19 @@ class SchedulerSolver:
         return blocked
 
     def _eligible_person_indices(self) -> Dict[int, set]:
-        """Shift index -> person indices allowed on that shift (role + NF)."""
+        """Shift index -> person indices allowed on that shift (role + NF + exemptions)."""
         juniors, seniors = set(self.data.juniors), set(self.data.seniors)
         nf_juniors, nf_seniors = set(self.data.nf_juniors), set(self.data.nf_seniors)
+        exempt = self.data.exempt_shifts or {}
         eligible: Dict[int, set] = {}
         for s_idx, shift in enumerate(self.shifts):
             pool = juniors if shift.role == "Junior" else seniors
             if shift.night_float:
                 pool = pool & (nf_juniors if shift.role == "Junior" else nf_seniors)
             eligible[s_idx] = {
-                p_idx for p_idx, person in enumerate(self.people[:-1]) if person in pool
+                p_idx
+                for p_idx, person in enumerate(self.people[:-1])
+                if person in pool and shift.label not in exempt.get(person, ())
             }
         return eligible
 
@@ -604,7 +608,7 @@ def _carryover_targets(
     prior: Mapping[str, float],
     block_points: float,
     members: Sequence[str],
-    weights: Mapping[str, int],
+    weights: Mapping[str, float],
     weight_sum: float,
     clamp_max: float,
 ) -> Dict[str, float]:
@@ -624,38 +628,9 @@ def _carryover_targets(
     }
 
 
-def _availability_weights(data: InputData) -> Dict[str, int]:
-    """Active-day count per participant, used as the fairness weight.
-
-    A rotator is only present within their active window(s) and an
-    *uncompensated* leave removes those days too, so the resident fairly
-    carries a proportionally smaller share while the others absorb the rest.
-    With no rotators and only compensated leaves every weight equals the block
-    length and the targets reduce to an equal split.
-    """
-    rotator_windows: Dict[str, list] = {}
-    for res, start, end in normalized_rotators(data.rotators):
-        rotator_windows.setdefault(res, []).append((start, end))
-    uncomp_windows: Dict[str, list] = {}
-    for name, start, end, compensated in normalized_leaves(data.leaves):
-        if not compensated:
-            uncomp_windows.setdefault(name, []).append((start, end))
-
-    days = block_days(data)
-
-    def _active_days(person: str) -> int:
-        windows = rotator_windows.get(person)
-        uncomp = uncomp_windows.get(person, [])
-        active = 0
-        for day in days:
-            if windows and not any(s <= day <= e for s, e in windows):
-                continue  # outside rotator active window
-            if any(s <= day <= e for s, e in uncomp):
-                continue  # uncompensated leave day -> quota reduced
-            active += 1
-        return active
-
-    return {p: _active_days(p) for p in data.juniors + data.seniors}
+# Availability/load weighting lives in model.weights (shared with the ledger's
+# no-catch-up policy); the old private name is kept as an alias.
+_availability_weights = availability_weights
 
 
 def _apply_extra_points(

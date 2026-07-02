@@ -6,10 +6,12 @@ from typing import List
 
 from .data_models import (
     Leave,
+    Perk,
     RotatorWindow,
     ShiftTemplate,
     InputData,
     normalized_leaves,
+    normalized_perks,
     normalized_rotators,
 )
 
@@ -88,6 +90,23 @@ def input_data_to_json(data: InputData) -> str:
             if data.holidays
             else None
         ),
+        "group_factors": data.group_factors or None,
+        "resident_groups": data.resident_groups or None,
+        "perks": (
+            [
+                [p.name, p.factor,
+                 p.start.isoformat() if p.start else None,
+                 p.end.isoformat() if p.end else None]
+                for p in normalized_perks(data.perks)
+            ]
+            if data.perks
+            else None
+        ),
+        "exempt_shifts": (
+            {name: sorted(labels) for name, labels in data.exempt_shifts.items()}
+            if data.exempt_shifts
+            else None
+        ),
     }
     return json.dumps(payload, indent=2)
 
@@ -150,6 +169,34 @@ def input_data_from_json(text: str) -> InputData:
                 for d, bonus, weekend in raw["holidays"]
             ]
             if raw.get("holidays")
+            else None
+        ),
+        group_factors=(
+            {str(k): float(v) for k, v in raw["group_factors"].items()}
+            if raw.get("group_factors")
+            else None
+        ),
+        resident_groups=(
+            {str(k): str(v) for k, v in raw["resident_groups"].items()}
+            if raw.get("resident_groups")
+            else None
+        ),
+        perks=(
+            [
+                Perk(
+                    str(name),
+                    float(factor),
+                    date.fromisoformat(start) if start else None,
+                    date.fromisoformat(end) if end else None,
+                )
+                for name, factor, start, end in raw["perks"]
+            ]
+            if raw.get("perks")
+            else None
+        ),
+        exempt_shifts=(
+            {str(k): [str(x) for x in v] for k, v in raw["exempt_shifts"].items()}
+            if raw.get("exempt_shifts")
             else None
         ),
     )
