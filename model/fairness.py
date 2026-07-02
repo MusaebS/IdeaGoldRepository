@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, TypedDict
 
 try:
     import pandas as pd
@@ -12,6 +12,7 @@ from .points import classify_slot
 from .utils import effective_points, is_weekend, weekend_holiday_dates
 
 __all__ = [
+    "ResidentPoints",
     "calculate_points",
     "format_fairness_log",
     "fairness_range_lines",
@@ -20,11 +21,23 @@ __all__ = [
 ]
 
 
-def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, float]]:
+class ResidentPoints(TypedDict):
+    """Per-resident point summary produced by :func:`calculate_points`."""
+
+    total: float
+    weekend: float
+    night_float: float
+    labels: Dict[str, float]
+
+
+def _empty_points() -> ResidentPoints:
+    return {"total": 0.0, "weekend": 0.0, "labels": {}, "night_float": 0.0}
+
+
+def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, ResidentPoints]:
     """Return mapping of resident to total and weekend points per label."""
-    summary: Dict[str, Dict[str, float]] = {
-        name: {"total": 0.0, "weekend": 0.0, "labels": {}, "night_float": 0.0}
-        for name in data.juniors + data.seniors
+    summary: Dict[str, ResidentPoints] = {
+        name: _empty_points() for name in data.juniors + data.seniors
     }
     weekend_dates = weekend_holiday_dates(data)
     for row in df.to_dict("records"):
@@ -36,7 +49,7 @@ def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, f
             # Shared classification (model.points) — the same source the solver
             # optimises against, so reporting can never drift from it.
             slot = classify_slot(day, sh, data, weekend_dates)
-            info = summary.setdefault(person, {"total": 0.0, "weekend": 0.0, "labels": {}, "night_float": 0.0})
+            info = summary.setdefault(person, _empty_points())
             info["total"] += slot.points
             info["labels"][sh.label] = info["labels"].get(sh.label, 0.0) + slot.points
             if slot.night_float:
@@ -46,7 +59,7 @@ def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, f
     return summary
 
 
-def fairness_range_lines(points: Dict[str, Dict[str, float]]) -> List[str]:
+def fairness_range_lines(points: Dict[str, ResidentPoints]) -> List[str]:
     """Return human-readable range summaries for totals and weekends."""
     lines: List[str] = []
     totals = [v["total"] for v in points.values()]
@@ -88,7 +101,7 @@ def _resolved_target(df, key: str, fallback):
 
 
 def format_fairness_log(
-    df: pd.DataFrame, data: InputData, points: Dict[str, Dict[str, float]] | None = None
+    df: pd.DataFrame, data: InputData, points: Dict[str, ResidentPoints] | None = None
 ) -> str:
     """Generate a human-readable fairness log.
 
@@ -188,7 +201,7 @@ def format_fairness_log(
 
 
 def schedule_quality(
-    df: pd.DataFrame, data: InputData, points: Dict[str, Dict[str, float]] | None = None
+    df: pd.DataFrame, data: InputData, points: Dict[str, ResidentPoints] | None = None
 ) -> Dict[str, float]:
     """Return a 0-100 schedule quality score and its components.
 
@@ -250,7 +263,7 @@ def assignment_rationale(
     data: InputData,
     day,
     label: str,
-    points: Dict[str, Dict[str, float]] | None = None,
+    points: Dict[str, ResidentPoints] | None = None,
 ) -> List[str]:
     """Return a heuristic explanation of why a slot holds its current value.
 

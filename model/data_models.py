@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import date
-from typing import List, NamedTuple, Tuple, Dict
+from typing import List, NamedTuple, Sequence, Tuple, Dict
 
 
 class Leave(NamedTuple):
@@ -64,8 +64,8 @@ class InputData:
     # Preferred element type is Leave / RotatorWindow; plain 3- or 4-tuples are
     # accepted everywhere for backward compatibility (see normalized_leaves /
     # normalized_rotators).
-    leaves: List[Leave | Tuple[str, date, date] | Tuple[str, date, date, bool]]
-    rotators: List[RotatorWindow | Tuple[str, date, date]]
+    leaves: Sequence[Leave | Tuple[str, date, date] | Tuple[str, date, date, bool]]
+    rotators: Sequence[RotatorWindow | Tuple[str, date, date]]
     min_gap: int = 1
     nf_block_length: int = 5
     seed: int = 0

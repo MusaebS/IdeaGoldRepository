@@ -1,7 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "idea-gold-scheduler"
+version = "0.1.0"
+description = "Provably fair on-call scheduling with OR-Tools CP-SAT and a Streamlit UI"
+requires-python = ">=3.11"
+dependencies = [
+    "streamlit>=1.33,<2",
+    "pandas>=2.0,<4",
+    "ortools>=9.10,<10",
+    "openpyxl>=3.1,<4",
+    "reportlab>=4.0,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "pytest-cov",
+    "ruff",
+    "mypy>=1.10",
+    "playwright",
+]
+
+[tool.setuptools]
+# app.py stays a top-level Streamlit entry script; only the libraries install.
+packages = ["model"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
+
+[tool.mypy]
+python_version = "3.11"
+files = ["model"]
+# ortools and streamlit ship no type stubs; pandas' are optional.
+ignore_missing_imports = true
+check_untyped_defs = true
 
 [tool.ruff]
 line-length = 100

@@ -1,5 +1,5 @@
-streamlit>=1.33
-pandas>=2.0
-ortools>=9.10
-openpyxl>=3.1
-reportlab>=4.0
+streamlit>=1.33,<2
+pandas>=2.0,<4
+ortools>=9.10,<10
+openpyxl>=3.1,<4
+reportlab>=4.0,<5

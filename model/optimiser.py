@@ -243,6 +243,7 @@ class SchedulerSolver:
         target_total_map = self.data.target_total_map
         if self.data.target_total is not None or target_total_map:
             for p_idx, person in enumerate(self.people[:-1]):
+                person_target: float | None
                 if target_total_map and person in target_total_map:
                     person_target = target_total_map[person]
                 else:

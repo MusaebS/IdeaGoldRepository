@@ -2,15 +2,25 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from typing import List, Tuple
+from typing import List
 
-from .data_models import Leave, RotatorWindow, ShiftTemplate, InputData, normalized_leaves
+from .data_models import (
+    Leave,
+    RotatorWindow,
+    ShiftTemplate,
+    InputData,
+    normalized_leaves,
+    normalized_rotators,
+)
 
 __all__ = ["input_data_to_json", "input_data_from_json"]
 
 
-def _windows_to_json(windows: List[Tuple[str, date, date]]) -> List[list]:
-    return [[name, start.isoformat(), end.isoformat()] for name, start, end in windows]
+def _windows_to_json(windows) -> List[list]:
+    return [
+        [name, start.isoformat(), end.isoformat()]
+        for name, start, end in normalized_rotators(windows)
+    ]
 
 
 def _windows_from_json(items) -> List[RotatorWindow]:

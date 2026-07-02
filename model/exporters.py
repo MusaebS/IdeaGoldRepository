@@ -10,7 +10,7 @@ except ImportError:  # pragma: no cover - fallback when pandas missing
 
 from .coloring import schedule_cell_colors
 from .data_models import InputData
-from .fairness import calculate_points
+from .fairness import ResidentPoints, calculate_points
 
 __all__ = ["build_fairness_frame", "schedule_to_excel_bytes", "schedule_to_pdf_bytes"]
 
@@ -24,7 +24,7 @@ def _fmt(value) -> str:
 
 
 def build_fairness_frame(
-    points: Dict[str, Dict[str, float]], data: InputData, df=None
+    points: Dict[str, ResidentPoints], data: InputData, df=None
 ) -> "pd.DataFrame":
     """Return a per-resident fairness table (total, weekend, NF, per-label).
 
@@ -66,7 +66,7 @@ def build_fairness_frame(
 def schedule_to_excel_bytes(
     df: "pd.DataFrame",
     data: InputData,
-    points: Dict[str, Dict[str, float]] | None = None,
+    points: Dict[str, ResidentPoints] | None = None,
     color_mode: str = "none",
     palette: Dict[str, str] | None = None,
 ) -> bytes:
@@ -100,7 +100,7 @@ def schedule_to_excel_bytes(
 def schedule_to_pdf_bytes(
     df: "pd.DataFrame",
     data: InputData,
-    points: Dict[str, Dict[str, float]] | None = None,
+    points: Dict[str, ResidentPoints] | None = None,
     color_mode: str = "none",
     palette: Dict[str, str] | None = None,
 ) -> bytes:
