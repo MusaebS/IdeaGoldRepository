@@ -131,3 +131,45 @@ def test_empty_palette_entries_fall_back_to_default():
     # Blank/None values must not override the default palette.
     same = schedule_cell_colors(df, data, "auto", palette={"weekend": "", "points": None})
     assert same == base
+
+
+# --- theme_palette -------------------------------------------------------------
+
+def test_theme_palette_shape_and_format():
+    import re
+    from model.coloring import theme_palette, DEFAULT_PALETTE
+
+    pal = theme_palette("#4a90d9")
+    assert set(pal) == set(DEFAULT_PALETTE)
+    assert all(re.fullmatch(r"#[0-9a-f]{6}", v) for v in pal.values())
+
+
+def test_theme_palette_roles_pairwise_distinct():
+    from model.coloring import theme_palette
+
+    for base in ("#4a90d9", "#808080", "#f5f5f5", "#101010"):
+        pal = theme_palette(base)
+        roles = [pal[k] for k in ("points", "weekend", "senior", "junior")]
+        assert len(set(roles)) == 4, base
+
+
+def test_theme_palette_unfilled_preserved_or_default():
+    from model.coloring import theme_palette, DEFAULT_PALETTE
+
+    assert theme_palette("#4a90d9")["unfilled"] == DEFAULT_PALETTE["unfilled"]
+    custom = theme_palette("#4a90d9", current={"unfilled": "#123456"})
+    assert custom["unfilled"] == "#123456"
+
+
+def test_theme_palette_golden_and_deterministic():
+    from model.coloring import theme_palette
+
+    expected = {
+        "points": "#4a90d9",   # a saturated in-range base is kept exactly
+        "weekend": "#6f4ad9",
+        "senior": "#4ad9b7",
+        "junior": "#d94b4a",
+        "unfilled": "#ffcccc",
+    }
+    assert theme_palette("#4a90d9") == expected
+    assert theme_palette("#4a90d9") == theme_palette("#4a90d9")

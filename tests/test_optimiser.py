@@ -807,3 +807,123 @@ def test_weekday_override_raises_target():
     df = build_schedule(data, env="test")  # must not raise / overflow
     # total available = 6 normal days*1 + 1 Tuesday*5 = 11 points, split fairly
     assert abs(df.attrs["target_total_map"]["A"] - 11 / 2) < 1e-6
+
+
+# --- resolve_targets (unit tests; previously only reachable via df.attrs) ----
+
+def _rt_data(**kw):
+    from model.data_models import InputData, ShiftTemplate
+    base = dict(
+        start_date=date(2023, 1, 2),
+        end_date=date(2023, 1, 5),  # 4 days
+        shifts=[ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)],
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+    )
+    base.update(kw)
+    return InputData(**base)
+
+
+def test_resolve_targets_auto_equal_split():
+    from model.optimiser import resolve_targets
+
+    data = _rt_data()
+    resolved = resolve_targets(data)
+    assert resolved.target_total == 2.0  # 4 points / 2 residents
+    assert resolved.target_total_map == {"A": 2.0, "B": 2.0}
+    assert data.target_total is None  # caller's InputData untouched
+
+
+def test_resolve_targets_respects_explicit_target():
+    from model.optimiser import resolve_targets
+
+    data = _rt_data(target_total=3.0)
+    resolved = resolve_targets(data)
+    assert resolved.target_total == 3.0
+    assert resolved.target_total_map is None  # not auto-built when total given
+
+
+def test_resolve_targets_rotator_scales_share():
+    from model.optimiser import resolve_targets
+
+    # B active only 2 of 4 days -> weights A=4, B=2 -> shares 4*(4/6), 4*(2/6).
+    data = _rt_data(rotators=[("B", date(2023, 1, 2), date(2023, 1, 3))])
+    resolved = resolve_targets(data)
+    assert resolved.target_total_map["A"] == pytest.approx(4 * 4 / 6)
+    assert resolved.target_total_map["B"] == pytest.approx(4 * 2 / 6)
+
+
+def test_resolve_targets_uncompensated_leave_scales_share():
+    from model.optimiser import resolve_targets
+
+    data = _rt_data(leaves=[("B", date(2023, 1, 2), date(2023, 1, 3), False)])
+    resolved = resolve_targets(data)
+    assert resolved.target_total_map["A"] == pytest.approx(4 * 4 / 6)
+    assert resolved.target_total_map["B"] == pytest.approx(4 * 2 / 6)
+    # A compensated leave keeps the full share.
+    comp = _rt_data(leaves=[("B", date(2023, 1, 2), date(2023, 1, 3), True)])
+    assert resolve_targets(comp).target_total_map == {"A": 2.0, "B": 2.0}
+
+
+def test_resolve_targets_ledger_carryover_lightens_loaded_resident():
+    from model.optimiser import resolve_targets
+
+    ledger = {"A": {"total": 4.0, "weekend": 0.0, "night_float": 0.0},
+              "B": {"total": 0.0, "weekend": 0.0, "night_float": 0.0}}
+    resolved = resolve_targets(_rt_data(), ledger=ledger)
+    # Cumulative fair share is 4 (prior) + 4 (block) = 8 -> 4 each; A already
+    # carries 4 so gets 0 this block, B gets the full 4.
+    assert resolved.target_total_map["A"] == pytest.approx(0.0)
+    assert resolved.target_total_map["B"] == pytest.approx(4.0)
+
+
+def test_resolve_targets_extra_points_reconcile():
+    from model.optimiser import resolve_targets
+
+    resolved = resolve_targets(_rt_data(extra_points={"A": 2.0}))
+    tmap = resolved.target_total_map
+    # A's target is raised by the penalty, B's lowered, totals still sum to 4.
+    assert tmap["A"] > tmap["B"]
+    assert tmap["A"] - 2.0 == pytest.approx(tmap["B"])
+    assert sum(tmap.values()) == pytest.approx(4.0)
+
+
+def test_resolve_targets_group_factor_scales_share():
+    from model.optimiser import resolve_targets
+
+    # B in a 0.5 group -> weights A=4, B=2 over the 4-day block.
+    data = _rt_data(group_factors={"half": 0.5}, resident_groups={"B": "half"})
+    resolved = resolve_targets(data)
+    assert resolved.target_total_map["A"] == pytest.approx(4 * 4 / 6)
+    assert resolved.target_total_map["B"] == pytest.approx(4 * 2 / 6)
+
+
+def test_resolve_targets_perk_window_scales_share():
+    from model.data_models import Perk
+    from model.optimiser import resolve_targets
+
+    # Perk 0.5 covers 2 of B's 4 days -> weights A=4, B=3.
+    data = _rt_data(perks=[Perk("B", 0.5, date(2023, 1, 2), date(2023, 1, 3))])
+    resolved = resolve_targets(data)
+    assert resolved.target_total_map["A"] == pytest.approx(4 * 4 / 7)
+    assert resolved.target_total_map["B"] == pytest.approx(4 * 3 / 7)
+
+
+def test_exemption_leaves_targets_unchanged():
+    from model.optimiser import resolve_targets
+
+    resolved = resolve_targets(_rt_data(exempt_shifts={"B": ["S"]}))
+    assert resolved.target_total_map == {"A": 2.0, "B": 2.0}
+
+
+def test_solver_never_assigns_exempt_resident():
+    pytest.importorskip("ortools")
+    data = _rt_data(exempt_shifts={"B": ["S"]}, min_gap=0)
+    df = build_schedule(data, env="test")
+    assert "B" not in set(df["S"])
+    assert set(df["S"]) <= {"A", "Unfilled"}

@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, TypedDict
 
 try:
     import pandas as pd
 except ImportError:  # pragma: no cover - fallback when pandas missing
     from .pandas_stub import pd
 
-from .data_models import ShiftTemplate, InputData
+from .data_models import ShiftTemplate, InputData, normalized_perks
+from .points import classify_slot
 from .utils import effective_points, is_weekend, weekend_holiday_dates
 
 __all__ = [
+    "ResidentPoints",
     "calculate_points",
     "format_fairness_log",
     "fairness_range_lines",
@@ -19,11 +21,23 @@ __all__ = [
 ]
 
 
-def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, float]]:
+class ResidentPoints(TypedDict):
+    """Per-resident point summary produced by :func:`calculate_points`."""
+
+    total: float
+    weekend: float
+    night_float: float
+    labels: Dict[str, float]
+
+
+def _empty_points() -> ResidentPoints:
+    return {"total": 0.0, "weekend": 0.0, "labels": {}, "night_float": 0.0}
+
+
+def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, ResidentPoints]:
     """Return mapping of resident to total and weekend points per label."""
-    summary: Dict[str, Dict[str, float]] = {
-        name: {"total": 0.0, "weekend": 0.0, "labels": {}, "night_float": 0.0}
-        for name in data.juniors + data.seniors
+    summary: Dict[str, ResidentPoints] = {
+        name: _empty_points() for name in data.juniors + data.seniors
     }
     weekend_dates = weekend_holiday_dates(data)
     for row in df.to_dict("records"):
@@ -32,18 +46,20 @@ def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, f
             person = row.get(sh.label)
             if person in (None, "Unfilled"):
                 continue
-            pts = effective_points(day, sh, data)
-            info = summary.setdefault(person, {"total": 0.0, "weekend": 0.0, "labels": {}, "night_float": 0.0})
-            info["total"] += pts
-            info["labels"][sh.label] = info["labels"].get(sh.label, 0.0) + pts
-            if sh.night_float:
-                info["night_float"] += pts
-            if is_weekend(day, sh, data.weekend_days, weekend_dates):
-                info["weekend"] += pts
+            # Shared classification (model.points) — the same source the solver
+            # optimises against, so reporting can never drift from it.
+            slot = classify_slot(day, sh, data, weekend_dates)
+            info = summary.setdefault(person, _empty_points())
+            info["total"] += slot.points
+            info["labels"][sh.label] = info["labels"].get(sh.label, 0.0) + slot.points
+            if slot.night_float:
+                info["night_float"] += slot.points
+            if slot.weekend:
+                info["weekend"] += slot.points
     return summary
 
 
-def fairness_range_lines(points: Dict[str, Dict[str, float]]) -> List[str]:
+def fairness_range_lines(points: Dict[str, ResidentPoints]) -> List[str]:
     """Return human-readable range summaries for totals and weekends."""
     lines: List[str] = []
     totals = [v["total"] for v in points.values()]
@@ -84,8 +100,33 @@ def _resolved_target(df, key: str, fallback):
     return attrs[key] if key in attrs and attrs[key] is not None else fallback
 
 
+def _load_annotations(person: str, data: InputData) -> str:
+    """Group / perk / exemption notes for a resident's log line.
+
+    The fairness targets already embed the group and perk factors (via the
+    availability weights), so deviations stay honest against the reduced or
+    raised share — these notes just make the *why* visible in the log.
+    """
+    notes: List[str] = []
+    group = (data.resident_groups or {}).get(person)
+    if group is not None:
+        factor = (data.group_factors or {}).get(group)
+        if factor is not None and factor != 1.0:
+            notes.append(f"[{group} ×{factor:.2f}]")
+    for perk in normalized_perks(data.perks):
+        if perk.name != person:
+            continue
+        start = perk.start.isoformat() if perk.start else ""
+        end = perk.end.isoformat() if perk.end else "forever"
+        notes.append(f"[perk ×{perk.factor:.2f} {start}→{end}]")
+    labels = (data.exempt_shifts or {}).get(person)
+    if labels:
+        notes.append(f"[exempt: {', '.join(sorted(labels))}]")
+    return (" " + " ".join(notes)) if notes else ""
+
+
 def format_fairness_log(
-    df: pd.DataFrame, data: InputData, points: Dict[str, Dict[str, float]] | None = None
+    df: pd.DataFrame, data: InputData, points: Dict[str, ResidentPoints] | None = None
 ) -> str:
     """Generate a human-readable fairness log.
 
@@ -168,7 +209,7 @@ def format_fairness_log(
                 line += f" (dev {ldev:+.1f})"
         penalty = (data.extra_points or {}).get(person, 0.0)
         penalty_note = f" [+{penalty:g} penalty applied]" if penalty > 0 else ""
-        lines.append(line + penalty_note + total_flag)
+        lines.append(line + penalty_note + _load_annotations(person, data) + total_flag)
     lines.extend(fairness_range_lines(pts))
 
     # Fold constraint checks in so a hand-edited schedule's violations surface here.
@@ -185,7 +226,7 @@ def format_fairness_log(
 
 
 def schedule_quality(
-    df: pd.DataFrame, data: InputData, points: Dict[str, Dict[str, float]] | None = None
+    df: pd.DataFrame, data: InputData, points: Dict[str, ResidentPoints] | None = None
 ) -> Dict[str, float]:
     """Return a 0-100 schedule quality score and its components.
 
@@ -247,7 +288,7 @@ def assignment_rationale(
     data: InputData,
     day,
     label: str,
-    points: Dict[str, Dict[str, float]] | None = None,
+    points: Dict[str, ResidentPoints] | None = None,
 ) -> List[str]:
     """Return a heuristic explanation of why a slot holds its current value.
 

@@ -7,12 +7,13 @@ slots are always flagged red. A ``palette`` lets the user recolour each role.
 """
 from __future__ import annotations
 
-from typing import Dict, Tuple
+import colorsys
+from typing import Dict, Mapping, Tuple
 
 from .data_models import InputData
 from .utils import effective_points, is_weekend, weekend_holiday_dates
 
-__all__ = ["COLOR_MODES", "DEFAULT_PALETTE", "schedule_cell_colors"]
+__all__ = ["COLOR_MODES", "DEFAULT_PALETTE", "schedule_cell_colors", "theme_palette"]
 
 # UI label -> internal mode.
 COLOR_MODES = {
@@ -43,6 +44,34 @@ def _blend(hue: Tuple[int, int, int], ratio: float) -> str:
     ratio = max(0.0, min(1.0, ratio))
     r, g, b = (round(255 + (channel - 255) * ratio) for channel in hue)
     return f"#{r:02x}{g:02x}{b:02x}"
+
+
+# Hue rotation (degrees) per palette role for theme_palette. Roles must differ
+# by *hue*, not lightness: the renderer already encodes per-cell intensity via
+# the white-blend ratios in schedule_cell_colors, so lightness variations
+# would collapse together in every mode.
+_THEME_HUE_SHIFTS = {"points": 0.0, "weekend": 45.0, "senior": -45.0, "junior": 150.0}
+
+
+def theme_palette(base: str, current: Mapping[str, str] | None = None) -> Dict[str, str]:
+    """Derive a full palette from one theme colour.
+
+    The base is normalised (lightness clamped to 0.35–0.65, saturation floored
+    at 0.40 so grey or near-white inputs still yield distinct roles), then the
+    four schedule roles get hue-rotated variants of it. ``unfilled`` is a
+    warning flag, not a theme colour: it keeps the caller's current choice, or
+    the red default. Deterministic — the same base always yields the same map.
+    """
+    r, g, b = _hex_to_rgb(base)
+    h, lightness, s = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
+    lightness = min(0.65, max(0.35, lightness))
+    s = max(s, 0.40)
+    palette: Dict[str, str] = {}
+    for role, shift_deg in _THEME_HUE_SHIFTS.items():
+        rr, gg, bb = colorsys.hls_to_rgb((h + shift_deg / 360.0) % 1.0, lightness, s)
+        palette[role] = f"#{round(rr * 255):02x}{round(gg * 255):02x}{round(bb * 255):02x}"
+    palette["unfilled"] = (current or {}).get("unfilled") or DEFAULT_PALETTE["unfilled"]
+    return palette
 
 
 def schedule_cell_colors(

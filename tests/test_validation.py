@@ -10,7 +10,7 @@ except Exception:  # pragma: no cover
     pd = opt.pd
 
 from model.data_models import ShiftTemplate, InputData
-from model.validation import validate_input, validate_schedule
+from model.validation import validate_input, validate_schedule, config_warnings
 
 
 def _data(**over):
@@ -243,3 +243,97 @@ def test_warns_holiday_outside_schedule():
     from model.validation import config_warnings
     data = _data(holidays=[(date(2022, 12, 25), 1.0, False)])  # before the block
     assert any("Holiday" in w and "outside the schedule" in w for w in config_warnings(data))
+
+
+def _grp_data(**kw):
+    base = dict(
+        start_date=date(2023, 1, 2),
+        end_date=date(2023, 1, 5),
+        shifts=[ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False)],
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=1,
+    )
+    base.update(kw)
+    return InputData(**base)
+
+
+def test_validate_group_factor_out_of_range():
+    issues = validate_input(_grp_data(group_factors={"R2": 2.5}))
+    assert any("load factor must be > 0" in i for i in issues)
+    issues = validate_input(_grp_data(group_factors={"R2": 0.0}))
+    assert any("load factor must be > 0" in i for i in issues)
+
+
+def test_validate_group_assignment_rules():
+    issues = validate_input(
+        _grp_data(group_factors={"R2": 0.9}, resident_groups={"X": "R2"})
+    )
+    assert any("unknown resident 'X'" in i for i in issues)
+    issues = validate_input(_grp_data(resident_groups={"A": "R9"}))
+    assert any("undefined group 'R9'" in i for i in issues)
+
+
+def test_validate_perk_rules():
+    from model.data_models import Perk
+
+    issues = validate_input(_grp_data(perks=[Perk("X", 0.8)]))
+    assert any("unknown resident 'X'" in i for i in issues)
+    issues = validate_input(_grp_data(perks=[Perk("A", 0.0)]))
+    assert any("must be > 0" in i for i in issues)
+    issues = validate_input(
+        _grp_data(perks=[Perk("A", 0.8, date(2023, 1, 5), date(2023, 1, 2))])
+    )
+    assert any("ends" in i and "before it" in i for i in issues)
+
+
+def test_validate_exemption_rules():
+    issues = validate_input(_grp_data(exempt_shifts={"X": ["S"]}))
+    assert any("unknown resident 'X'" in i for i in issues)
+    issues = validate_input(_grp_data(exempt_shifts={"A": ["Nope"]}))
+    assert any("unknown shift 'Nope'" in i for i in issues)
+
+
+def test_warning_when_everyone_exempt_from_shift():
+    warnings = config_warnings(_grp_data(exempt_shifts={"A": ["S"], "B": ["S"]}))
+    assert any("always be unfilled" in w for w in warnings)
+
+
+def test_warning_when_exempt_from_all_role_shifts():
+    warnings = config_warnings(_grp_data(exempt_shifts={"A": ["S"]}))
+    assert any("exempt from every Junior shift" in w for w in warnings)
+
+
+def test_warning_nf_eligible_but_exempt():
+    data = _grp_data(
+        shifts=[
+            ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False),
+            ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False),
+        ],
+        nf_juniors=["A", "B"],
+        exempt_shifts={"A": ["NF"]},
+    )
+    warnings = config_warnings(data)
+    assert any("night-float eligible but exempt" in w for w in warnings)
+
+
+def test_warning_perk_outside_block():
+    from model.data_models import Perk
+
+    warnings = config_warnings(
+        _grp_data(perks=[Perk("A", 0.8, date(2023, 2, 1), date(2023, 2, 5))])
+    )
+    assert any("outside" in w and "perk" in w.lower() for w in warnings)
+
+
+def test_validate_schedule_flags_exempt_assignment():
+    data = _grp_data(exempt_shifts={"A": ["S"]}, min_gap=0)
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 2), "S": "A"},
+    ])
+    issues = validate_schedule(df, data)
+    assert any("exempt from this shift" in i for i in issues)

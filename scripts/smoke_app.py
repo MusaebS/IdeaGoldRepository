@@ -113,6 +113,15 @@ def _run_checks() -> list[str]:
             check(True, "colour-mode selector shown")
         except Exception:
             check(False, "colour-mode selector shown")
+        # One-click theming: apply shades from the theme colour, grid survives.
+        try:
+            page.get_by_role("button", name="Apply theme shades").click()
+            page.wait_for_timeout(2500)
+            check(page.locator('[data-testid="stDataFrame"], [data-testid="stDataFrameResizable"]').count() > 0
+                  and page.locator('[data-testid="stException"]').count() == 0,
+                  "theme shades apply without breaking the grid")
+        except Exception:
+            check(False, "theme shades apply without breaking the grid")
         # Add a cosmetic custom column and confirm it lands on the schedule.
         try:
             page.locator('[data-testid="stTextInput"]').filter(
@@ -124,6 +133,18 @@ def _run_checks() -> list[str]:
                   "custom cosmetic column added")
         except Exception:
             check(False, "custom cosmetic column added")
+        # Auto-fill the new column with a two-name daily cycle.
+        try:
+            page.locator('[data-testid="stTextArea"]').filter(
+                has_text="Names (comma or newline separated)"
+            ).locator("textarea").fill("Dr Alpha, Dr Beta")
+            page.get_by_role("button", name="Fill", exact=True).click()
+            page.wait_for_timeout(2500)
+            check(page.get_by_text("Dr Alpha").count() > 0
+                  and page.get_by_text("Dr Beta").count() > 0,
+                  "auto-fill pattern populates the column")
+        except Exception:
+            check(False, "auto-fill pattern populates the column")
         # Toggling a control triggers a Streamlit rerun without re-solving; the
         # schedule must persist (results now render from session_state).
         page.get_by_text("Show Fairness Log").click()
@@ -139,6 +160,22 @@ def _run_checks() -> list[str]:
         page.wait_for_timeout(1500)
         check(page.locator('[data-testid="stDataFrame"], [data-testid="stDataFrameResizable"]').count() > 0,
               "results persist after a download click")
+        # Manual-edit persistence: Apply flags the schedule as edited (badge +
+        # revert button), Revert restores the solver result and clears both.
+        try:
+            page.get_by_text("Manual edit & revalidate").click()
+            page.get_by_role("button", name="Apply edits").wait_for(timeout=10000)
+            page.get_by_role("button", name="Apply edits").click()
+            page.get_by_text("Schedule manually edited").first.wait_for(timeout=15000)
+            check(True, "Apply edits marks the schedule as edited")
+            page.get_by_role("button", name="Revert to solver result").click()
+            page.wait_for_timeout(2500)
+            check(page.get_by_text("Schedule manually edited").count() == 0,
+                  "Revert restores the solver result")
+            check(page.get_by_role("button", name="Download CSV (schedule)").count() > 0,
+                  "exports still available after edit round-trip")
+        except Exception:
+            check(False, "manual edit apply/revert round-trip")
         check(page.locator('[data-testid="stException"]').count() == 0,
               "no uncaught exception on the page")
         page.close()

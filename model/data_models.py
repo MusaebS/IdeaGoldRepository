@@ -1,21 +1,70 @@
 from dataclasses import dataclass
 from datetime import date
-from typing import List, Tuple, Dict
+from typing import List, NamedTuple, Sequence, Tuple, Dict
+
+
+class Leave(NamedTuple):
+    """A leave window. Being a NamedTuple it compares equal to, unpacks like,
+    and serialises exactly as the plain tuples used historically."""
+
+    name: str
+    start: date
+    end: date
+    compensated: bool = True
+
+
+class RotatorWindow(NamedTuple):
+    """An active window for a rotating resident (only available inside it)."""
+
+    name: str
+    start: date
+    end: date
+
+
+class Perk(NamedTuple):
+    """An individual load reduction (or increase) for a resident.
+
+    ``factor`` multiplies the resident's fair-share weight on days the perk is
+    active (e.g. 0.8 = 20% fewer points). ``start``/``end`` bound the window;
+    ``None`` means unbounded on that side, so a perk with neither date applies
+    forever. Overlapping perks multiply.
+    """
+
+    name: str
+    factor: float
+    start: date | None = None
+    end: date | None = None
+
+
+def normalized_perks(perks):
+    """Yield a :class:`Perk` for each entry (typed or 2/3/4-tuple)."""
+    for entry in perks or []:
+        name, factor = entry[0], float(entry[1])
+        start = entry[2] if len(entry) > 2 else None
+        end = entry[3] if len(entry) > 3 else None
+        yield Perk(name, factor, start, end)
 
 
 def normalized_leaves(leaves):
-    """Yield ``(name, start, end, compensated)`` for each leave entry.
+    """Yield a :class:`Leave` for each leave entry.
 
-    Leaves may be stored as 4-tuples carrying a per-leave ``compensated`` flag, or
-    as legacy 3-tuples (treated as compensated — full quota, the original
-    behaviour). ``compensated`` leaves block the days but keep the resident's fair
-    share; ``uncompensated`` leaves additionally scale that share down (like a
-    rotator), so the resident is not penalised for the absence.
+    Leaves may be stored as :class:`Leave`, 4-tuples carrying a per-leave
+    ``compensated`` flag, or legacy 3-tuples (treated as compensated — full
+    quota, the original behaviour). ``compensated`` leaves block the days but
+    keep the resident's fair share; ``uncompensated`` leaves additionally scale
+    that share down (like a rotator), so the resident is not penalised for the
+    absence.
     """
     for entry in leaves or []:
         name, start, end = entry[0], entry[1], entry[2]
         compensated = bool(entry[3]) if len(entry) > 3 else True
-        yield name, start, end, compensated
+        yield Leave(name, start, end, compensated)
+
+
+def normalized_rotators(rotators):
+    """Yield a :class:`RotatorWindow` for each rotator entry (tuple or typed)."""
+    for entry in rotators or []:
+        yield RotatorWindow(entry[0], entry[1], entry[2])
 
 
 @dataclass
@@ -36,8 +85,11 @@ class InputData:
     seniors: List[str]
     nf_juniors: List[str]
     nf_seniors: List[str]
-    leaves: List[Tuple[str, date, date]]
-    rotators: List[Tuple[str, date, date]]
+    # Preferred element type is Leave / RotatorWindow; plain 3- or 4-tuples are
+    # accepted everywhere for backward compatibility (see normalized_leaves /
+    # normalized_rotators).
+    leaves: Sequence[Leave | Tuple[str, date, date] | Tuple[str, date, date, bool]]
+    rotators: Sequence[RotatorWindow | Tuple[str, date, date]]
     min_gap: int = 1
     nf_block_length: int = 5
     seed: int = 0
@@ -60,6 +112,20 @@ class InputData:
     # the date also counts toward weekend balance.
     weekday_points: Dict[Tuple[str, int], float] | None = None
     holidays: List[Tuple[date, float, bool]] | None = None
+    # Seniority groups: a named group (e.g. "R2") maps to a load factor and
+    # residents are assigned to groups. An R2 at 0.9 fairly carries ~10% fewer
+    # points than an R1 at 1.0; the reduction flows through every fairness
+    # target (total / weekend / night-float) via the availability weights.
+    group_factors: Dict[str, float] | None = None
+    resident_groups: Dict[str, str] | None = None
+    # Individual perks: per-resident load factors, optionally time-bounded
+    # (see Perk). Composes multiplicatively with the group factor.
+    perks: Sequence[Perk | Tuple] | None = None
+    # Shift-type exemptions: resident -> shift labels never assigned to them
+    # (a hard block). Follows the night-float-eligibility precedent: the
+    # resident's targets are UNCHANGED — they carry their full share on the
+    # remaining shift types. Combine with a perk to also lower the share.
+    exempt_shifts: Dict[str, List[str]] | None = None
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None
     target_weekend: Dict[str, float] | None = None

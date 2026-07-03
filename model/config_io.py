@@ -2,21 +2,33 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from typing import List, Tuple
+from typing import List
 
-from .data_models import ShiftTemplate, InputData, normalized_leaves
+from .data_models import (
+    Leave,
+    Perk,
+    RotatorWindow,
+    ShiftTemplate,
+    InputData,
+    normalized_leaves,
+    normalized_perks,
+    normalized_rotators,
+)
 
-__all__ = ["input_data_to_json", "input_data_from_json"]
+__all__ = ["input_data_to_json", "input_data_from_json", "display_from_json"]
 
 
-def _windows_to_json(windows: List[Tuple[str, date, date]]) -> List[list]:
-    return [[name, start.isoformat(), end.isoformat()] for name, start, end in windows]
+def _windows_to_json(windows) -> List[list]:
+    return [
+        [name, start.isoformat(), end.isoformat()]
+        for name, start, end in normalized_rotators(windows)
+    ]
 
 
-def _windows_from_json(items) -> List[Tuple[str, date, date]]:
-    out: List[Tuple[str, date, date]] = []
+def _windows_from_json(items) -> List[RotatorWindow]:
+    out: List[RotatorWindow] = []
     for name, start, end in items or []:
-        out.append((name, date.fromisoformat(start), date.fromisoformat(end)))
+        out.append(RotatorWindow(name, date.fromisoformat(start), date.fromisoformat(end)))
     return out
 
 
@@ -27,20 +39,23 @@ def _leaves_to_json(leaves) -> List[list]:
     ]
 
 
-def _leaves_from_json(items) -> List[Tuple[str, date, date, bool]]:
-    out: List[Tuple[str, date, date, bool]] = []
+def _leaves_from_json(items) -> List[Leave]:
+    out: List[Leave] = []
     for entry in items or []:
         name, start, end = entry[0], entry[1], entry[2]
         compensated = bool(entry[3]) if len(entry) > 3 else True
-        out.append((name, date.fromisoformat(start), date.fromisoformat(end), compensated))
+        out.append(Leave(name, date.fromisoformat(start), date.fromisoformat(end), compensated))
     return out
 
 
-def input_data_to_json(data: InputData) -> str:
+def input_data_to_json(data: InputData, display: dict | None = None) -> str:
     """Serialise an :class:`InputData` configuration to a JSON string.
 
     Solver-derived fields (the ``target_*`` values) are intentionally omitted;
-    only user-entered configuration is saved.
+    only user-entered configuration is saved. ``display`` (optional) is a
+    cosmetic section — palette colours, custom columns and their values,
+    column order — stored under a ``"display"`` key so a saved config restores
+    the look as well as the maths. Loaders that predate it ignore the key.
     """
     payload = {
         "start_date": data.start_date.isoformat(),
@@ -78,8 +93,68 @@ def input_data_to_json(data: InputData) -> str:
             if data.holidays
             else None
         ),
+        "group_factors": data.group_factors or None,
+        "resident_groups": data.resident_groups or None,
+        "perks": (
+            [
+                [p.name, p.factor,
+                 p.start.isoformat() if p.start else None,
+                 p.end.isoformat() if p.end else None]
+                for p in normalized_perks(data.perks)
+            ]
+            if data.perks
+            else None
+        ),
+        "exempt_shifts": (
+            {name: sorted(labels) for name, labels in data.exempt_shifts.items()}
+            if data.exempt_shifts
+            else None
+        ),
     }
+    if display:
+        payload["display"] = display
     return json.dumps(payload, indent=2)
+
+
+def display_from_json(text: str) -> dict | None:
+    """Extract and sanitise the cosmetic ``"display"`` section of a config.
+
+    Returns ``None`` for configs without one (or anything malformed) — the
+    caller simply skips the display restore in that case.
+    """
+    from .coloring import DEFAULT_PALETTE  # local: keeps module deps minimal
+
+    try:
+        raw = json.loads(text)
+    except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+        return None
+    display = raw.get("display") if isinstance(raw, dict) else None
+    if not isinstance(display, dict):
+        return None
+    out: dict = {}
+    palette = display.get("palette")
+    if isinstance(palette, dict):
+        cleaned = {
+            str(k): str(v)
+            for k, v in palette.items()
+            if k in DEFAULT_PALETTE and isinstance(v, str) and v.startswith("#")
+        }
+        if cleaned:
+            out["palette"] = cleaned
+    cols = display.get("extra_cols")
+    if isinstance(cols, list):
+        out["extra_cols"] = [str(c) for c in cols]
+    vals = display.get("extra_vals")
+    if isinstance(vals, dict):
+        out["extra_vals"] = {
+            str(col): {str(d): str(v) for d, v in per_day.items()}
+            for col, per_day in vals.items()
+            if isinstance(per_day, dict)
+        }
+    order = display.get("col_order")
+    if isinstance(order, list):
+        out["col_order"] = [str(c) for c in order]
+    return out or None
 
 
 def input_data_from_json(text: str) -> InputData:
@@ -140,6 +215,34 @@ def input_data_from_json(text: str) -> InputData:
                 for d, bonus, weekend in raw["holidays"]
             ]
             if raw.get("holidays")
+            else None
+        ),
+        group_factors=(
+            {str(k): float(v) for k, v in raw["group_factors"].items()}
+            if raw.get("group_factors")
+            else None
+        ),
+        resident_groups=(
+            {str(k): str(v) for k, v in raw["resident_groups"].items()}
+            if raw.get("resident_groups")
+            else None
+        ),
+        perks=(
+            [
+                Perk(
+                    str(name),
+                    float(factor),
+                    date.fromisoformat(start) if start else None,
+                    date.fromisoformat(end) if end else None,
+                )
+                for name, factor, start, end in raw["perks"]
+            ]
+            if raw.get("perks")
+            else None
+        ),
+        exempt_shifts=(
+            {str(k): [str(x) for x in v] for k, v in raw["exempt_shifts"].items()}
+            if raw.get("exempt_shifts")
             else None
         ),
     )
