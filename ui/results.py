@@ -4,7 +4,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from model.coloring import COLOR_MODES, DEFAULT_PALETTE, schedule_cell_colors
+from model.coloring import COLOR_MODES, DEFAULT_PALETTE, schedule_cell_colors, theme_palette
 from model.exporters import build_fairness_frame, schedule_to_excel_bytes, schedule_to_pdf_bytes
 from model.fairness import (
     assignment_rationale,
@@ -111,6 +111,16 @@ def _reset_palette() -> None:
         st.session_state.pop(f"{Keys.PAL_PREFIX}{key}", None)
 
 
+def _apply_theme() -> None:
+    """Derive all role colours from the theme colour (on_click callback)."""
+    st.session_state[Keys.PALETTE] = theme_palette(
+        st.session_state.get("pal_theme", DEFAULT_PALETTE["points"]),
+        current=st.session_state[Keys.PALETTE],
+    )
+    for key in DEFAULT_PALETTE:
+        st.session_state.pop(f"{Keys.PAL_PREFIX}{key}", None)
+
+
 def _render_solver_caption(df, data) -> None:
     warning = df.attrs.get("solver_warning") if hasattr(df, "attrs") else None
     if warning:
@@ -133,6 +143,16 @@ def _render_customisation(df) -> tuple:
             index=0,
             help="Shade the grid; the same colours flow into the Excel and PDF downloads.",
         )
+        tc = st.columns([2, 2, 4])
+        with tc[0]:
+            st.color_picker(
+                "Theme colour", DEFAULT_PALETTE["points"], key="pal_theme",
+                help="Pick one colour and apply — the role shades below are "
+                "derived from it automatically (unfilled stays the warning red).",
+            )
+        with tc[1]:
+            st.markdown("&nbsp;")
+            st.button("Apply theme shades", key="pal_theme_apply", on_click=_apply_theme)
         st.caption("Colours for each role (used by the modes above):")
         pcols = st.columns(5)
         for col, (key, lbl) in zip(

@@ -143,3 +143,38 @@ def test_legacy_config_without_new_fields_loads_none():
     assert restored.resident_groups is None
     assert restored.perks is None
     assert restored.exempt_shifts is None
+
+
+def test_config_json_has_no_display_key_when_unused():
+    raw = json.loads(input_data_to_json(_sample_data()))
+    assert "display" not in raw
+
+
+def test_display_section_round_trips():
+    from model.config_io import display_from_json
+
+    display = {
+        "palette": {"points": "#4a90d9", "unfilled": "#123456"},
+        "extra_cols": ["Consultant"],
+        "extra_vals": {"Consultant": {"2023-01-01": "Dr X"}},
+        "col_order": ["Date", "Consultant"],
+    }
+    text = input_data_to_json(_sample_data(), display=display)
+    assert display_from_json(text) == display
+    # The solver config part still loads normally from a display-bearing file.
+    restored = input_data_from_json(text)
+    assert restored.juniors == ["A", "B"]
+
+
+def test_display_from_json_defensive():
+    from model.config_io import display_from_json
+
+    assert display_from_json(input_data_to_json(_sample_data())) is None  # absent
+    assert display_from_json("{not json") is None
+    assert display_from_json('{"display": "nope"}') is None
+    # Unknown palette roles and non-hex values are dropped.
+    text = input_data_to_json(
+        _sample_data(),
+        display={"palette": {"points": "#4a90d9", "bogus": "#111111", "senior": "red"}},
+    )
+    assert display_from_json(text) == {"palette": {"points": "#4a90d9"}}

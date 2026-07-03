@@ -61,14 +61,23 @@ backgrounds, so all three agree cell-for-cell). Modes:
 - **None** — no shading.
 
 The five role colours (weekend / points / senior / junior / unfilled) are editable
-with colour pickers, with a **Reset colours** button. Unfilled slots are always
-flagged regardless of the mode.
+with colour pickers, with a **Reset colours** button. Or pick one **Theme colour**
+and click **Apply theme shades** — the four role colours are derived from it
+automatically (hue-rotated so they stay distinct); *unfilled* keeps its warning
+red either way. Unfilled slots are always flagged regardless of the mode.
 
 **Custom columns.** Add extra columns to the final schedule for labelling that has
 nothing to do with the maths — on-call team, consultant on service, a notes column,
 whatever a given month needs. Add/remove them by name and fill a value per day; they
 ride along into the on-screen grid and every download but are ignored by the
-scheduler, fairness, and validation.
+scheduler, fairness, and validation. An **Auto-fill** helper populates a whole
+column from a pasted name list with a pattern — *repeat daily* (cycle the list),
+*weekly* (each name covers 7 days — consultant-of-the-week), or *same every day* —
+and you can still hand-edit cells afterwards.
+
+**Saved with the config.** The downloaded config JSON includes a `display` section
+(colours, custom columns and their values, column order), so loading a config also
+restores the look. Older config files without it load unchanged.
 
 **Column order & visibility.** Reorder columns (the selection order in the *Columns
 to show* control is the display order) and hide any you don't want — again, display
@@ -145,6 +154,16 @@ takes an optional `ledger` argument; `model/ledger.py` handles save/load
 (`ledger_to_json` / `ledger_from_json`) and accumulation (`update_ledger`). A large
 prior imbalance is corrected over several blocks rather than all at once.
 
+**No auto-compensation (default).** Real-world events shouldn't be "balanced
+away": by default the saved ledger records *fairness-countable* points — penalty
+extra points are **not** carried (a punishment is never refunded with a lighter
+later block), and load excused by uncompensated leave, rotator windows, perks, or
+group factors is credited so the resident is **not** made to catch it up later
+(e.g. after a perk expires). Adjusted entries carry a transparent `adjustments`
+audit note in the ledger JSON, and the download caption lists what was applied.
+Two checkboxes under **④ Save / carryover** restore pure cumulative balancing if
+you really want deviations repaid.
+
 **Where is it kept?** The app is stateless — nothing is stored server-side, which
 matters on Streamlit Community Cloud where the filesystem is wiped on every
 restart. The ledger is *your* file: download it after each block (named
@@ -153,6 +172,25 @@ on any host with zero setup and keeps resident data off third-party servers.
 Durable automatic persistence would require an external store (a database or cloud
 bucket) with credentials in `st.secrets`. Leaving the ledger empty produces a
 standalone, one-off schedule unrelated to history.
+
+## Seniority groups, perks & shift exemptions
+
+Load doesn't have to be equal:
+
+- **Seniority groups** (`group_factors` + `resident_groups`): define groups like
+  R1/R2/R3/R4 with a load percentage — every R2 at 90% fairly carries ~10% fewer
+  points than an R1, across total, weekend, and night-float targets.
+- **Perks** (`perks`): an individual load percentage for one resident, bounded to
+  a date window or applied forever. Perks stack multiplicatively with the group
+  factor, and only affect days inside the window.
+- **Shift exemptions** (`exempt_shifts`): a resident never assigned to specific
+  shift *types* (hard block). Like night-float eligibility, an exemption keeps
+  the resident's targets unchanged — they carry their share on the other shift
+  types; combine with a perk if their overall share should also drop.
+
+All three are annotated on the resident's fairness-log line (`[R2 ×0.90]`,
+`[perk ×0.80 →2026-08-01]`, `[exempt: NF]`) and the targets already embed the
+factors, so deviations stay honest. Configure them under **③ Advanced**.
 
 ## Per-resident caps
 
@@ -224,6 +262,13 @@ CI runs ruff, mypy, and pytest on Python 3.11/3.12 — plus a stub-only job with
 no pandas/OR-Tools installed to guard the graceful-degradation path.
 
 ## Changelog
+- Added seniority groups (R1/R2… load percentages), windowed per-resident perks,
+  and shift-type exemptions — all flowing through fairness targets and annotated
+  in the log; the ledger no longer auto-compensates penalties or excused
+  shortfalls by default (toggleable); custom columns gained pattern auto-fill
+  (daily / weekly / constant); one-click theme shades derive the palette from a
+  single colour; the config JSON now saves the display setup (colours, custom
+  columns, column order) and restores it on load.
 - Manual edits now persist: an Apply/Revert flow with eligibility-restricted
   dropdown cells; the edited schedule flows into fairness, the log, the ledger
   and all exports, with a banner and violation flags. (Previously edits were

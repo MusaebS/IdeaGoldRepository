@@ -32,6 +32,7 @@ class Keys:
     EXEMPT_SHIFTS = "exempt_shifts"
     LEDGER_NO_REFUND = "ledger_no_refund"
     LEDGER_NO_CATCHUP = "ledger_no_catchup"
+    DISPLAY_RESTORED = "display_restored_sig"
     DEMO_LOADED = "demo_loaded"
     RETRY_CONFIG = "retry_config"
 
@@ -73,6 +74,7 @@ def _defaults() -> dict:
         Keys.EXEMPT_SHIFTS: {},
         Keys.LEDGER_NO_REFUND: True,
         Keys.LEDGER_NO_CATCHUP: True,
+        Keys.DISPLAY_RESTORED: None,
         Keys.RESULT_DF: None,
         Keys.SOLVER_DF: None,
         Keys.RESULT_DATA: None,
@@ -174,3 +176,30 @@ def revert_manual_edits() -> None:
     st.session_state[Keys.MANUALLY_EDITED] = False
     bump_result_version()
     st.session_state.pop(Keys.SCHEDULE_EDITOR, None)
+
+
+def restore_display_state(display: dict, state=None) -> None:
+    """Apply a config file's cosmetic ``display`` section to the session.
+
+    Must run *before* the affected widgets render in the current pass (the
+    caller reruns immediately after). Widget keys are popped so pickers and
+    editors re-initialise from the restored values. ``state`` defaults to
+    ``st.session_state``; tests may pass a plain dict.
+    """
+    if state is None:
+        state = st.session_state
+    palette = display.get("palette")
+    if palette:
+        state[Keys.PALETTE] = {**DEFAULT_PALETTE, **palette}
+        for key in DEFAULT_PALETTE:
+            state.pop(f"{Keys.PAL_PREFIX}{key}", None)
+        state.pop("pal_theme", None)
+    if "extra_cols" in display or "extra_vals" in display:
+        state[Keys.EXTRA_COLS] = list(display.get("extra_cols", []))
+        state[Keys.EXTRA_VALS] = dict(display.get("extra_vals", {}))
+        state.pop("extra_cols_editor", None)
+    if "col_order" in display:
+        state[Keys.COL_ORDER] = list(display["col_order"])
+        # Mark restored columns as known so reconcile_column_order doesn't
+        # re-append (un-hide) columns the saved order deliberately omitted.
+        state[Keys.KNOWN_COLS] = list(display["col_order"])

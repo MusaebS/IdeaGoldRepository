@@ -15,7 +15,7 @@ from .data_models import (
     normalized_rotators,
 )
 
-__all__ = ["input_data_to_json", "input_data_from_json"]
+__all__ = ["input_data_to_json", "input_data_from_json", "display_from_json"]
 
 
 def _windows_to_json(windows) -> List[list]:
@@ -48,11 +48,14 @@ def _leaves_from_json(items) -> List[Leave]:
     return out
 
 
-def input_data_to_json(data: InputData) -> str:
+def input_data_to_json(data: InputData, display: dict | None = None) -> str:
     """Serialise an :class:`InputData` configuration to a JSON string.
 
     Solver-derived fields (the ``target_*`` values) are intentionally omitted;
-    only user-entered configuration is saved.
+    only user-entered configuration is saved. ``display`` (optional) is a
+    cosmetic section — palette colours, custom columns and their values,
+    column order — stored under a ``"display"`` key so a saved config restores
+    the look as well as the maths. Loaders that predate it ignore the key.
     """
     payload = {
         "start_date": data.start_date.isoformat(),
@@ -108,7 +111,50 @@ def input_data_to_json(data: InputData) -> str:
             else None
         ),
     }
+    if display:
+        payload["display"] = display
     return json.dumps(payload, indent=2)
+
+
+def display_from_json(text: str) -> dict | None:
+    """Extract and sanitise the cosmetic ``"display"`` section of a config.
+
+    Returns ``None`` for configs without one (or anything malformed) — the
+    caller simply skips the display restore in that case.
+    """
+    from .coloring import DEFAULT_PALETTE  # local: keeps module deps minimal
+
+    try:
+        raw = json.loads(text)
+    except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+        return None
+    display = raw.get("display") if isinstance(raw, dict) else None
+    if not isinstance(display, dict):
+        return None
+    out: dict = {}
+    palette = display.get("palette")
+    if isinstance(palette, dict):
+        cleaned = {
+            str(k): str(v)
+            for k, v in palette.items()
+            if k in DEFAULT_PALETTE and isinstance(v, str) and v.startswith("#")
+        }
+        if cleaned:
+            out["palette"] = cleaned
+    cols = display.get("extra_cols")
+    if isinstance(cols, list):
+        out["extra_cols"] = [str(c) for c in cols]
+    vals = display.get("extra_vals")
+    if isinstance(vals, dict):
+        out["extra_vals"] = {
+            str(col): {str(d): str(v) for d, v in per_day.items()}
+            for col, per_day in vals.items()
+            if isinstance(per_day, dict)
+        }
+    order = display.get("col_order")
+    if isinstance(order, list):
+        out["col_order"] = [str(c) for c in order]
+    return out or None
 
 
 def input_data_from_json(text: str) -> InputData:

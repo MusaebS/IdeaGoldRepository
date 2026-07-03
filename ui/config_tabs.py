@@ -1,13 +1,14 @@
 """Configuration tabs (①-④) and the Generate/solve flow."""
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import replace
 from datetime import date, timedelta
 
 import streamlit as st
 
-from model.config_io import input_data_to_json, input_data_from_json
+from model.config_io import display_from_json, input_data_to_json, input_data_from_json
 from model.data_models import InputData
 from model.demo_data import sample_shifts, sample_names
 from model.ledger import ledger_from_json
@@ -27,7 +28,7 @@ from ui.editors import (
     shift_template_editor,
     weekday_points_editor,
 )
-from ui.state import Keys, set_result
+from ui.state import Keys, restore_display_state, set_result
 
 
 def load_demo_data_once() -> None:
@@ -210,13 +211,36 @@ def render_config_tabs() -> tuple:
 
     with tab_save:
         st.subheader("Save / load configuration")
+        display_state = {
+            "palette": dict(st.session_state[Keys.PALETTE]),
+            "extra_cols": list(st.session_state[Keys.EXTRA_COLS]),
+            "extra_vals": {
+                col: dict(vals) for col, vals in st.session_state[Keys.EXTRA_VALS].items()
+            },
+            "col_order": list(st.session_state[Keys.COL_ORDER]),
+        }
         st.download_button(
             "Download config (JSON)",
-            input_data_to_json(session_config),
+            input_data_to_json(session_config, display=display_state),
             file_name="idea_gold_config.json",
             mime="application/json",
         )
+        st.caption("Includes the display setup: colours, custom columns, column order.")
         uploaded_config = st.file_uploader("Load config (JSON), then click Generate", type="json")
+        if uploaded_config is not None:
+            # Restore the display section once per uploaded file (the uploader
+            # returns the same file on every rerun; the signature guard stops
+            # it clobbering later manual colour/column changes).
+            sig = hashlib.md5(uploaded_config.getvalue()).hexdigest()
+            if st.session_state.get(Keys.DISPLAY_RESTORED) != sig:
+                st.session_state[Keys.DISPLAY_RESTORED] = sig  # set first: a bad file never loops
+                try:
+                    display = display_from_json(uploaded_config.getvalue().decode("utf-8"))
+                except Exception:
+                    display = None
+                if display:
+                    restore_display_state(display)
+                    st.rerun()
         st.divider()
         st.subheader("Carryover fairness (optional)")
         st.caption(

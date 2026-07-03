@@ -236,3 +236,53 @@ def test_fill_column_button_populates_extra_vals():
     assert not at.exception
     vals = at.session_state["extra_vals"]["Consultant"]
     assert vals == {"2023-01-02": "Dr X", "2023-01-03": "Dr Y"}  # daily cycle
+
+
+# --- theme shades + display persistence ---------------------------------------
+
+def test_apply_theme_shades_recolours_palette():
+    from model.coloring import theme_palette, DEFAULT_PALETTE
+
+    df, data = _result_fixture()
+    at = _at()
+    at.run()
+    _seed_result(at, df, data)
+    at.run()
+    theme_btn = [b for b in at.button if b.key == "pal_theme_apply"]
+    assert theme_btn, "Apply theme shades button not rendered"
+    theme_btn[0].click()
+    at.run()
+    assert not at.exception
+    expected = theme_palette(DEFAULT_PALETTE["points"], current=DEFAULT_PALETTE)
+    assert at.session_state["palette"] == expected
+
+
+def test_restore_display_state_applies_and_pops_widget_keys():
+    from model.coloring import DEFAULT_PALETTE
+    from ui.state import restore_display_state
+
+    state = {
+        "palette": dict(DEFAULT_PALETTE),
+        "pal_points": "#000000",       # stale widget state
+        "pal_theme": "#000000",
+        "extra_cols": ["Old"],
+        "extra_vals": {"Old": {}},
+        "extra_cols_editor": {"deltas": 1},
+        "col_order": ["Date"],
+        "known_cols": ["Date"],
+    }
+    display = {
+        "palette": {"points": "#4a90d9"},
+        "extra_cols": ["Consultant"],
+        "extra_vals": {"Consultant": {"2023-01-01": "Dr X"}},
+        "col_order": ["Date", "Consultant"],
+    }
+    restore_display_state(display, state=state)
+    assert state["palette"]["points"] == "#4a90d9"
+    assert state["palette"]["unfilled"] == DEFAULT_PALETTE["unfilled"]  # merged
+    assert "pal_points" not in state and "pal_theme" not in state
+    assert state["extra_cols"] == ["Consultant"]
+    assert state["extra_vals"] == {"Consultant": {"2023-01-01": "Dr X"}}
+    assert "extra_cols_editor" not in state
+    assert state["col_order"] == ["Date", "Consultant"]
+    assert state["known_cols"] == ["Date", "Consultant"]  # hides stay hidden

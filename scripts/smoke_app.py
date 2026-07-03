@@ -113,6 +113,15 @@ def _run_checks() -> list[str]:
             check(True, "colour-mode selector shown")
         except Exception:
             check(False, "colour-mode selector shown")
+        # One-click theming: apply shades from the theme colour, grid survives.
+        try:
+            page.get_by_role("button", name="Apply theme shades").click()
+            page.wait_for_timeout(2500)
+            check(page.locator('[data-testid="stDataFrame"], [data-testid="stDataFrameResizable"]').count() > 0
+                  and page.locator('[data-testid="stException"]').count() == 0,
+                  "theme shades apply without breaking the grid")
+        except Exception:
+            check(False, "theme shades apply without breaking the grid")
         # Add a cosmetic custom column and confirm it lands on the schedule.
         try:
             page.locator('[data-testid="stTextInput"]').filter(
