@@ -206,3 +206,16 @@ def test_shift_cell_options_exclude_exempt():
     options = _shift_cell_options(data, shift)
     assert "Alice" not in options
     assert options == ["Bob", "Unfilled"]
+
+
+def test_ledger_policy_toggles_default_on():
+    at = _at()
+    at.run()
+    boxes = {c.label: c for c in at.checkbox}
+    refund = next(v for k, v in boxes.items() if "Penalties don't earn" in k)
+    catchup = next(v for k, v in boxes.items() if "Excused shortfalls" in k)
+    assert refund.value is True and catchup.value is True
+    refund.set_value(False)
+    at.run()
+    assert at.session_state["ledger_no_refund"] is False
+    assert at.session_state["ledger_no_catchup"] is True

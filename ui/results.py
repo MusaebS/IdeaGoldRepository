@@ -13,7 +13,7 @@ from model.fairness import (
     format_fairness_log,
     schedule_quality,
 )
-from model.ledger import ledger_to_json, update_ledger
+from model.ledger import LedgerPolicy, block_adjustments, ledger_to_json, update_ledger
 from model.validation import validate_schedule
 
 from ui.editors import custom_columns_editor
@@ -153,6 +153,19 @@ def _render_customisation(df) -> tuple:
     return COLOR_MODES[color_label], st.session_state[Keys.PALETTE]
 
 
+def _ledger_policy_notes(policy, prior_ledger, data) -> list:
+    """Human-readable summary of the adjustments baked into the saved ledger."""
+    if not (policy.no_refund_penalties or policy.no_catchup_excused):
+        return []
+    notes = []
+    for person, adj in sorted(block_adjustments(prior_ledger, data).items()):
+        if policy.no_refund_penalties and adj["penalty"]:
+            notes.append(f"{person} +{adj['penalty']:g} penalty not carried")
+        if policy.no_catchup_excused and abs(adj["excused_total"]) > 1e-9:
+            notes.append(f"{person} {adj['excused_total']:+.1f} pts excused credit")
+    return notes
+
+
 def _render_downloads(final_df, df, data, points, color_mode, palette, prior_ledger) -> None:
     st.subheader("Downloads")
     log_text = format_fairness_log(df, data, points=points)
@@ -217,9 +230,13 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
         file_name="fairness_log.txt",
         use_container_width=True,
     )
+    policy = LedgerPolicy(
+        no_refund_penalties=st.session_state.get(Keys.LEDGER_NO_REFUND, True),
+        no_catchup_excused=st.session_state.get(Keys.LEDGER_NO_CATCHUP, True),
+    )
     dcols2[1].download_button(
         "Download updated ledger (for next block)",
-        ledger_to_json(update_ledger(prior_ledger, df, data)),
+        ledger_to_json(update_ledger(prior_ledger, df, data, policy=policy)),
         file_name=f"fairness_ledger_through_{data.end_date.isoformat()}.json",
         mime="application/json",
         use_container_width=True,
@@ -229,6 +246,9 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
         "doesn't store anything between sessions, so re-upload it under "
         "'Carryover fairness' next block to keep months fair."
     )
+    notes = _ledger_policy_notes(policy, prior_ledger, data)
+    if notes:
+        st.caption("Ledger policy applied: " + "; ".join(notes) + ".")
     if st.checkbox("Show Fairness Log"):
         st.text(log_text)
 

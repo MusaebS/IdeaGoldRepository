@@ -30,6 +30,8 @@ class Keys:
     RESIDENT_GROUPS = "resident_groups"
     PERKS = "perks"
     EXEMPT_SHIFTS = "exempt_shifts"
+    LEDGER_NO_REFUND = "ledger_no_refund"
+    LEDGER_NO_CATCHUP = "ledger_no_catchup"
     DEMO_LOADED = "demo_loaded"
     RETRY_CONFIG = "retry_config"
 
@@ -69,6 +71,8 @@ def _defaults() -> dict:
         Keys.RESIDENT_GROUPS: {},
         Keys.PERKS: [],
         Keys.EXEMPT_SHIFTS: {},
+        Keys.LEDGER_NO_REFUND: True,
+        Keys.LEDGER_NO_CATCHUP: True,
         Keys.RESULT_DF: None,
         Keys.SOLVER_DF: None,
         Keys.RESULT_DATA: None,

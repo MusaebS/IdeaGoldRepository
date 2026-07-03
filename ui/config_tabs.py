@@ -229,6 +229,21 @@ def render_config_tabs() -> tuple:
         uploaded_ledger = st.file_uploader(
             "Load fairness ledger (JSON)", type="json", key="ledger_upload"
         )
+        st.checkbox(
+            "Penalties don't earn future relief (recommended)",
+            key=Keys.LEDGER_NO_REFUND,
+            help="Extra points imposed as a penalty are debited from the saved "
+            "ledger, so cumulative balancing never refunds a punishment with a "
+            "lighter later block.",
+        )
+        st.checkbox(
+            "Excused shortfalls aren't repaid later (recommended)",
+            key=Keys.LEDGER_NO_CATCHUP,
+            help="Load excused by uncompensated leave, rotator windows, perks, "
+            "or group load factors is credited in the saved ledger, so the "
+            "resident is not made to catch it up in later blocks (e.g. after a "
+            "perk expires).",
+        )
 
     carryover_ledger = None
     if uploaded_ledger is not None:
