@@ -19,7 +19,13 @@ from __future__ import annotations
 from datetime import date
 from typing import Dict
 
-from .data_models import InputData, normalized_leaves, normalized_perks, normalized_rotators
+from .data_models import (
+    InputData,
+    blackout_person_windows,
+    normalized_leaves,
+    normalized_perks,
+    normalized_rotators,
+)
 from .points import block_days
 
 __all__ = ["person_factor", "availability_weights", "reference_weights"]
@@ -58,6 +64,13 @@ def availability_weights(data: InputData) -> Dict[str, float]:
     for name, start, end, compensated in normalized_leaves(data.leaves):
         if not compensated:
             uncomp_windows.setdefault(name, []).append((start, end))
+    # Only *uncompensated* blackout windows reduce the share; compensated
+    # blackouts (the default) keep the full weight, so the missed load is made
+    # up in-block or carried in the ledger as repayable debt — never excused.
+    for name, windows in blackout_person_windows(data.blackouts, data.named_groups).items():
+        for start, end, compensated in windows:
+            if not compensated:
+                uncomp_windows.setdefault(name, []).append((start, end))
 
     days = block_days(data)
 

@@ -9,7 +9,7 @@ from datetime import date, timedelta
 import streamlit as st
 
 from model.config_io import display_from_json, input_data_to_json, input_data_from_json
-from model.data_models import InputData
+from model.data_models import InputData, normalized_blackouts
 from model.demo_data import sample_shifts, sample_names
 from model.ledger import ledger_from_json
 from model.optimiser import build_schedule
@@ -17,6 +17,7 @@ from model.validation import validate_input, config_warnings
 
 from ui.editors import (
     WEEKDAY_LABELS,
+    blackouts_editor,
     caps_editor,
     date_range_editor,
     exemptions_editor,
@@ -91,6 +92,15 @@ def _active_config_maps() -> dict:
         g: [m for m in members if m in active_people]
         for g, members in st.session_state[Keys.NAMED_GROUPS].items()
     }
+    blackouts = []
+    for b in normalized_blackouts(st.session_state[Keys.BLACKOUTS]):
+        if b.group is not None:
+            if b.group in named_groups:
+                blackouts.append(b)
+        else:
+            members = tuple(m for m in b.members if m in active_people)
+            if members:
+                blackouts.append(b._replace(members=members))
     return {
         "max_total": max_total or None,
         "max_nights": max_nights or None,
@@ -102,6 +112,7 @@ def _active_config_maps() -> dict:
         "perks": perks or None,
         "exempt_shifts": exempt_shifts or None,
         "named_groups": named_groups or None,
+        "blackouts": blackouts or None,
     }
 
 
@@ -175,8 +186,10 @@ def render_config_tabs() -> tuple:
             default_start=start_date, default_end=end_date,
         )
         st.divider()
-        st.subheader("Groups")
+        st.subheader("Groups & blackouts")
         named_groups_editor(people)
+        st.divider()
+        blackouts_editor(people, default_start=start_date, default_end=end_date)
 
     with tab_adv:
         st.subheader("Per-resident caps & extra points")

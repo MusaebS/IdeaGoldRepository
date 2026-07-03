@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import List, NamedTuple, Sequence, Tuple, Dict
 
 
@@ -67,6 +67,53 @@ def normalized_rotators(rotators):
         yield RotatorWindow(entry[0], entry[1], entry[2])
 
 
+class Blackout(NamedTuple):
+    """A no-call window for a named group (or an ad-hoc set) of residents.
+
+    Everyone covered is blocked for the window and — when ``day_before`` is
+    set — the day before it, so nobody enters the period post-call. Unlike a
+    leave it is entered per group and reported separately. ``compensated``
+    keeps each member's full fair share (the default): missed load is made up
+    on other days, or carried in the fairness ledger as repayable debt.
+    Uncompensated scales the share down like uncompensated leave.
+    """
+
+    group: str | None          # named-group reference, resolved at use time
+    members: Tuple[str, ...]   # ad-hoc names, used when group is None
+    start: date
+    end: date
+    day_before: bool = True
+    compensated: bool = True
+
+
+def normalized_blackouts(blackouts):
+    """Yield a :class:`Blackout` for each entry (typed or 4/5/6-tuple)."""
+    for entry in blackouts or []:
+        group = entry[0]
+        members = tuple(entry[1] or ())
+        start, end = entry[2], entry[3]
+        day_before = bool(entry[4]) if len(entry) > 4 else True
+        compensated = bool(entry[5]) if len(entry) > 5 else True
+        yield Blackout(group, members, start, end, day_before, compensated)
+
+
+def blackout_person_windows(blackouts, named_groups):
+    """Per-person effective blackout windows: ``{name: [(start, end, compensated)]}``.
+
+    Group references resolve to the *current* members, so editing a group
+    updates every blackout that uses it. ``day_before`` is already folded in
+    (the effective window starts one day earlier).
+    """
+    groups = named_groups or {}
+    out: Dict[str, List[Tuple[date, date, bool]]] = {}
+    for b in normalized_blackouts(blackouts):
+        people = groups.get(b.group, ()) if b.group is not None else b.members
+        eff_start = b.start - timedelta(days=1) if b.day_before else b.start
+        for person in people:
+            out.setdefault(person, []).append((eff_start, b.end, b.compensated))
+    return out
+
+
 @dataclass
 class ShiftTemplate:
     label: str
@@ -131,6 +178,9 @@ class InputData:
     # load factor — that is what group_factors/resident_groups are for. A
     # resident may belong to several groups.
     named_groups: Dict[str, List[str]] | None = None
+    # Group blackouts (see Blackout): whole groups off call for a window and,
+    # by default, the day before it. Compensated by default — not an excusal.
+    blackouts: Sequence[Blackout | Tuple] | None = None
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None
     target_weekend: Dict[str, float] | None = None

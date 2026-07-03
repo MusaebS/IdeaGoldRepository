@@ -304,3 +304,36 @@ def test_named_groups_editor_stores_to_session():
     at.run()
     assert at.session_state["named_groups"] == {"Team A": ["Alice", "Bob"]}
     assert not at.exception
+
+
+def test_blackouts_editor_stores_to_session():
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob"]
+    at.session_state["named_groups"] = {"Team A": ["Alice", "Bob"]}
+    at.run()
+    add = [b for b in at.button if b.key == "bo_add"]
+    add[0].click()
+    at.run()
+    blackouts = at.session_state["blackouts"]
+    assert len(blackouts) == 1
+    assert blackouts[0].group == "Team A"
+    assert blackouts[0].day_before is True and blackouts[0].compensated is True
+    assert not at.exception
+
+
+def test_blackouts_editor_adhoc_names():
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob"]
+    at.run()
+    at.selectbox(key="bo_who").set_value("(ad-hoc names…)")
+    at.run()
+    at.multiselect(key="bo_adhoc").set_value(["Bob"])
+    add = [b for b in at.button if b.key == "bo_add"]
+    add[0].click()
+    at.run()
+    blackouts = at.session_state["blackouts"]
+    assert len(blackouts) == 1
+    assert blackouts[0].group is None and blackouts[0].members == ("Bob",)
+    assert not at.exception

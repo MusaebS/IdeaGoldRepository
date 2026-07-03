@@ -131,7 +131,12 @@ except ImportError:  # pragma: no cover - simple fallback if ortools missing
         },
     )
 
-from .data_models import InputData, normalized_leaves, normalized_rotators
+from .data_models import (
+    InputData,
+    blackout_person_windows,
+    normalized_leaves,
+    normalized_rotators,
+)
 from .nf_blocks import respects_nf_blocks
 from .points import POINT_SCALE, SlotPoints, block_days, classify_slot, scaled, slot_points
 from .utils import weekend_holiday_dates
@@ -332,10 +337,11 @@ class SchedulerSolver:
     def _blocked_day_indices(self) -> Dict[int, set]:
         """Person index -> day indices that person cannot work.
 
-        A day is blocked by any leave covering it, or — for a rotator — by
-        falling outside all of that resident's active windows. Precomputed once
-        so the constraint loop does an O(1) membership check instead of
-        re-scanning every leave per (day, shift, person) triple.
+        A day is blocked by any leave or group-blackout window covering it, or
+        — for a rotator — by falling outside all of that resident's active
+        windows. Precomputed once so the constraint loop does an O(1)
+        membership check instead of re-scanning every leave per (day, shift,
+        person) triple.
         """
         rotator_windows: Dict[str, list] = {}
         for res, start, end in normalized_rotators(self.data.rotators):
@@ -343,6 +349,13 @@ class SchedulerSolver:
         leave_windows: Dict[str, list] = {}
         for res, start, end, _comp in normalized_leaves(self.data.leaves):
             leave_windows.setdefault(res, []).append((start, end))
+        # Blackouts block like leaves regardless of the compensated flag (that
+        # flag only affects the fairness share, in model.weights).
+        for res, windows in blackout_person_windows(
+            self.data.blackouts, self.data.named_groups
+        ).items():
+            for start, end, _comp in windows:
+                leave_windows.setdefault(res, []).append((start, end))
 
         blocked: Dict[int, set] = {}
         for p_idx, person in enumerate(self.people[:-1]):  # exclude Unfilled
@@ -353,7 +366,7 @@ class SchedulerSolver:
                 if windows and not any(s <= day <= e for s, e in windows):
                     days_blocked.add(d_idx)  # outside rotator active window
                 elif any(s <= day <= e for s, e in leaves):
-                    days_blocked.add(d_idx)  # on leave (compensated or not)
+                    days_blocked.add(d_idx)  # on leave or blacked out
             if days_blocked:
                 blocked[p_idx] = days_blocked
         return blocked

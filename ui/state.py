@@ -31,6 +31,7 @@ class Keys:
     PERKS = "perks"
     EXEMPT_SHIFTS = "exempt_shifts"
     NAMED_GROUPS = "named_groups"
+    BLACKOUTS = "blackouts"
     LEDGER_NO_REFUND = "ledger_no_refund"
     LEDGER_NO_CATCHUP = "ledger_no_catchup"
     DISPLAY_RESTORED = "display_restored_sig"
@@ -74,6 +75,7 @@ def _defaults() -> dict:
         Keys.PERKS: [],
         Keys.EXEMPT_SHIFTS: {},
         Keys.NAMED_GROUPS: {},
+        Keys.BLACKOUTS: [],
         Keys.LEDGER_NO_REFUND: True,
         Keys.LEDGER_NO_CATCHUP: True,
         Keys.DISPLAY_RESTORED: None,

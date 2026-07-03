@@ -5,11 +5,13 @@ from datetime import date
 from typing import List
 
 from .data_models import (
+    Blackout,
     Leave,
     Perk,
     RotatorWindow,
     ShiftTemplate,
     InputData,
+    normalized_blackouts,
     normalized_leaves,
     normalized_perks,
     normalized_rotators,
@@ -113,6 +115,15 @@ def input_data_to_json(data: InputData, display: dict | None = None) -> str:
         "named_groups": (
             {group: list(members) for group, members in data.named_groups.items()}
             if data.named_groups
+            else None
+        ),
+        "blackouts": (
+            [
+                [b.group, list(b.members), b.start.isoformat(), b.end.isoformat(),
+                 b.day_before, b.compensated]
+                for b in normalized_blackouts(data.blackouts)
+            ]
+            if data.blackouts
             else None
         ),
     }
@@ -253,6 +264,21 @@ def input_data_from_json(text: str) -> InputData:
         named_groups=(
             {str(g): [str(m) for m in v] for g, v in raw["named_groups"].items()}
             if raw.get("named_groups")
+            else None
+        ),
+        blackouts=(
+            [
+                Blackout(
+                    None if entry[0] is None else str(entry[0]),
+                    tuple(str(m) for m in entry[1] or ()),
+                    date.fromisoformat(entry[2]),
+                    date.fromisoformat(entry[3]),
+                    bool(entry[4]) if len(entry) > 4 else True,
+                    bool(entry[5]) if len(entry) > 5 else True,
+                )
+                for entry in raw["blackouts"]
+            ]
+            if raw.get("blackouts")
             else None
         ),
     )

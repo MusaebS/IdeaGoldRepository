@@ -7,7 +7,13 @@ try:
 except ImportError:  # pragma: no cover - fallback when pandas missing
     from .pandas_stub import pd
 
-from .data_models import ShiftTemplate, InputData, normalized_leaves, normalized_perks
+from .data_models import (
+    ShiftTemplate,
+    InputData,
+    normalized_blackouts,
+    normalized_leaves,
+    normalized_perks,
+)
 from .points import classify_slot
 from .utils import effective_points, is_weekend, weekend_holiday_dates
 
@@ -125,6 +131,20 @@ def load_annotation_notes(person: str, data: InputData) -> List[str]:
     labels = (data.exempt_shifts or {}).get(person)
     if labels:
         notes.append(f"[exempt: {', '.join(sorted(labels))}]")
+    for b in normalized_blackouts(data.blackouts):
+        covered = (
+            (data.named_groups or {}).get(b.group, ())
+            if b.group is not None
+            else b.members
+        )
+        if person not in covered:
+            continue
+        note = f"[blackout {b.group or 'ad-hoc'} {b.start.isoformat()}→{b.end.isoformat()}"
+        if b.day_before:
+            note += " +day-before"
+        if not b.compensated:
+            note += " uncomp"
+        notes.append(note + "]")
     # Leave summary, clipped to the block (a window outside it has no effect).
     comp_days = uncomp_days = 0
     for name, start, end, compensated in normalized_leaves(data.leaves):

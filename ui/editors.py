@@ -11,11 +11,14 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from model.data_models import Perk, ShiftTemplate
+from model.data_models import Blackout, Perk, ShiftTemplate, normalized_blackouts
 from ui.patterns import FILL_MODES, expand_pattern, parse_fill_names
 from ui.state import Keys
 
 WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+# Sentinel entry in group selectors that reveals an ad-hoc name multiselect.
+ADHOC_CHOICE = "(ad-hoc names…)"
 
 
 def _remove_control(options, label: str, key: str, format_func=str) -> object | None:
@@ -314,6 +317,85 @@ def named_groups_editor(people: list) -> None:
             if removed_member is not None:
                 group, member = member_opts[removed_member]
                 groups[group].remove(member)
+
+
+def _group_or_adhoc_selector(people: list, key_prefix: str) -> tuple:
+    """Group selectbox with an ad-hoc-names escape hatch.
+
+    Returns ``(group_name_or_None, members_tuple)`` — a named-group choice
+    yields ``(name, ())`` (membership resolves at use time, so editing the
+    group later updates the entry), the ad-hoc choice ``(None, names)``.
+    """
+    groups = st.session_state[Keys.NAMED_GROUPS]
+    options = list(groups.keys()) + [ADHOC_CHOICE]
+    who = st.selectbox("Group", options, key=f"{key_prefix}_who")
+    members: tuple = ()
+    if who == ADHOC_CHOICE:
+        members = tuple(st.multiselect("Residents", people, key=f"{key_prefix}_adhoc"))
+        return None, members
+    return who, members
+
+
+def blackouts_editor(
+    people: list,
+    default_start: date | None = None,
+    default_end: date | None = None,
+) -> None:
+    """Group blackout periods: nobody covered is on call during the window."""
+    st.markdown("**Blackouts — a whole group is off call for a period**")
+    st.caption(
+        "Everyone covered is blocked for the window and (by default) the day "
+        "before it. Not a leave: with Compensated on, each member keeps their "
+        "full fair share — missed load is made up on other days, or carried in "
+        "the fairness ledger as debt to repay next block."
+    )
+    if not people:
+        st.caption("Add participants first to configure blackouts.")
+        return
+    c = st.columns([3, 2, 2, 2, 2, 1])
+    with c[0]:
+        group, members = _group_or_adhoc_selector(people, "bo")
+    with c[1]:
+        start = st.date_input("Start", default_start or date.today(), key="bo_start")
+    with c[2]:
+        end = st.date_input("End", default_end or default_start or date.today(), key="bo_end")
+    with c[3]:
+        day_before = st.checkbox("Block day before", value=True, key="bo_daybefore")
+    with c[4]:
+        compensated = st.checkbox("Compensated", value=True, key="bo_comp")
+    with c[-1]:
+        if _add_button("bo_add"):
+            if group is None and not members:
+                st.warning("Pick a group or at least one resident.")
+            else:
+                st.session_state[Keys.BLACKOUTS].append(
+                    Blackout(group, members, start, end, day_before, compensated)
+                )
+    entries = list(normalized_blackouts(st.session_state[Keys.BLACKOUTS]))
+    if entries:
+        groups = st.session_state[Keys.NAMED_GROUPS]
+        table_rows = []
+        for b in entries:
+            covered = groups.get(b.group, []) if b.group is not None else list(b.members)
+            table_rows.append({
+                "Group": b.group or "(ad-hoc)",
+                "Members": ", ".join(covered) or "—",
+                "Start": b.start,
+                "End": b.end,
+                "Day before": b.day_before,
+                "Compensated": b.compensated,
+            })
+        st.table(pd.DataFrame(table_rows))
+        removed = _remove_control(
+            list(range(len(entries))),
+            "Remove blackout",
+            "bo_rm",
+            format_func=lambda i: (
+                f"{entries[i].group or 'ad-hoc'}: {entries[i].start} → {entries[i].end}"
+            ),
+        )
+        if removed is not None:
+            st.session_state[Keys.BLACKOUTS].pop(removed)
 
 
 def perks_editor(

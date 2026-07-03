@@ -8,7 +8,13 @@ try:
 except ImportError:  # pragma: no cover - fallback when pandas missing
     from .pandas_stub import pd
 
-from .data_models import InputData, normalized_leaves, normalized_perks
+from .data_models import (
+    InputData,
+    blackout_person_windows,
+    normalized_blackouts,
+    normalized_leaves,
+    normalized_perks,
+)
 from .nf_blocks import respects_nf_blocks
 from .optimiser import respects_min_gap
 
@@ -70,7 +76,113 @@ def config_warnings(data: InputData) -> List[str]:
 
     warnings.extend(_leave_rotator_warnings(data))
     warnings.extend(_exemption_perk_warnings(data))
+    warnings.extend(_blackout_warnings(data))
     return warnings
+
+
+def _unavailable_person_days(data: InputData) -> dict:
+    """Person -> set of block days they cannot work (leave/rotator/blackout).
+
+    The advisory-side mirror of the solver's ``_blocked_day_indices``, kept in
+    dates rather than indices so warnings can name the days.
+    """
+    from .points import block_days
+
+    rotator_windows: dict = {}
+    for name, ws, we in data.rotators:
+        rotator_windows.setdefault(name, []).append((ws, we))
+    blocked_windows: dict = {}
+    for name, ws, we, _c in normalized_leaves(data.leaves):
+        blocked_windows.setdefault(name, []).append((ws, we))
+    for name, windows in blackout_person_windows(data.blackouts, data.named_groups).items():
+        for ws, we, _c in windows:
+            blocked_windows.setdefault(name, []).append((ws, we))
+
+    days = block_days(data) if data.end_date >= data.start_date else []
+    out: dict = {}
+    for person in list(data.juniors) + list(data.seniors):
+        rwins = rotator_windows.get(person)
+        bwins = blocked_windows.get(person, [])
+        unavailable = {
+            d
+            for d in days
+            if (rwins and not any(ws <= d <= we for ws, we in rwins))
+            or any(ws <= d <= we for ws, we in bwins)
+        }
+        if unavailable:
+            out[person] = unavailable
+    return out
+
+
+def _blackout_warnings(data: InputData) -> List[str]:
+    """Advisories for group blackouts that are likely mistakes or coverage risks."""
+    out: List[str] = []
+    if not data.blackouts:
+        return out
+    named_groups = data.named_groups or {}
+    start, end = data.start_date, data.end_date
+
+    for b in normalized_blackouts(data.blackouts):
+        who = f"group '{b.group}'" if b.group is not None else "ad-hoc blackout"
+        if b.group is not None and not named_groups.get(b.group):
+            out.append(
+                f"Blackout {b.start}–{b.end} references empty group '{b.group}' "
+                "and has no effect."
+            )
+        eff_start = b.start - timedelta(days=1) if b.day_before else b.start
+        if b.end < start or eff_start > end:
+            out.append(
+                f"Blackout window {b.start}–{b.end} for {who} is outside the "
+                f"schedule dates ({start}–{end}) and has no effect."
+            )
+
+    unavailable = _unavailable_person_days(data)
+
+    # Coverage risk: a day where blackouts (plus leaves/rotator windows) leave
+    # fewer available residents of a role than that role has shifts.
+    from .points import block_days
+
+    days = block_days(data) if end >= start else []
+    role_shifts = {"Junior": 0, "Senior": 0}
+    for shift in data.shifts:
+        role_shifts[shift.role] = role_shifts.get(shift.role, 0) + 1
+    for role, people in (("Junior", data.juniors), ("Senior", data.seniors)):
+        n_shifts = role_shifts.get(role, 0)
+        if not n_shifts:
+            continue
+        short_days = [
+            d
+            for d in days
+            if sum(1 for p in people if d not in unavailable.get(p, ())) < n_shifts
+        ]
+        if short_days:
+            shown = ", ".join(str(d) for d in short_days[:5])
+            more = f" (+{len(short_days) - 5} more)" if len(short_days) > 5 else ""
+            out.append(
+                f"Blackouts/leaves leave fewer available {role.lower()}s than "
+                f"{role} shifts on {shown}{more}; expect unfilled slots."
+            )
+
+    # Whole-block compensated blackout: full share kept but no days to earn it.
+    comp_windows: dict = {}
+    for name, windows in blackout_person_windows(data.blackouts, data.named_groups).items():
+        for ws, we, comp in windows:
+            if comp:
+                comp_windows.setdefault(name, []).append((ws, we))
+    for name, windows in comp_windows.items():
+        if days and all(any(ws <= d <= we for ws, we in windows) for d in days):
+            out.append(
+                f"'{name}' is in a compensated blackout for the whole block; "
+                "their full fair share is kept but cannot be earned, so expect "
+                "a large fairness deviation."
+            )
+            if (data.extra_points or {}).get(name, 0.0) > 0:
+                out.append(
+                    f"'{name}' has mandatory extra points but is blacked out for "
+                    "the whole block; the penalty cannot fit and the schedule "
+                    "will be infeasible."
+                )
+    return out
 
 
 def _exemption_perk_warnings(data: InputData) -> List[str]:
@@ -348,6 +460,26 @@ def validate_input(data: InputData) -> List[str]:
                     f"Group '{group}' lists unknown resident '{member}'."
                 )
 
+    named_groups = data.named_groups or {}
+    for b in normalized_blackouts(data.blackouts):
+        if b.group is not None and b.group not in named_groups:
+            issues.append(f"Blackout references undefined group '{b.group}'.")
+        if b.group is None:
+            if not b.members:
+                issues.append(
+                    f"Blackout {b.start}–{b.end} has no group and no members."
+                )
+            for member in b.members:
+                if member not in roster:
+                    issues.append(
+                        f"Blackout references unknown resident '{member}'."
+                    )
+        if b.end < b.start:
+            who = f"group '{b.group}'" if b.group is not None else "ad-hoc members"
+            issues.append(
+                f"Blackout window for {who} ends ({b.end}) before it starts ({b.start})."
+            )
+
     return issues
 
 
@@ -368,6 +500,7 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
     rotator_windows: dict = {}
     for name, start, end in data.rotators:
         rotator_windows.setdefault(name, []).append((start, end))
+    blackout_windows = blackout_person_windows(data.blackouts, data.named_groups)
 
     for row in df.to_dict("records"):
         day = row.get("Date")
@@ -399,6 +532,13 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
                 if nm == person and ls <= day <= le:
                     issues.append(
                         f"{day}: {person} on '{shift.label}' is on leave ({ls} to {le})"
+                    )
+
+            for bs, be, _comp in blackout_windows.get(person, ()):
+                if bs <= day <= be:
+                    issues.append(
+                        f"{day}: {person} on '{shift.label}' is in a group "
+                        f"blackout ({bs} to {be})"
                     )
 
             windows = rotator_windows.get(person)

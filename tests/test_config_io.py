@@ -181,3 +181,18 @@ def test_display_from_json_defensive():
         display={"palette": {"points": "#4a90d9", "bogus": "#111111", "senior": "red"}},
     )
     assert display_from_json(text) == {"palette": {"points": "#4a90d9"}}
+
+
+def test_blackouts_round_trip_and_legacy_none():
+    from model.data_models import Blackout
+
+    data = _sample_data()
+    data.named_groups = {"Team A": ["A", "B"]}
+    data.blackouts = [
+        Blackout("Team A", (), date(2023, 1, 10), date(2023, 1, 12)),
+        Blackout(None, ("C",), date(2023, 1, 20), date(2023, 1, 20), False, False),
+    ]
+    restored = input_data_from_json(input_data_to_json(data))
+    assert restored.blackouts == data.blackouts
+
+    assert input_data_from_json(input_data_to_json(_sample_data())).blackouts is None
