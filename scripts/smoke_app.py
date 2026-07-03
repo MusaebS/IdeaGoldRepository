@@ -124,6 +124,18 @@ def _run_checks() -> list[str]:
                   "custom cosmetic column added")
         except Exception:
             check(False, "custom cosmetic column added")
+        # Auto-fill the new column with a two-name daily cycle.
+        try:
+            page.locator('[data-testid="stTextArea"]').filter(
+                has_text="Names (comma or newline separated)"
+            ).locator("textarea").fill("Dr Alpha, Dr Beta")
+            page.get_by_role("button", name="Fill", exact=True).click()
+            page.wait_for_timeout(2500)
+            check(page.get_by_text("Dr Alpha").count() > 0
+                  and page.get_by_text("Dr Beta").count() > 0,
+                  "auto-fill pattern populates the column")
+        except Exception:
+            check(False, "auto-fill pattern populates the column")
         # Toggling a control triggers a Streamlit rerun without re-solving; the
         # schedule must persist (results now render from session_state).
         page.get_by_text("Show Fairness Log").click()

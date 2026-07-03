@@ -219,3 +219,20 @@ def test_ledger_policy_toggles_default_on():
     at.run()
     assert at.session_state["ledger_no_refund"] is False
     assert at.session_state["ledger_no_catchup"] is True
+
+
+def test_fill_column_button_populates_extra_vals():
+    df, data = _result_fixture()
+    at = _at()
+    at.run()
+    _seed_result(at, df, data)
+    at.session_state["extra_cols"] = ["Consultant"]
+    at.run()
+    at.text_area(key="fill_names").set_value("Dr X, Dr Y")
+    fill = [b for b in at.button if b.key == "fill_apply"]
+    assert fill, "Fill button not rendered"
+    fill[0].click()
+    at.run()
+    assert not at.exception
+    vals = at.session_state["extra_vals"]["Consultant"]
+    assert vals == {"2023-01-02": "Dr X", "2023-01-03": "Dr Y"}  # daily cycle

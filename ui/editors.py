@@ -12,6 +12,7 @@ import pandas as pd
 import streamlit as st
 
 from model.data_models import Perk, ShiftTemplate
+from ui.patterns import FILL_MODES, expand_pattern, parse_fill_names
 from ui.state import Keys
 
 WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -438,6 +439,32 @@ def custom_columns_editor(base_df) -> None:
         st.session_state[Keys.EXTRA_VALS].pop(rm, None)
         st.rerun()
     dates = list(base_df["Date"])
+
+    # Auto-fill: paste a name list once instead of typing a value per day.
+    st.markdown("**Auto-fill a column**")
+    fc = st.columns([2, 3, 3, 1])
+    with fc[0]:
+        fill_col = st.selectbox("Column to fill", st.session_state[Keys.EXTRA_COLS],
+                                key="fill_col")
+    with fc[1]:
+        fill_text = st.text_area("Names (comma or newline separated)", key="fill_names")
+    with fc[2]:
+        fill_mode = st.radio("Pattern", list(FILL_MODES), key="fill_mode")
+    with fc[3]:
+        st.markdown("&nbsp;")
+        if st.button("Fill", key="fill_apply"):
+            names = parse_fill_names(fill_text)
+            if not names:
+                st.warning("Enter at least one name to fill with.")
+            else:
+                st.session_state[Keys.EXTRA_VALS][fill_col] = expand_pattern(
+                    names, dates, FILL_MODES[fill_mode]
+                )
+                # Drop the editor's stored cell deltas, or stale manual edits
+                # would instantly overwrite the fill on the next render.
+                st.session_state.pop("extra_cols_editor", None)
+                st.rerun()
+
     editor_df = pd.DataFrame({"Date": dates})
     for name in st.session_state[Keys.EXTRA_COLS]:
         vals = st.session_state[Keys.EXTRA_VALS].get(name, {})
