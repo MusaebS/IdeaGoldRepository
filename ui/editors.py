@@ -259,6 +259,63 @@ def seniority_editor(people: list) -> None:
             assigned.pop(removed, None)
 
 
+def named_groups_editor(people: list) -> None:
+    """Named resident groups — reusable member sets for bulk entries.
+
+    Distinct from seniority groups (which carry a load %): these are plain
+    member lists used by the group blackout / reduction editors so a set of
+    residents can be picked once instead of person by person.
+    """
+    st.markdown(
+        "**Groups — name a set of residents once, then apply blackouts or "
+        "shift reductions to the whole group**"
+    )
+    gc = st.columns([3, 1])
+    with gc[0]:
+        gname = st.text_input("Group name (e.g. Team A)", key="team_name")
+    with gc[1]:
+        if _add_button("team_add"):
+            name = gname.strip()
+            if name:
+                st.session_state[Keys.NAMED_GROUPS].setdefault(name, [])
+            else:
+                st.warning("Give the group a name.")
+    groups = st.session_state[Keys.NAMED_GROUPS]
+    if groups and people:
+        ac = st.columns([3, 2, 1])
+        with ac[0]:
+            who = st.multiselect("Residents", people, key="team_who")
+        with ac[1]:
+            target = st.selectbox("Group", list(groups.keys()), key="team_target")
+        with ac[2]:
+            st.markdown("&nbsp;")
+            if st.button("Add to group", key="team_assign"):
+                for p in who:
+                    if p not in groups[target]:
+                        groups[target].append(p)
+    elif not people:
+        st.caption("Add participants first to fill the groups.")
+    if groups:
+        st.table(pd.DataFrame([
+            {"Group": g, "Members": ", ".join(members) or "—"}
+            for g, members in groups.items()
+        ]))
+        removed = _remove_control(list(groups.keys()), "Remove group", "team_rm")
+        if removed is not None:
+            groups.pop(removed, None)
+        member_opts = [(g, m) for g, members in groups.items() for m in members]
+        if member_opts:
+            removed_member = _remove_control(
+                list(range(len(member_opts))),
+                "Remove member",
+                "team_member_rm",
+                format_func=lambda i: f"{member_opts[i][0]}: {member_opts[i][1]}",
+            )
+            if removed_member is not None:
+                group, member = member_opts[removed_member]
+                groups[group].remove(member)
+
+
 def perks_editor(
     people: list,
     default_start: date | None = None,

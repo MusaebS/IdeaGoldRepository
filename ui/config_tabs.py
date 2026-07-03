@@ -22,6 +22,7 @@ from ui.editors import (
     exemptions_editor,
     extra_points_editor,
     holidays_editor,
+    named_groups_editor,
     perks_editor,
     roster_editor,
     seniority_editor,
@@ -44,8 +45,12 @@ def load_demo_data_once() -> None:
     st.session_state[Keys.DEMO_LOADED] = True
 
 
-def _active_config_maps() -> tuple:
-    """Filter caps / extra points / overrides down to the live roster & shifts."""
+def _active_config_maps() -> dict:
+    """Filter caps / extra points / overrides down to the live roster & shifts.
+
+    Returns the values ready for the ``InputData`` kwargs of the same names
+    (empty maps already collapsed to ``None``).
+    """
     active_people = set(st.session_state[Keys.JUNIORS] + st.session_state[Keys.SENIORS])
     max_total = {
         p: v["total"]
@@ -80,10 +85,24 @@ def _active_config_maps() -> tuple:
         if p in active_people
     }
     exempt_shifts = {p: labels for p, labels in exempt_shifts.items() if labels}
-    return (
-        max_total, max_nights, extra_points, weekday_points, holidays,
-        group_factors, resident_groups, perks, exempt_shifts,
-    )
+    # Groups keep their name even when every member left the roster; the
+    # blackout/reduction warnings point out empty groups where it matters.
+    named_groups = {
+        g: [m for m in members if m in active_people]
+        for g, members in st.session_state[Keys.NAMED_GROUPS].items()
+    }
+    return {
+        "max_total": max_total or None,
+        "max_nights": max_nights or None,
+        "extra_points": extra_points or None,
+        "weekday_points": weekday_points or None,
+        "holidays": holidays or None,
+        "group_factors": group_factors or None,
+        "resident_groups": resident_groups or None,
+        "perks": perks or None,
+        "exempt_shifts": exempt_shifts or None,
+        "named_groups": named_groups or None,
+    }
 
 
 def _inline_config_hints(config: InputData) -> list:
@@ -155,6 +174,9 @@ def render_config_tabs() -> tuple:
             "Rotators — resident only available during window", Keys.ROTATORS, people,
             default_start=start_date, default_end=end_date,
         )
+        st.divider()
+        st.subheader("Groups")
+        named_groups_editor(people)
 
     with tab_adv:
         st.subheader("Per-resident caps & extra points")
@@ -175,10 +197,6 @@ def render_config_tabs() -> tuple:
         st.divider()
         holidays_editor(default_date=start_date)
 
-    (
-        max_total, max_nights, extra_points, weekday_points, holidays,
-        group_factors, resident_groups, perks, exempt_shifts,
-    ) = _active_config_maps()
     session_config = InputData(
         start_date=start_date,
         end_date=end_date,
@@ -193,15 +211,7 @@ def render_config_tabs() -> tuple:
         nf_block_length=nf_block_len,
         seed=int(seed),
         weekend_days=weekend_days,
-        max_total=max_total or None,
-        max_nights=max_nights or None,
-        extra_points=extra_points or None,
-        weekday_points=weekday_points or None,
-        holidays=holidays or None,
-        group_factors=group_factors or None,
-        resident_groups=resident_groups or None,
-        perks=perks or None,
-        exempt_shifts=exempt_shifts or None,
+        **_active_config_maps(),
     )
 
     # Early feedback: misconfigurations surface here as warnings while the

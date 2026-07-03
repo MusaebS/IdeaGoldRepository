@@ -129,12 +129,14 @@ def test_groups_perks_exemptions_round_trip():
         Perk("B", 0.9),  # forever
     ]
     data.exempt_shifts = {"A": ["NF"]}
+    data.named_groups = {"Team A": ["A", "B"], "Team B": ["C"]}
 
     restored = input_data_from_json(input_data_to_json(data))
     assert restored.group_factors == data.group_factors
     assert restored.resident_groups == data.resident_groups
     assert restored.perks == data.perks  # Perk is a NamedTuple: tuple equality
     assert restored.exempt_shifts == data.exempt_shifts
+    assert restored.named_groups == data.named_groups
 
 
 def test_legacy_config_without_new_fields_loads_none():
@@ -143,6 +145,7 @@ def test_legacy_config_without_new_fields_loads_none():
     assert restored.resident_groups is None
     assert restored.perks is None
     assert restored.exempt_shifts is None
+    assert restored.named_groups is None
 
 
 def test_config_json_has_no_display_key_when_unused():

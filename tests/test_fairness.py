@@ -418,3 +418,29 @@ def test_fairness_log_line_unchanged_without_load_features():
     )
     log = format_fairness_log(df, data)
     assert "[" not in _resident_line(log, "Alice")  # no annotations rendered
+
+
+def test_load_annotation_notes_summarise_leaves():
+    from model.fairness import load_annotation_notes
+
+    df, shifts = _sample_df_and_shifts()
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 28),
+        shifts=shifts,
+        juniors=["Alice", "Bob"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        # The second window starts before the block: only in-block days count.
+        leaves=[
+            ("Alice", date(2023, 1, 5), date(2023, 1, 7), True),
+            ("Alice", date(2022, 12, 30), date(2023, 1, 2), False),
+        ],
+        rotators=[],
+        min_gap=0,
+    )
+    assert load_annotation_notes("Alice", data) == ["[leave 3d comp]", "[leave 2d uncomp]"]
+    assert load_annotation_notes("Bob", data) == []
+    log = format_fairness_log(df, data)
+    assert "[leave 3d comp]" in _resident_line(log, "Alice")

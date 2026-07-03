@@ -337,3 +337,11 @@ def test_validate_schedule_flags_exempt_assignment():
     ])
     issues = validate_schedule(df, data)
     assert any("exempt from this shift" in i for i in issues)
+
+
+def test_validate_named_groups_rules():
+    data = _data(named_groups={"Team A": ["A", "Zed"], " ": ["B"]})
+    issues = validate_input(data)
+    assert any("Group 'Team A' lists unknown resident 'Zed'" in i for i in issues)
+    assert any("blank name" in i for i in issues)
+    assert validate_input(_data(named_groups={"Team A": ["A", "B"]})) == []

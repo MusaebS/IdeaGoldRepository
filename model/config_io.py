@@ -110,6 +110,11 @@ def input_data_to_json(data: InputData, display: dict | None = None) -> str:
             if data.exempt_shifts
             else None
         ),
+        "named_groups": (
+            {group: list(members) for group, members in data.named_groups.items()}
+            if data.named_groups
+            else None
+        ),
     }
     if display:
         payload["display"] = display
@@ -243,6 +248,11 @@ def input_data_from_json(text: str) -> InputData:
         exempt_shifts=(
             {str(k): [str(x) for x in v] for k, v in raw["exempt_shifts"].items()}
             if raw.get("exempt_shifts")
+            else None
+        ),
+        named_groups=(
+            {str(g): [str(m) for m in v] for g, v in raw["named_groups"].items()}
+            if raw.get("named_groups")
             else None
         ),
     )

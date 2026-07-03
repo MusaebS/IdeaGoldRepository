@@ -126,6 +126,11 @@ class InputData:
     # resident's targets are UNCHANGED — they carry their full share on the
     # remaining shift types. Combine with a perk to also lower the share.
     exempt_shifts: Dict[str, List[str]] | None = None
+    # Named resident groups: group name -> member names. A pure roster grouping
+    # used for bulk entry (group blackouts / load reductions); it carries no
+    # load factor — that is what group_factors/resident_groups are for. A
+    # resident may belong to several groups.
+    named_groups: Dict[str, List[str]] | None = None
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None
     target_weekend: Dict[str, float] | None = None

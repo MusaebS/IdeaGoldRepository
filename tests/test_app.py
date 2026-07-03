@@ -286,3 +286,21 @@ def test_restore_display_state_applies_and_pops_widget_keys():
     assert "extra_cols_editor" not in state
     assert state["col_order"] == ["Date", "Consultant"]
     assert state["known_cols"] == ["Date", "Consultant"]  # hides stay hidden
+
+
+def test_named_groups_editor_stores_to_session():
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob", "Cara"]
+    at.run()
+    at.text_input(key="team_name").set_value("Team A")
+    add = [b for b in at.button if b.key == "team_add"]
+    add[0].click()
+    at.run()
+    assert at.session_state["named_groups"] == {"Team A": []}
+    at.multiselect(key="team_who").set_value(["Alice", "Bob"])
+    assign = [b for b in at.button if b.key == "team_assign"]
+    assign[0].click()
+    at.run()
+    assert at.session_state["named_groups"] == {"Team A": ["Alice", "Bob"]}
+    assert not at.exception

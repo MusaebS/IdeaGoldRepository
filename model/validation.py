@@ -339,6 +339,15 @@ def validate_input(data: InputData) -> List[str]:
                     f"'{name}' is exempted from unknown shift '{label}'."
                 )
 
+    for group, members in (data.named_groups or {}).items():
+        if not str(group).strip():
+            issues.append("A named group has a blank name; give every group a name.")
+        for member in members:
+            if member not in roster:
+                issues.append(
+                    f"Group '{group}' lists unknown resident '{member}'."
+                )
+
     return issues
 
 

@@ -7,7 +7,7 @@ try:
 except ImportError:  # pragma: no cover - fallback when pandas missing
     from .pandas_stub import pd
 
-from .data_models import ShiftTemplate, InputData, normalized_perks
+from .data_models import ShiftTemplate, InputData, normalized_leaves, normalized_perks
 from .points import classify_slot
 from .utils import effective_points, is_weekend, weekend_holiday_dates
 
@@ -16,6 +16,7 @@ __all__ = [
     "calculate_points",
     "format_fairness_log",
     "fairness_range_lines",
+    "load_annotation_notes",
     "schedule_quality",
     "assignment_rationale",
 ]
@@ -100,12 +101,14 @@ def _resolved_target(df, key: str, fallback):
     return attrs[key] if key in attrs and attrs[key] is not None else fallback
 
 
-def _load_annotations(person: str, data: InputData) -> str:
-    """Group / perk / exemption notes for a resident's log line.
+def load_annotation_notes(person: str, data: InputData) -> List[str]:
+    """Load-shaping notes for a resident: group / perk / exemption / leave.
 
     The fairness targets already embed the group and perk factors (via the
     availability weights), so deviations stay honest against the reduced or
-    raised share — these notes just make the *why* visible in the log.
+    raised share — these notes just make the *why* visible. Shared by the
+    fairness log lines and the fairness table's Notes column, so the two can
+    never disagree. Only configured features produce notes.
     """
     notes: List[str] = []
     group = (data.resident_groups or {}).get(person)
@@ -122,6 +125,30 @@ def _load_annotations(person: str, data: InputData) -> str:
     labels = (data.exempt_shifts or {}).get(person)
     if labels:
         notes.append(f"[exempt: {', '.join(sorted(labels))}]")
+    # Leave summary, clipped to the block (a window outside it has no effect).
+    comp_days = uncomp_days = 0
+    for name, start, end, compensated in normalized_leaves(data.leaves):
+        if name != person:
+            continue
+        lo = max(start, data.start_date)
+        hi = min(end, data.end_date)
+        days = (hi - lo).days + 1
+        if days <= 0:
+            continue
+        if compensated:
+            comp_days += days
+        else:
+            uncomp_days += days
+    if comp_days:
+        notes.append(f"[leave {comp_days}d comp]")
+    if uncomp_days:
+        notes.append(f"[leave {uncomp_days}d uncomp]")
+    return notes
+
+
+def _load_annotations(person: str, data: InputData) -> str:
+    """The log-line rendering of :func:`load_annotation_notes`."""
+    notes = load_annotation_notes(person, data)
     return (" " + " ".join(notes)) if notes else ""
 
 
