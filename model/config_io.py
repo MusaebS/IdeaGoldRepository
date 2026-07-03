@@ -7,6 +7,7 @@ from typing import List
 from .data_models import (
     Blackout,
     Leave,
+    LoadReduction,
     Perk,
     RotatorWindow,
     ShiftTemplate,
@@ -14,6 +15,7 @@ from .data_models import (
     normalized_blackouts,
     normalized_leaves,
     normalized_perks,
+    normalized_reductions,
     normalized_rotators,
 )
 
@@ -124,6 +126,15 @@ def input_data_to_json(data: InputData, display: dict | None = None) -> str:
                 for b in normalized_blackouts(data.blackouts)
             ]
             if data.blackouts
+            else None
+        ),
+        "reductions": (
+            [
+                [r.group, list(r.members), list(r.labels), r.factor,
+                 r.start.isoformat(), r.end.isoformat(), r.keep_total]
+                for r in normalized_reductions(data.reductions)
+            ]
+            if data.reductions
             else None
         ),
     }
@@ -279,6 +290,22 @@ def input_data_from_json(text: str) -> InputData:
                 for entry in raw["blackouts"]
             ]
             if raw.get("blackouts")
+            else None
+        ),
+        reductions=(
+            [
+                LoadReduction(
+                    None if entry[0] is None else str(entry[0]),
+                    tuple(str(m) for m in entry[1] or ()),
+                    tuple(str(lbl) for lbl in entry[2] or ()),
+                    float(entry[3]),
+                    date.fromisoformat(entry[4]),
+                    date.fromisoformat(entry[5]),
+                    bool(entry[6]) if len(entry) > 6 else False,
+                )
+                for entry in raw["reductions"]
+            ]
+            if raw.get("reductions")
             else None
         ),
     )

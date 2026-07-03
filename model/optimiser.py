@@ -139,6 +139,7 @@ from .data_models import (
 )
 from .nf_blocks import respects_nf_blocks
 from .points import POINT_SCALE, SlotPoints, block_days, classify_slot, scaled, slot_points
+from .reductions import reduction_caps
 from .utils import weekend_holiday_dates
 from .weights import availability_weights
 
@@ -194,6 +195,7 @@ class SchedulerSolver:
         self.add_deviation_constraints()
         self.add_cap_constraints()
         self.add_extra_point_constraints()
+        self.add_reduction_constraints()
         self.build_objective()
 
     def build_variables(self) -> None:
@@ -326,6 +328,41 @@ class SchedulerSolver:
         for p_idx, person in enumerate(self.people[:-1]):
             if extra.get(person, 0.0) > 0 and person in tmap:
                 self.model.Add(self.total_pts[p_idx] >= scaled(tmap[person]))
+
+    def add_reduction_constraints(self) -> None:
+        """Hard windowed caps from shift-type load reductions.
+
+        Factor 0 pins the member's variables for those (label, window-day)
+        slots to zero (stronger propagation than a ≤ 0 sum); a partial factor
+        caps the scaled points. Like ``max_total``/``max_nights`` a reduction
+        can never make the model infeasible — uncovered slots fall to
+        ``Unfilled``.
+        """
+        caps = reduction_caps(self.data)
+        if not caps:
+            return
+        person_idx = {p: i for i, p in enumerate(self.people[:-1])}
+        for cap in caps:
+            p_idx = person_idx.get(cap.person)
+            if p_idx is None:
+                continue
+            slot_keys = [
+                key for key, slot in self.slots.items()
+                if slot.shift.label in cap.labels and cap.start <= slot.day <= cap.end
+            ]
+            if not slot_keys:
+                continue
+            if cap.factor <= 0:
+                for key in slot_keys:
+                    self.model.Add(self.vars[(p_idx,) + key] == 0)
+            else:
+                self.model.Add(
+                    sum(
+                        scaled(self.slots[key].points) * self.vars[(p_idx,) + key]
+                        for key in slot_keys
+                    )
+                    <= scaled(cap.cap_points)
+                )
 
     def add_constraints(self) -> None:
         self._add_slot_coverage_and_eligibility()
@@ -646,6 +683,83 @@ def _carryover_targets(
 _availability_weights = availability_weights
 
 
+def _shift_reduced_targets(
+    target_map: Mapping[str, float],
+    deltas: Mapping[str, float],
+    pool: Sequence[str],
+) -> Dict[str, float]:
+    """Lower reduced members' targets and raise the others' to reconcile.
+
+    The inverse of :func:`_apply_extra_points`: the load taken off the reduced
+    members still has to be carried, so it moves onto the non-reduced pool
+    members in proportion to their targets (equally when those are all zero).
+    If everyone in the pool is reduced there is nobody to receive the load and
+    it simply falls to ``Unfilled``.
+    """
+    out = {p: float(target_map.get(p, 0.0)) for p in pool}
+    moved = 0.0
+    for person, delta in deltas.items():
+        if person not in out or delta <= 0:
+            continue
+        take = min(delta, out[person])
+        out[person] -= take
+        moved += take
+    receivers = [p for p in pool if p not in deltas]
+    if moved > 0 and receivers:
+        receiver_sum = sum(out[p] for p in receivers)
+        if receiver_sum > 0:
+            for p in receivers:
+                out[p] += moved * out[p] / receiver_sum
+        else:
+            for p in receivers:
+                out[p] += moved / len(receivers)
+    return out
+
+
+def _apply_reduction_targets(
+    data: InputData,
+    target_total_map: Dict[str, float] | None,
+    target_night_float: Dict[str, float] | None,
+    participants: Sequence[str],
+) -> Tuple[Dict[str, float] | None, Dict[str, float] | None]:
+    """Fold "work less now" reductions into the total / night-float targets.
+
+    Only ``keep_total=False`` caps lower targets (their members genuinely work
+    less this block; the ledger repays the shortfall later). ``keep_total=True``
+    caps leave targets alone so the member is compensated with other shift
+    types in-block. Weights are never touched either way, so the ledger's
+    no-catch-up policy cannot credit (excuse) the reduction.
+    """
+    caps = [c for c in reduction_caps(data) if not c.keep_total]
+    if not caps:
+        return target_total_map, target_night_float
+
+    if target_total_map:
+        totals_delta: Dict[str, float] = {}
+        for cap in caps:
+            totals_delta[cap.person] = totals_delta.get(cap.person, 0.0) + cap.reduce_total
+        target_total_map = _shift_reduced_targets(
+            target_total_map, totals_delta, participants
+        )
+
+    nf_delta: Dict[str, float] = {}
+    for cap in caps:
+        if cap.reduce_nf > 0:
+            nf_delta[cap.person] = nf_delta.get(cap.person, 0.0) + cap.reduce_nf
+    if nf_delta and target_night_float:
+        target_night_float = dict(target_night_float)
+        for role_pool in (data.nf_juniors, data.nf_seniors):
+            members = [p for p in role_pool if p in target_night_float]
+            sub = {p: nf_delta[p] for p in members if p in nf_delta}
+            if members and sub:
+                target_night_float.update(
+                    _shift_reduced_targets(
+                        {p: target_night_float[p] for p in members}, sub, members
+                    )
+                )
+    return target_total_map, target_night_float
+
+
 def _apply_extra_points(
     target_total_map: Dict[str, float],
     extra_points: Mapping[str, float],
@@ -745,6 +859,11 @@ def resolve_targets(data: InputData, ledger: Ledger | None = None) -> InputData:
         if data.extra_points and target_total_map:
             target_total_map = _apply_extra_points(
                 target_total_map, data.extra_points, participants
+            )
+
+        if data.reductions:
+            target_total_map, target_night_float = _apply_reduction_targets(
+                data, target_total_map, target_night_float, participants
             )
 
     # A copy so the caller's ``InputData`` is never mutated (re-running with

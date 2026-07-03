@@ -9,7 +9,7 @@ from datetime import date, timedelta
 import streamlit as st
 
 from model.config_io import display_from_json, input_data_to_json, input_data_from_json
-from model.data_models import InputData, normalized_blackouts
+from model.data_models import InputData, normalized_blackouts, normalized_reductions
 from model.demo_data import sample_shifts, sample_names
 from model.ledger import ledger_from_json
 from model.optimiser import build_schedule
@@ -25,6 +25,7 @@ from ui.editors import (
     holidays_editor,
     named_groups_editor,
     perks_editor,
+    reductions_editor,
     roster_editor,
     seniority_editor,
     shift_template_editor,
@@ -101,6 +102,18 @@ def _active_config_maps() -> dict:
             members = tuple(m for m in b.members if m in active_people)
             if members:
                 blackouts.append(b._replace(members=members))
+    reductions = []
+    for r in normalized_reductions(st.session_state[Keys.REDUCTIONS]):
+        labels = tuple(lbl for lbl in r.labels if lbl in shift_labels)
+        if not labels:
+            continue
+        if r.group is not None:
+            if r.group in named_groups:
+                reductions.append(r._replace(labels=labels))
+        else:
+            members = tuple(m for m in r.members if m in active_people)
+            if members:
+                reductions.append(r._replace(members=members, labels=labels))
     return {
         "max_total": max_total or None,
         "max_nights": max_nights or None,
@@ -113,6 +126,7 @@ def _active_config_maps() -> dict:
         "exempt_shifts": exempt_shifts or None,
         "named_groups": named_groups or None,
         "blackouts": blackouts or None,
+        "reductions": reductions or None,
     }
 
 
@@ -204,6 +218,11 @@ def render_config_tabs() -> tuple:
         perks_editor(people, default_start=start_date, default_end=end_date)
         st.divider()
         exemptions_editor(people, [s.label for s in st.session_state[Keys.SHIFTS]])
+        st.divider()
+        reductions_editor(
+            people, [s.label for s in st.session_state[Keys.SHIFTS]],
+            default_start=start_date, default_end=end_date,
+        )
         st.divider()
         st.subheader("Point overrides & holidays")
         weekday_points_editor([s.label for s in st.session_state[Keys.SHIFTS]])

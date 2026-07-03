@@ -14,9 +14,13 @@ from .data_models import (
     normalized_blackouts,
     normalized_leaves,
     normalized_perks,
+    normalized_reductions,
 )
 from .nf_blocks import respects_nf_blocks
 from .optimiser import respects_min_gap
+from .points import classify_slot
+from .reductions import reduction_caps
+from .utils import weekend_holiday_dates
 
 __all__ = ["validate_input", "config_warnings", "validate_schedule"]
 
@@ -77,7 +81,76 @@ def config_warnings(data: InputData) -> List[str]:
     warnings.extend(_leave_rotator_warnings(data))
     warnings.extend(_exemption_perk_warnings(data))
     warnings.extend(_blackout_warnings(data))
+    warnings.extend(_reduction_warnings(data))
     return warnings
+
+
+def _reduction_warnings(data: InputData) -> List[str]:
+    """Advisories for load reductions that are likely mistakes or coverage risks."""
+    out: List[str] = []
+    if not data.reductions:
+        return out
+    named_groups = data.named_groups or {}
+    start, end = data.start_date, data.end_date
+
+    for red in normalized_reductions(data.reductions):
+        who = f"group '{red.group}'" if red.group is not None else "ad-hoc reduction"
+        if red.factor >= 1.0:
+            out.append(
+                f"Reduction {red.start}–{red.end} for {who} has a 100% load "
+                "factor and has no effect."
+            )
+        if red.group is not None and not named_groups.get(red.group):
+            out.append(
+                f"Reduction {red.start}–{red.end} references empty group "
+                f"'{red.group}' and has no effect."
+            )
+        if red.end < start or red.start > end:
+            out.append(
+                f"Reduction window {red.start}–{red.end} for {who} is outside "
+                f"the schedule dates ({start}–{end}) and has no effect."
+            )
+
+    # Coverage risk: a label whose whole eligible pool is under a factor-0
+    # reduction on some day cannot be assigned there at all.
+    zero_caps: dict = {}
+    for cap in reduction_caps(data):
+        if cap.factor <= 0:
+            for label in cap.labels:
+                zero_caps.setdefault(label, []).append(cap)
+    for shift in data.shifts:
+        caps = zero_caps.get(shift.label)
+        if not caps:
+            continue
+        pool = set(data.juniors if shift.role == "Junior" else data.seniors)
+        if shift.night_float:
+            pool &= set(data.nf_juniors if shift.role == "Junior" else data.nf_seniors)
+        pool = {p for p in pool if shift.label not in (data.exempt_shifts or {}).get(p, ())}
+        if not pool:
+            continue
+        uncovered_day = next(
+            (
+                d
+                for d in _block_days_safe(data)
+                if all(
+                    any(c.person == p and c.start <= d <= c.end for c in caps)
+                    for p in pool
+                )
+            ),
+            None,
+        )
+        if uncovered_day is not None:
+            out.append(
+                f"Every resident eligible for '{shift.label}' is fully reduced "
+                f"on {uncovered_day}; those slots will be unfilled."
+            )
+    return out
+
+
+def _block_days_safe(data: InputData) -> list:
+    from .points import block_days
+
+    return block_days(data) if data.end_date >= data.start_date else []
 
 
 def _unavailable_person_days(data: InputData) -> dict:
@@ -480,6 +553,36 @@ def validate_input(data: InputData) -> List[str]:
                 f"Blackout window for {who} ends ({b.end}) before it starts ({b.start})."
             )
 
+    for red in normalized_reductions(data.reductions):
+        who = f"group '{red.group}'" if red.group is not None else "ad-hoc members"
+        if not 0.0 <= red.factor <= 1.0:
+            issues.append(
+                f"Reduction factor for {who} must be between 0 and 1 "
+                f"(got {red.factor:g})."
+            )
+        if not red.labels:
+            issues.append(f"Reduction for {who} names no shift types.")
+        for label in red.labels:
+            if label not in shift_labels:
+                issues.append(f"Reduction for {who} references unknown shift '{label}'.")
+        if red.group is not None and red.group not in named_groups:
+            issues.append(f"Reduction references undefined group '{red.group}'.")
+        if red.group is None:
+            if not red.members:
+                issues.append(
+                    f"Reduction {red.start}–{red.end} has no group and no members."
+                )
+            for member in red.members:
+                if member not in roster:
+                    issues.append(
+                        f"Reduction references unknown resident '{member}'."
+                    )
+        if red.end < red.start:
+            issues.append(
+                f"Reduction window for {who} ends ({red.end}) before it starts "
+                f"({red.start})."
+            )
+
     return issues
 
 
@@ -549,6 +652,27 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
 
         for person in {p for p in assigned_today if assigned_today.count(p) > 1}:
             issues.append(f"{day}: {person} is assigned to more than one shift")
+
+    # Reduced-shift caps: recompute each member's window points on the reduced
+    # labels so a manual edit cannot silently exceed the cap.
+    records = df.to_dict("records")
+    shift_by_label = {s.label: s for s in data.shifts}
+    weekend_dates = weekend_holiday_dates(data)
+    for cap in reduction_caps(data):
+        actual = 0.0
+        for row in records:
+            day = row.get("Date")
+            if day is None or not cap.start <= day <= cap.end:
+                continue
+            for label in cap.labels:
+                if row.get(label) == cap.person:
+                    actual += classify_slot(day, shift_by_label[label], data, weekend_dates).points
+        if actual > cap.cap_points + 1e-6:
+            labels = ", ".join(sorted(cap.labels))
+            issues.append(
+                f"{cap.person} carries {actual:.1f} points on reduced shift(s) "
+                f"{labels} in {cap.start}–{cap.end} (cap {cap.cap_points:.1f})"
+            )
 
     if not respects_min_gap(df, data.min_gap, data.shifts):
         issues.append(f"Minimum gap of {data.min_gap} day(s) is violated")

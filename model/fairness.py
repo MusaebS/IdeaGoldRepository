@@ -13,6 +13,7 @@ from .data_models import (
     normalized_blackouts,
     normalized_leaves,
     normalized_perks,
+    normalized_reductions,
 )
 from .points import classify_slot
 from .utils import effective_points, is_weekend, weekend_holiday_dates
@@ -145,6 +146,19 @@ def load_annotation_notes(person: str, data: InputData) -> List[str]:
         if not b.compensated:
             note += " uncomp"
         notes.append(note + "]")
+    for red in normalized_reductions(data.reductions):
+        covered = (
+            (data.named_groups or {}).get(red.group, ())
+            if red.group is not None
+            else red.members
+        )
+        if person not in covered:
+            continue
+        mode = "same-total" if red.keep_total else "repay-later"
+        notes.append(
+            f"[reduced {', '.join(sorted(red.labels))} ×{red.factor:.2f} "
+            f"{red.start.isoformat()}→{red.end.isoformat()} {mode}]"
+        )
     # Leave summary, clipped to the block (a window outside it has no effect).
     comp_days = uncomp_days = 0
     for name, start, end, compensated in normalized_leaves(data.leaves):

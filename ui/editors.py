@@ -11,7 +11,14 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from model.data_models import Blackout, Perk, ShiftTemplate, normalized_blackouts
+from model.data_models import (
+    Blackout,
+    LoadReduction,
+    Perk,
+    ShiftTemplate,
+    normalized_blackouts,
+    normalized_reductions,
+)
 from ui.patterns import FILL_MODES, expand_pattern, parse_fill_names
 from ui.state import Keys
 
@@ -477,6 +484,89 @@ def exemptions_editor(people: list, shift_labels: list) -> None:
         removed = _remove_control(list(ex.keys()), "Remove exemption", "ex_rm")
         if removed is not None:
             ex.pop(removed, None)
+
+
+REDUCTION_MODES = {
+    "Work less now, repay later": False,   # keep_total=False
+    "Keep full share (more of the other shifts now)": True,
+}
+
+
+def reductions_editor(
+    people: list,
+    shift_labels: list,
+    default_start: date | None = None,
+    default_end: date | None = None,
+) -> None:
+    """A group carries less of specific shift types for a window (repaid later)."""
+    st.markdown("**Shift reductions — a group carries less of specific shift types for a period**")
+    st.caption(
+        "e.g. few or no night calls during a heavy rotation, with others "
+        "covering. 0% = none of these shifts in the window. The shortfall is "
+        "carried in the fairness ledger as debt and repaid in later blocks — "
+        "never excused (unlike a perk)."
+    )
+    if not people or not shift_labels:
+        st.caption("Add participants and shift templates first.")
+        return
+    c = st.columns([3, 3, 2, 2, 2, 1])
+    with c[0]:
+        group, members = _group_or_adhoc_selector(people, "red")
+    with c[1]:
+        labels = st.multiselect("Shift types", shift_labels, key="red_labels")
+    with c[2]:
+        pct = st.slider("Load % of fair share", 0, 100, 0, 5, key="red_pct")
+    with c[3]:
+        start = st.date_input("Start", default_start or date.today(), key="red_start")
+    with c[4]:
+        end = st.date_input("End", default_end or default_start or date.today(), key="red_end")
+    mode = st.radio(
+        "Rest of their load this block",
+        list(REDUCTION_MODES),
+        key="red_mode",
+        horizontal=True,
+    )
+    with c[-1]:
+        if _add_button("red_add"):
+            if group is None and not members:
+                st.warning("Pick a group or at least one resident.")
+            elif not labels:
+                st.warning("Pick at least one shift type to reduce.")
+            else:
+                st.session_state[Keys.REDUCTIONS].append(
+                    LoadReduction(
+                        group, members, tuple(labels), pct / 100.0,
+                        start, end, REDUCTION_MODES[mode],
+                    )
+                )
+    entries = list(normalized_reductions(st.session_state[Keys.REDUCTIONS]))
+    if entries:
+        groups = st.session_state[Keys.NAMED_GROUPS]
+        st.table(pd.DataFrame([
+            {
+                "Group": r.group or "(ad-hoc)",
+                "Members": ", ".join(
+                    groups.get(r.group, []) if r.group is not None else r.members
+                ) or "—",
+                "Shift types": ", ".join(r.labels),
+                "Load %": f"{r.factor * 100:g}%",
+                "Start": r.start,
+                "End": r.end,
+                "This block": "keep full share" if r.keep_total else "work less now",
+            }
+            for r in entries
+        ]))
+        removed = _remove_control(
+            list(range(len(entries))),
+            "Remove reduction",
+            "red_rm",
+            format_func=lambda i: (
+                f"{entries[i].group or 'ad-hoc'}: {', '.join(entries[i].labels)} "
+                f"×{entries[i].factor:g}"
+            ),
+        )
+        if removed is not None:
+            st.session_state[Keys.REDUCTIONS].pop(removed)
 
 
 def shift_template_editor() -> None:

@@ -196,3 +196,18 @@ def test_blackouts_round_trip_and_legacy_none():
     assert restored.blackouts == data.blackouts
 
     assert input_data_from_json(input_data_to_json(_sample_data())).blackouts is None
+
+
+def test_reductions_round_trip_and_legacy_none():
+    from model.data_models import LoadReduction
+
+    data = _sample_data()
+    data.named_groups = {"Team A": ["A", "B"]}
+    data.reductions = [
+        LoadReduction("Team A", (), ("NF",), 0.25, date(2023, 1, 8), date(2023, 1, 21)),
+        LoadReduction(None, ("C",), ("Day",), 0.0, date(2023, 1, 1), date(2023, 1, 28), True),
+    ]
+    restored = input_data_from_json(input_data_to_json(data))
+    assert restored.reductions == data.reductions
+
+    assert input_data_from_json(input_data_to_json(_sample_data())).reductions is None

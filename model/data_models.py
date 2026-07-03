@@ -97,6 +97,41 @@ def normalized_blackouts(blackouts):
         yield Blackout(group, members, start, end, day_before, compensated)
 
 
+class LoadReduction(NamedTuple):
+    """Less of specific shift types for a group inside a window.
+
+    Each covered member carries at most ``factor`` (0..1) of their fair share
+    of the ``labels`` inside the window — 0 means none of those shifts at all.
+    The availability weights are deliberately untouched, so the shortfall is
+    never excused: it carries in the fairness ledger as debt the member
+    repays in later blocks. ``keep_total`` picks the in-block behaviour:
+    False (default) also lowers the member's total/night-float targets so
+    they genuinely work less this block and repay everything later; True
+    keeps their full share, so the solver compensates them with other shift
+    types now and only what cannot fit carries over.
+    """
+
+    group: str | None          # named-group reference, resolved at use time
+    members: Tuple[str, ...]   # ad-hoc names, used when group is None
+    labels: Tuple[str, ...]
+    factor: float
+    start: date
+    end: date
+    keep_total: bool = False
+
+
+def normalized_reductions(reductions):
+    """Yield a :class:`LoadReduction` for each entry (typed or 6/7-tuple)."""
+    for entry in reductions or []:
+        group = entry[0]
+        members = tuple(entry[1] or ())
+        labels = tuple(entry[2] or ())
+        factor = float(entry[3])
+        start, end = entry[4], entry[5]
+        keep_total = bool(entry[6]) if len(entry) > 6 else False
+        yield LoadReduction(group, members, labels, factor, start, end, keep_total)
+
+
 def blackout_person_windows(blackouts, named_groups):
     """Per-person effective blackout windows: ``{name: [(start, end, compensated)]}``.
 
@@ -181,6 +216,10 @@ class InputData:
     # Group blackouts (see Blackout): whole groups off call for a window and,
     # by default, the day before it. Compensated by default — not an excusal.
     blackouts: Sequence[Blackout | Tuple] | None = None
+    # Shift-type load reductions (see LoadReduction): a group carries at most
+    # ``factor`` of its fair share of specific shift types inside a window;
+    # the shortfall is carried in the ledger and repaid, never excused.
+    reductions: Sequence[LoadReduction | Tuple] | None = None
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None
     target_weekend: Dict[str, float] | None = None

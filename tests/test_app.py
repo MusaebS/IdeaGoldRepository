@@ -337,3 +337,26 @@ def test_blackouts_editor_adhoc_names():
     assert len(blackouts) == 1
     assert blackouts[0].group is None and blackouts[0].members == ("Bob",)
     assert not at.exception
+
+
+def test_reductions_editor_stores_to_session():
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob"]
+    at.session_state["shifts"] = [
+        ShiftTemplate(label="N", role="Junior", night_float=False, thu_weekend=False, points=2.0),
+    ]
+    at.session_state["named_groups"] = {"Team A": ["Alice"]}
+    at.run()
+    at.multiselect(key="red_labels").set_value(["N"])
+    at.run()
+    add = [b for b in at.button if b.key == "red_add"]
+    add[0].click()
+    at.run()
+    reductions = at.session_state["reductions"]
+    assert len(reductions) == 1
+    assert reductions[0].group == "Team A"
+    assert reductions[0].labels == ("N",)
+    assert reductions[0].factor == 0.0
+    assert reductions[0].keep_total is False  # "work less now" is the default mode
+    assert not at.exception
