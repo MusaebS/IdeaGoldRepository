@@ -70,20 +70,35 @@ def normalized_rotators(rotators):
 class Blackout(NamedTuple):
     """A no-call window for a named group (or an ad-hoc set) of residents.
 
-    Everyone covered is blocked for the window and — when ``day_before`` is
-    set — the day before it, so nobody enters the period post-call. Unlike a
-    leave it is entered per group and reported separately. ``compensated``
-    keeps each member's full fair share (the default): missed load is made up
-    on other days, or carried in the fairness ledger as repayable debt.
-    Uncompensated scales the share down like uncompensated leave.
+    Everyone covered is blocked from every non-night-float shift in the
+    window, and — when ``night_before`` is set — from the *night on-calls* of
+    the day before it, so nobody enters the period post-call. Night on-call
+    means a shift flagged "Thu counts as weekend" (``thu_weekend``), the
+    roster's existing marker for shifts whose morning after is post-call;
+    night-float duty is a separate rotation and is never touched by
+    blackouts. Unlike a leave the entry is per group and reported
+    separately. ``compensated`` keeps each member's full fair share (the
+    default): missed load is made up on other days, or carried in the
+    fairness ledger as repayable debt. Uncompensated scales the share down
+    like uncompensated leave.
     """
 
     group: str | None          # named-group reference, resolved at use time
     members: Tuple[str, ...]   # ad-hoc names, used when group is None
     start: date
     end: date
-    day_before: bool = True
+    night_before: bool = True
     compensated: bool = True
+
+
+def is_night_call(shift) -> bool:
+    """The roster's night on-call marker: "Thu counts as weekend", non-NF.
+
+    Thursday-counts-as-weekend is set exactly on the night on-calls (the
+    morning after is post-call, so a Thursday night is weekend load); night
+    float is a separate rotation, not an on-call.
+    """
+    return bool(shift.thu_weekend) and not shift.night_float
 
 
 def normalized_blackouts(blackouts):
@@ -92,9 +107,9 @@ def normalized_blackouts(blackouts):
         group = entry[0]
         members = tuple(entry[1] or ())
         start, end = entry[2], entry[3]
-        day_before = bool(entry[4]) if len(entry) > 4 else True
+        night_before = bool(entry[4]) if len(entry) > 4 else True
         compensated = bool(entry[5]) if len(entry) > 5 else True
-        yield Blackout(group, members, start, end, day_before, compensated)
+        yield Blackout(group, members, start, end, night_before, compensated)
 
 
 class LoadReduction(NamedTuple):
@@ -133,19 +148,38 @@ def normalized_reductions(reductions):
 
 
 def blackout_person_windows(blackouts, named_groups):
-    """Per-person effective blackout windows: ``{name: [(start, end, compensated)]}``.
+    """Per-person blackout windows: ``{name: [(start, end, compensated)]}``.
 
     Group references resolve to the *current* members, so editing a group
-    updates every blackout that uses it. ``day_before`` is already folded in
-    (the effective window starts one day earlier).
+    updates every blackout that uses it. This is the window proper; the
+    night-before rule is a partial (night-on-calls-only) block on a single
+    day and lives in :func:`blackout_night_before_dates`.
     """
     groups = named_groups or {}
     out: Dict[str, List[Tuple[date, date, bool]]] = {}
     for b in normalized_blackouts(blackouts):
         people = groups.get(b.group, ()) if b.group is not None else b.members
-        eff_start = b.start - timedelta(days=1) if b.day_before else b.start
         for person in people:
-            out.setdefault(person, []).append((eff_start, b.end, b.compensated))
+            out.setdefault(person, []).append((b.start, b.end, b.compensated))
+    return out
+
+
+def blackout_night_before_dates(blackouts, named_groups):
+    """Per-person dates whose *night on-calls* are blocked: ``{name: {date}}``.
+
+    For every blackout with ``night_before``, the day before the window: the
+    member must not take a night on-call there (or they would be post-call on
+    their first off day). Only shifts matching :func:`is_night_call` are
+    blocked on these dates — day shifts and night float are unaffected.
+    """
+    groups = named_groups or {}
+    out: Dict[str, set] = {}
+    for b in normalized_blackouts(blackouts):
+        if not b.night_before:
+            continue
+        people = groups.get(b.group, ()) if b.group is not None else b.members
+        for person in people:
+            out.setdefault(person, set()).add(b.start - timedelta(days=1))
     return out
 
 
@@ -214,7 +248,8 @@ class InputData:
     # resident may belong to several groups.
     named_groups: Dict[str, List[str]] | None = None
     # Group blackouts (see Blackout): whole groups off call for a window and,
-    # by default, the day before it. Compensated by default — not an excusal.
+    # by default, off the *night on-calls* of the day before it. Night float
+    # is never touched. Compensated by default — not an excusal.
     blackouts: Sequence[Blackout | Tuple] | None = None
     # Shift-type load reductions (see LoadReduction): a group carries at most
     # ``factor`` of its fair share of specific shift types inside a window;

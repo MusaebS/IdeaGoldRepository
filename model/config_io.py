@@ -122,7 +122,7 @@ def input_data_to_json(data: InputData, display: dict | None = None) -> str:
         "blackouts": (
             [
                 [b.group, list(b.members), b.start.isoformat(), b.end.isoformat(),
-                 b.day_before, b.compensated]
+                 b.night_before, b.compensated]
                 for b in normalized_blackouts(data.blackouts)
             ]
             if data.blackouts

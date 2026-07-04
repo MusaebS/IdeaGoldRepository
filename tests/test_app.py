@@ -318,7 +318,7 @@ def test_blackouts_editor_stores_to_session():
     blackouts = at.session_state["blackouts"]
     assert len(blackouts) == 1
     assert blackouts[0].group == "Team A"
-    assert blackouts[0].day_before is True and blackouts[0].compensated is True
+    assert blackouts[0].night_before is True and blackouts[0].compensated is True
     assert not at.exception
 
 

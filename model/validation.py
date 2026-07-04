@@ -10,7 +10,9 @@ except ImportError:  # pragma: no cover - fallback when pandas missing
 
 from .data_models import (
     InputData,
+    blackout_night_before_dates,
     blackout_person_windows,
+    is_night_call,
     normalized_blackouts,
     normalized_leaves,
     normalized_perks,
@@ -179,8 +181,11 @@ def _block_days_safe(data: InputData) -> list:
 def _unavailable_person_days(data: InputData) -> dict:
     """Person -> set of block days they cannot work (leave/rotator/blackout).
 
-    The advisory-side mirror of the solver's ``_blocked_day_indices``, kept in
-    dates rather than indices so warnings can name the days.
+    The advisory-side mirror of the solver's blocking, kept in dates rather
+    than indices so warnings can name the days. Blackout windows count as
+    whole days here even though they spare night-float slots — a slight
+    overcount that is fine for an advisory (the night-before partial block is
+    ignored for the same reason).
     """
     from .points import block_days
 
@@ -225,8 +230,10 @@ def _blackout_warnings(data: InputData) -> List[str]:
                 f"Blackout {b.start}–{b.end} references empty group '{b.group}' "
                 "and has no effect."
             )
-        eff_start = b.start - timedelta(days=1) if b.day_before else b.start
-        if b.end < start or eff_start > end:
+        night_date = b.start - timedelta(days=1)
+        window_outside = b.end < start or b.start > end
+        night_outside = (not b.night_before) or night_date < start or night_date > end
+        if window_outside and night_outside:
             out.append(
                 f"Blackout window {b.start}–{b.end} for {who} is outside the "
                 f"schedule dates ({start}–{end}) and has no effect."
@@ -644,6 +651,7 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
     for name, start, end in data.rotators:
         rotator_windows.setdefault(name, []).append((start, end))
     blackout_windows = blackout_person_windows(data.blackouts, data.named_groups)
+    night_before = blackout_night_before_dates(data.blackouts, data.named_groups)
 
     for row in df.to_dict("records"):
         day = row.get("Date")
@@ -677,11 +685,19 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
                         f"{day}: {person} on '{shift.label}' is on leave ({ls} to {le})"
                     )
 
-            for bs, be, _comp in blackout_windows.get(person, ()):
-                if bs <= day <= be:
+            # Blackouts never touch night float (a separate rotation).
+            if not shift.night_float:
+                for bs, be, _comp in blackout_windows.get(person, ()):
+                    if bs <= day <= be:
+                        issues.append(
+                            f"{day}: {person} on '{shift.label}' is in a group "
+                            f"blackout ({bs} to {be})"
+                        )
+                if is_night_call(shift) and day in night_before.get(person, ()):
                     issues.append(
-                        f"{day}: {person} on '{shift.label}' is in a group "
-                        f"blackout ({bs} to {be})"
+                        f"{day}: {person} on night call '{shift.label}' the day "
+                        "before their group blackout (would be post-call on an "
+                        "off day)"
                     )
 
             windows = rotator_windows.get(person)

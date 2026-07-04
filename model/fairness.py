@@ -193,8 +193,8 @@ def load_annotation_notes(person: str, data: InputData) -> List[str]:
         if person not in covered:
             continue
         note = f"[blackout {b.group or 'ad-hoc'} {b.start.isoformat()}→{b.end.isoformat()}"
-        if b.day_before:
-            note += " +day-before"
+        if b.night_before:
+            note += " +night-before"
         if not b.compensated:
             note += " uncomp"
         notes.append(note + "]")

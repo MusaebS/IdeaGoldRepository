@@ -351,10 +351,13 @@ def blackouts_editor(
     """Group blackout periods: nobody covered is on call during the window."""
     st.markdown("**Blackouts — a whole group is off call for a period**")
     st.caption(
-        "Everyone covered is blocked for the window and (by default) the day "
-        "before it. Not a leave: with Compensated on, each member keeps their "
-        "full fair share — missed load is made up on other days, or carried in "
-        "the fairness ledger as debt to repay next block."
+        "Everyone covered is blocked for the window, and (by default) from the "
+        "night calls of the day before it — night call meaning the shifts "
+        "flagged 'Thu counts as weekend' — so nobody is post-call on their "
+        "first off day. Night-float duty is never affected. Not a leave: with "
+        "Compensated on, each member keeps their full fair share — missed load "
+        "is made up on other days, or carried in the fairness ledger as debt "
+        "to repay next block."
     )
     if not people:
         st.caption("Add participants first to configure blackouts.")
@@ -367,7 +370,7 @@ def blackouts_editor(
     with c[2]:
         end = st.date_input("End", default_end or default_start or date.today(), key="bo_end")
     with c[3]:
-        day_before = st.checkbox("Block day before", value=True, key="bo_daybefore")
+        night_before = st.checkbox("Block night call before", value=True, key="bo_nightbefore")
     with c[4]:
         compensated = st.checkbox("Compensated", value=True, key="bo_comp")
     with c[-1]:
@@ -376,7 +379,7 @@ def blackouts_editor(
                 st.warning("Pick a group or at least one resident.")
             else:
                 st.session_state[Keys.BLACKOUTS].append(
-                    Blackout(group, members, start, end, day_before, compensated)
+                    Blackout(group, members, start, end, night_before, compensated)
                 )
     entries = list(normalized_blackouts(st.session_state[Keys.BLACKOUTS]))
     if entries:
@@ -389,7 +392,7 @@ def blackouts_editor(
                 "Members": ", ".join(covered) or "—",
                 "Start": b.start,
                 "End": b.end,
-                "Day before": b.day_before,
+                "Night call before": b.night_before,
                 "Compensated": b.compensated,
             })
         st.table(pd.DataFrame(table_rows))

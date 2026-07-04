@@ -16,7 +16,9 @@ from model.data_models import (
     Blackout,
     InputData,
     ShiftTemplate,
+    blackout_night_before_dates,
     blackout_person_windows,
+    is_night_call,
     normalized_blackouts,
 )
 from model.ledger import update_ledger
@@ -51,23 +53,35 @@ def test_normalized_blackouts_tolerates_short_tuples():
     ]
     out = list(normalized_blackouts(entries))
     assert out[0] == Blackout("T", (), date(2023, 1, 5), date(2023, 1, 6), True, True)
-    assert out[1].day_before is False and out[1].compensated is True
+    assert out[1].night_before is False and out[1].compensated is True
     assert out[2].members == ("A", "B") and out[2].compensated is False
 
 
-def test_blackout_person_windows_resolves_groups_and_day_before():
+def test_blackout_person_windows_and_night_before_dates():
     blackouts = [
         Blackout("T", (), date(2023, 1, 5), date(2023, 1, 6)),
-        Blackout(None, ("C",), date(2023, 1, 3), date(2023, 1, 3), day_before=False,
+        Blackout(None, ("C",), date(2023, 1, 3), date(2023, 1, 3), night_before=False,
                  compensated=False),
     ]
     windows = blackout_person_windows(blackouts, {"T": ["A", "B"]})
-    # Group members resolved at call time; day_before extends one day earlier.
-    assert windows["A"] == [(date(2023, 1, 4), date(2023, 1, 6), True)]
-    assert windows["B"] == [(date(2023, 1, 4), date(2023, 1, 6), True)]
+    # Group members resolved at call time; the window is NOT extended — the
+    # night-before rule is a separate, night-calls-only partial block.
+    assert windows["A"] == [(date(2023, 1, 5), date(2023, 1, 6), True)]
+    assert windows["B"] == [(date(2023, 1, 5), date(2023, 1, 6), True)]
     assert windows["C"] == [(date(2023, 1, 3), date(2023, 1, 3), False)]
+    nights = blackout_night_before_dates(blackouts, {"T": ["A", "B"]})
+    assert nights == {"A": {date(2023, 1, 4)}, "B": {date(2023, 1, 4)}}
     # An undefined group covers nobody.
     assert blackout_person_windows(blackouts[:1], None) == {}
+
+
+def test_is_night_call_marker():
+    night = ShiftTemplate(label="N", role="Junior", night_float=False, thu_weekend=True, points=2.0)
+    day = ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0)
+    nf = ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=True, points=2.0)
+    assert is_night_call(night)
+    assert not is_night_call(day)
+    assert not is_night_call(nf)  # night float is a separate rotation
 
 
 def test_compensated_blackout_keeps_weights_uncompensated_scales():
@@ -84,18 +98,47 @@ def test_compensated_blackout_keeps_weights_uncompensated_scales():
     assert weights["B"] == 6.0
 
 
-def test_solver_blocks_blackout_window_and_day_before():
+def test_solver_blocks_window_and_night_call_before():
     pytest.importorskip("ortools")
     from model.optimiser import build_schedule
 
+    shifts = [
+        ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="N", role="Junior", night_float=False, thu_weekend=True, points=2.0),
+    ]
     data = _data(
-        blackouts=[Blackout(None, ("A",), date(2023, 1, 5), date(2023, 1, 5))]
+        shifts=shifts,
+        juniors=["A", "B", "C"],
+        blackouts=[Blackout(None, ("A",), date(2023, 1, 5), date(2023, 1, 5))],
     )
     df = build_schedule(data, env="test")
-    by_date = {row["Date"]: row["D"] for row in df.to_dict("records")}
-    assert by_date[date(2023, 1, 4)] == "B"  # the day before is blocked too
-    assert by_date[date(2023, 1, 5)] == "B"
-    assert "Unfilled" not in by_date.values()
+    rows = {row["Date"]: row for row in df.to_dict("records")}
+    # In the window every non-NF shift is off-limits for A.
+    assert rows[date(2023, 1, 5)]["D"] != "A"
+    assert rows[date(2023, 1, 5)]["N"] != "A"
+    # The day before, only the night call is blocked — the day shift is fine.
+    assert rows[date(2023, 1, 4)]["N"] != "A"
+    for row in rows.values():
+        assert "Unfilled" not in (row["D"], row["N"])
+
+
+def test_blackout_never_touches_night_float():
+    pytest.importorskip("ortools")
+    from model.optimiser import build_schedule
+
+    shifts = [
+        ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False, points=2.0),
+    ]
+    # A is the only resident and is blacked out for the whole block; night
+    # float is a separate rotation, so A still covers every NF night.
+    data = _data(
+        shifts=shifts,
+        juniors=["A"],
+        nf_juniors=["A"],
+        blackouts=[Blackout(None, ("A",), date(2023, 1, 2), date(2023, 1, 7))],
+    )
+    df = build_schedule(data, env="test")
+    assert all(row["NF"] == "A" for row in df.to_dict("records"))
 
 
 def test_compensated_blackout_shortfall_is_repaid_next_block():
@@ -184,11 +227,26 @@ def test_blackout_warnings():
     assert any("penalty cannot fit" in w for w in warnings)
 
 
-def test_validate_schedule_flags_blackout_assignment():
-    data = _data(blackouts=[Blackout(None, ("A",), date(2023, 1, 5), date(2023, 1, 5))])
+def test_validate_schedule_flags_blackout_and_night_before():
+    shifts = [
+        ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="N", role="Junior", night_float=False, thu_weekend=True, points=2.0),
+        ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False, points=2.0),
+    ]
+    data = _data(
+        shifts=shifts,
+        nf_juniors=["A", "B"],
+        nf_block_length=1,
+        blackouts=[Blackout(None, ("A",), date(2023, 1, 5), date(2023, 1, 5))],
+    )
     df = pd.DataFrame([
-        {"Date": date(2023, 1, 4), "D": "A"},  # day before — blocked too
-        {"Date": date(2023, 1, 5), "D": "B"},
+        {"Date": date(2023, 1, 4), "D": "A", "N": "A", "NF": "B"},
+        {"Date": date(2023, 1, 5), "D": "A", "N": "B", "NF": "A"},
     ])
     issues = validate_schedule(df, data)
-    assert any("group blackout" in i for i in issues)
+    # Window: the day shift on Jan 5 is flagged; NF the same day is NOT.
+    assert any("group blackout" in i and "'D'" in i for i in issues)
+    assert not any("'NF'" in i and "blackout" in i for i in issues)
+    # Night before: the night call on Jan 4 is flagged; the day shift is not.
+    assert any("night call 'N'" in i and "post-call" in i for i in issues)
+    assert not any("'D'" in i and str(date(2023, 1, 4)) in i and "blackout" in i for i in issues)
