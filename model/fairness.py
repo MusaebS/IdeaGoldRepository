@@ -21,6 +21,7 @@ from .utils import effective_points, is_weekend, weekend_holiday_dates
 __all__ = [
     "ResidentPoints",
     "calculate_points",
+    "calculate_label_counts",
     "format_fairness_log",
     "fairness_range_lines",
     "load_annotation_notes",
@@ -65,6 +66,21 @@ def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, ResidentPoi
             if slot.weekend:
                 info["weekend"] += slot.points
     return summary
+
+
+def calculate_label_counts(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, int]]:
+    """Number of calls per shift label per resident (counts, not points)."""
+    counts: Dict[str, Dict[str, int]] = {
+        name: {} for name in data.juniors + data.seniors
+    }
+    for row in df.to_dict("records"):
+        for sh in data.shifts:
+            person = row.get(sh.label)
+            if person in (None, "Unfilled"):
+                continue
+            per = counts.setdefault(person, {})
+            per[sh.label] = per.get(sh.label, 0) + 1
+    return counts
 
 
 def fairness_range_lines(points: Dict[str, ResidentPoints]) -> List[str]:

@@ -6,6 +6,13 @@ lets the optimiser balance *cumulative* load — a resident who carried extra la
 block is given a lighter target this block — and the updated ledger is saved for
 the block after that.
 
+Alongside the three carryover dimensions, each entry also accumulates an
+informational per-shift-type history: ``"labels"`` (points per label) and
+``"label_counts"`` (call counts per label). These feed the fairness table's
+cumulative "which calls" view; carryover balancing itself stays on the three
+dimensions. Old ledger files without them load unchanged, and old app
+versions simply strip the extra keys.
+
 The ledger only influences the fairness *targets* (computed in
 ``build_schedule``); the solver itself is unchanged.
 
@@ -42,7 +49,7 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from .data_models import InputData
-from .fairness import calculate_points
+from .fairness import calculate_label_counts, calculate_points
 from .points import slot_points
 from .weights import availability_weights
 
@@ -55,6 +62,8 @@ __all__ = [
     "update_ledger",
     "ledger_to_json",
     "ledger_from_json",
+    "ledger_to_rows",
+    "rows_to_ledger",
 ]
 
 DIMENSIONS = ("total", "weekend", "night_float")
@@ -161,10 +170,15 @@ def update_ledger(
     """
     policy = DEFAULT_POLICY if policy is None else policy
     points = calculate_points(df, data)
-    updated: Dict[str, Dict[str, Any]] = {
-        person: {dim: float(vals.get(dim, 0.0)) for dim in DIMENSIONS}
-        for person, vals in (prior or {}).items()
-    }
+    label_counts = calculate_label_counts(df, data)
+    updated: Dict[str, Dict[str, Any]] = {}
+    for person, vals in (prior or {}).items():
+        entry: Dict[str, Any] = {dim: float(vals.get(dim, 0.0)) for dim in DIMENSIONS}
+        if vals.get("labels"):
+            entry["labels"] = {str(k): float(v) for k, v in vals["labels"].items()}
+        if vals.get("label_counts"):
+            entry["label_counts"] = {str(k): int(v) for k, v in vals["label_counts"].items()}
+        updated[person] = entry
     adjustments = (
         block_adjustments(prior, data)
         if (policy.no_refund_penalties or policy.no_catchup_excused)
@@ -175,6 +189,14 @@ def update_ledger(
         entry["total"] += info.get("total", 0.0)
         entry["weekend"] += info.get("weekend", 0.0)
         entry["night_float"] += info.get("night_float", 0.0)
+        # Informational per-shift-type history (raw earned values; the policy
+        # adjustments below only touch the carryover dimensions).
+        for label, pts in (info.get("labels") or {}).items():
+            labels_entry = entry.setdefault("labels", {})
+            labels_entry[label] = labels_entry.get(label, 0.0) + pts
+        for label, n in (label_counts.get(person) or {}).items():
+            counts_entry = entry.setdefault("label_counts", {})
+            counts_entry[label] = counts_entry.get(label, 0) + n
 
         adj = adjustments.get(person)
         if not adj:
@@ -204,9 +226,86 @@ def ledger_to_json(ledger) -> str:
     return json.dumps(ledger or {}, indent=2, sort_keys=True)
 
 
-def ledger_from_json(text: str) -> Dict[str, Dict[str, float]]:
+def ledger_from_json(text: str) -> Dict[str, Dict[str, Any]]:
+    """Parse a ledger JSON, keeping the optional per-label history.
+
+    The transient ``"adjustments"`` audit note is stripped as before; unknown
+    keys are ignored so files from newer versions still load.
+    """
     raw = json.loads(text)
-    return {
-        str(person): {dim: float(vals.get(dim, 0.0)) for dim in DIMENSIONS}
-        for person, vals in raw.items()
-    }
+    out: Dict[str, Dict[str, Any]] = {}
+    for person, vals in raw.items():
+        entry: Dict[str, Any] = {dim: float(vals.get(dim, 0.0)) for dim in DIMENSIONS}
+        labels = vals.get("labels")
+        if isinstance(labels, dict):
+            entry["labels"] = {str(k): float(v) for k, v in labels.items()}
+        counts = vals.get("label_counts")
+        if isinstance(counts, dict):
+            entry["label_counts"] = {str(k): int(v) for k, v in counts.items()}
+        out[str(person)] = entry
+    return out
+
+
+# Grid column <-> ledger dimension mapping for the in-app ledger editor.
+ROW_FIELDS = (("Total", "total"), ("Weekend", "weekend"), ("Night float", "night_float"))
+
+
+def ledger_to_rows(ledger) -> list:
+    """Flatten a ledger into editable rows (the three carryover dimensions).
+
+    Per-label history and audit notes are not part of the grid; keep the
+    loaded ledger around and pass it as ``base`` to :func:`rows_to_ledger` so
+    they survive an edit round-trip.
+    """
+    rows = []
+    for person in sorted(ledger or {}):
+        vals = ledger[person] or {}
+        row: Dict[str, Any] = {"Resident": person}
+        for col, dim in ROW_FIELDS:
+            row[col] = float(vals.get(dim, 0.0))
+        rows.append(row)
+    return rows
+
+
+def rows_to_ledger(rows, base=None):
+    """Rebuild a ledger from edited grid rows; returns ``(ledger, problems)``.
+
+    Blank names are skipped (reported when the row carries points), numbers
+    are coerced with a note on failure, duplicate names last-wins with a
+    note, and negative values are allowed (a maintenance edit may
+    legitimately debit). ``base`` supplies the per-label history for
+    residents still present.
+    """
+    problems: list = []
+    out: Dict[str, Dict[str, Any]] = {}
+
+    def _coerce(name: str, col: str, value) -> float:
+        if value in (None, ""):
+            return 0.0
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            problems.append(f"'{name}' has a non-numeric {col} value ({value!r}); using 0.")
+            return 0.0
+        if number != number:  # NaN from a cleared grid cell
+            return 0.0
+        return number
+
+    for row in rows or []:
+        raw_name = row.get("Resident")
+        name = str(raw_name).strip() if raw_name is not None else ""
+        if not name or name.lower() == "nan":
+            if any(_coerce("(unnamed)", col, row.get(col)) for col, _ in ROW_FIELDS):
+                problems.append("A row with points has no resident name and was skipped.")
+            continue
+        if name in out:
+            problems.append(f"Duplicate ledger row for '{name}'; the last one wins.")
+        entry: Dict[str, Any] = {
+            dim: _coerce(name, col, row.get(col)) for col, dim in ROW_FIELDS
+        }
+        extra = (base or {}).get(name) or {}
+        for key in ("labels", "label_counts"):
+            if extra.get(key):
+                entry[key] = dict(extra[key])
+        out[name] = entry
+    return out, problems

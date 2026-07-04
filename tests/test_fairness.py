@@ -444,3 +444,25 @@ def test_load_annotation_notes_summarise_leaves():
     assert load_annotation_notes("Bob", data) == []
     log = format_fairness_log(df, data)
     assert "[leave 3d comp]" in _resident_line(log, "Alice")
+
+
+def test_calculate_label_counts():
+    from model.fairness import calculate_label_counts
+
+    df, shifts = _sample_df_and_shifts()
+    data = InputData(
+        start_date=date(2023, 1, 7),
+        end_date=date(2023, 1, 8),
+        shifts=shifts,
+        juniors=["Alice", "Bob", "Cara"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+    )
+    counts = calculate_label_counts(df, data)
+    assert counts["Alice"] == {"D": 1, "N": 1}
+    assert counts["Bob"] == {"D": 1, "N": 1}
+    assert counts["Cara"] == {}  # rostered but never assigned

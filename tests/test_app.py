@@ -360,3 +360,36 @@ def test_reductions_editor_stores_to_session():
     assert reductions[0].factor == 0.0
     assert reductions[0].keep_total is False  # "work less now" is the default mode
     assert not at.exception
+
+
+def test_ledger_panel_start_empty_and_rows_survive_rerun():
+    at = _at()
+    at.run()
+    start = [b for b in at.button if b.key == "ledger_start"]
+    assert start, "Start an empty ledger button not found"
+    start[0].click()
+    at.run()
+    assert at.session_state["ledger_rows"] == []
+    # Seed a row as if edited in the grid; it must survive a cosmetic rerun
+    # and flow into the carryover ledger for the next Generate.
+    at.session_state["ledger_rows"] = [
+        {"Resident": "Alice", "Total": 5.0, "Weekend": 2.0, "Night float": 0.0}
+    ]
+    at.run()
+    assert at.session_state["ledger_rows"][0]["Resident"] == "Alice"
+    assert not at.exception
+
+
+def test_ledger_panel_clear_returns_to_standalone():
+    at = _at()
+    at.run()
+    at.session_state["ledger_rows"] = [
+        {"Resident": "Alice", "Total": 5.0, "Weekend": 2.0, "Night float": 0.0}
+    ]
+    at.run()
+    clear = [b for b in at.button if b.key == "ledger_clear"]
+    assert clear, "Clear ledger button not found"
+    clear[0].click()
+    at.run()
+    assert at.session_state["ledger_rows"] is None
+    assert not at.exception

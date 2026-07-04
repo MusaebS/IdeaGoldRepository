@@ -5,7 +5,12 @@ import pandas as pd
 import streamlit as st
 
 from model.coloring import COLOR_MODES, DEFAULT_PALETTE, schedule_cell_colors, theme_palette
-from model.exporters import build_fairness_frame, schedule_to_excel_bytes, schedule_to_pdf_bytes
+from model.exporters import (
+    build_assignment_frame,
+    build_fairness_frame,
+    schedule_to_excel_bytes,
+    schedule_to_pdf_bytes,
+)
 from model.fairness import (
     assignment_rationale,
     calculate_points,
@@ -211,7 +216,8 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
         excel_bytes = cached_export(
             "excel", export_sig,
             lambda: schedule_to_excel_bytes(
-                final_df, data, points=points, color_mode=color_mode, palette=palette
+                final_df, data, points=points, color_mode=color_mode, palette=palette,
+                prior_ledger=prior_ledger,
             ),
         )
         dcols[1].download_button(
@@ -229,7 +235,8 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
         pdf_bytes = cached_export(
             "pdf", export_sig,
             lambda: schedule_to_pdf_bytes(
-                final_df, data, points=points, color_mode=color_mode, palette=palette
+                final_df, data, points=points, color_mode=color_mode, palette=palette,
+                prior_ledger=prior_ledger,
             ),
         )
         dcols[2].download_button(
@@ -408,13 +415,38 @@ def render_results() -> None:
         st.subheader("Fairness summary")
         for line in ranges:
             st.write(line)
-        fair_frame = build_fairness_frame(points, data)
+        fair_frame = build_fairness_frame(points, data, df, prior_ledger)
         if len(fair_frame):
+            st.caption(
+                "Per resident: calls and points per shift type, targets and "
+                "deviations, cumulative history (with a ledger), and load notes."
+            )
+            st.dataframe(fair_frame, use_container_width=True)
+            st.download_button(
+                "Download fairness table (CSV)",
+                fair_frame.to_csv(index=False),
+                file_name="fairness_table.csv",
+                mime="text/csv",
+            )
             chart_df = fair_frame[
                 ["Resident", "Total", "Weekend", "Night Float"]
             ].set_index("Resident")
             st.caption("Workload by resident (points)")
             st.bar_chart(chart_df, stack=False)
+
+    with st.expander("Per-call detail (audit)", expanded=False):
+        st.caption(
+            "Every (date, shift) slot with who took it and what it was worth — "
+            "download and archive it for future reference."
+        )
+        call_frame = build_assignment_frame(df, data)
+        st.dataframe(call_frame, use_container_width=True)
+        st.download_button(
+            "Download per-call CSV",
+            call_frame.to_csv(index=False),
+            file_name="per_call_detail.csv",
+            mime="text/csv",
+        )
 
     _render_downloads(final_df, df, data, points, color_mode, palette, prior_ledger)
     _render_manual_edit(df, data)

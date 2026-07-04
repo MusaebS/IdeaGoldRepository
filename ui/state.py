@@ -35,6 +35,9 @@ class Keys:
     REDUCTIONS = "reductions"
     LEDGER_NO_REFUND = "ledger_no_refund"
     LEDGER_NO_CATCHUP = "ledger_no_catchup"
+    LEDGER_ROWS = "ledger_rows"          # editable grid rows (None = no ledger)
+    LEDGER_BASE = "ledger_base"          # uploaded ledger (keeps label history)
+    LEDGER_SIG = "ledger_upload_sig"
     DISPLAY_RESTORED = "display_restored_sig"
     DEMO_LOADED = "demo_loaded"
     RETRY_CONFIG = "retry_config"
@@ -80,6 +83,9 @@ def _defaults() -> dict:
         Keys.REDUCTIONS: [],
         Keys.LEDGER_NO_REFUND: True,
         Keys.LEDGER_NO_CATCHUP: True,
+        Keys.LEDGER_ROWS: None,
+        Keys.LEDGER_BASE: None,
+        Keys.LEDGER_SIG: None,
         Keys.DISPLAY_RESTORED: None,
         Keys.RESULT_DF: None,
         Keys.SOLVER_DF: None,

@@ -113,8 +113,10 @@ def test_policy_off_is_bit_identical_with_excusals():
     data = replace(_data(), leaves=[("B", date(2023, 1, 1), date(2023, 1, 3), False)])
     df = _df((date(2023, 1, 4), "A"), (date(2023, 1, 5), "B"))
     off = update_ledger(None, df, data, policy=LedgerPolicy(False, False))
-    assert off["A"] == {"total": 1.0, "weekend": 0.0, "night_float": 0.0}
-    assert off["B"] == {"total": 1.0, "weekend": 0.0, "night_float": 0.0}
+    expected = {"total": 1.0, "weekend": 0.0, "night_float": 0.0,
+                "labels": {"S": 1.0}, "label_counts": {"S": 1}}
+    assert off["A"] == expected
+    assert off["B"] == expected
 
 
 def test_penalty_debit_removes_extra_from_total_only():
@@ -278,3 +280,66 @@ def test_prior_with_adjustments_key_tolerated():
     updated = update_ledger(prior, df, _data())
     assert updated["A"]["total"] == 4.0
     assert "adjustments" not in updated["A"]  # old audit dropped, dims kept
+
+
+def test_update_ledger_accumulates_label_history():
+    data = _data()
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 1), "S": "A"},
+        {"Date": date(2023, 1, 2), "S": "A"},
+        {"Date": date(2023, 1, 3), "S": "B"},
+    ])
+    prior = {"A": {"total": 4.0, "weekend": 0.0, "night_float": 0.0,
+                   "labels": {"S": 4.0}, "label_counts": {"S": 4}}}
+    ledger = update_ledger(prior, df, data)
+    assert ledger["A"]["labels"] == {"S": 6.0}
+    assert ledger["A"]["label_counts"] == {"S": 6}
+    assert ledger["B"]["labels"] == {"S": 1.0}
+    assert ledger["B"]["label_counts"] == {"S": 1}
+
+
+def test_ledger_json_round_trips_label_history_and_legacy_loads():
+    ledger = {"A": {"total": 3.0, "weekend": 1.0, "night_float": 0.0,
+                    "labels": {"S": 3.0}, "label_counts": {"S": 3}}}
+    restored = ledger_from_json(ledger_to_json(ledger))
+    assert restored == ledger
+    # Legacy files without the history keys load unchanged.
+    legacy = ledger_from_json('{"A": {"total": 2.0}}')
+    assert legacy == {"A": {"total": 2.0, "weekend": 0.0, "night_float": 0.0}}
+
+
+def test_ledger_rows_round_trip_preserves_history_via_base():
+    from model.ledger import ledger_to_rows, rows_to_ledger
+
+    ledger = {
+        "A": {"total": 3.0, "weekend": 1.0, "night_float": 0.5,
+              "labels": {"S": 3.0}, "label_counts": {"S": 3}},
+        "B": {"total": 2.0, "weekend": 0.0, "night_float": 0.0},
+    }
+    rows = ledger_to_rows(ledger)
+    assert rows == [
+        {"Resident": "A", "Total": 3.0, "Weekend": 1.0, "Night float": 0.5},
+        {"Resident": "B", "Total": 2.0, "Weekend": 0.0, "Night float": 0.0},
+    ]
+    rebuilt, problems = rows_to_ledger(rows, base=ledger)
+    assert problems == []
+    assert rebuilt == ledger
+
+
+def test_rows_to_ledger_reports_problems_and_allows_negatives():
+    from model.ledger import rows_to_ledger
+
+    rows = [
+        {"Resident": " A ", "Total": "abc", "Weekend": -1.5, "Night float": None},
+        {"Resident": "A", "Total": 2.0, "Weekend": 0.0, "Night float": 0.0},
+        {"Resident": "", "Total": 5.0, "Weekend": 0.0, "Night float": 0.0},
+        {"Resident": None, "Total": 0.0, "Weekend": 0.0, "Night float": 0.0},
+    ]
+    ledger, problems = rows_to_ledger(rows)
+    assert ledger["A"]["total"] == 2.0  # duplicate: the last row wins
+    assert any("non-numeric" in p for p in problems)
+    assert any("last one wins" in p for p in problems)
+    assert any("no resident name" in p for p in problems)
+    ledger2, _ = rows_to_ledger([{"Resident": "B", "Total": 1.0, "Weekend": -2.0,
+                                  "Night float": 0.0}])
+    assert ledger2["B"]["weekend"] == -2.0

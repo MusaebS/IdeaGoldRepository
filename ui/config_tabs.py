@@ -11,7 +11,6 @@ import streamlit as st
 from model.config_io import display_from_json, input_data_to_json, input_data_from_json
 from model.data_models import InputData, normalized_blackouts, normalized_reductions
 from model.demo_data import sample_shifts, sample_names
-from model.ledger import ledger_from_json
 from model.optimiser import build_schedule
 from model.validation import validate_input, config_warnings
 
@@ -31,6 +30,7 @@ from ui.editors import (
     shift_template_editor,
     weekday_points_editor,
 )
+from ui.ledger_panel import render_ledger_panel
 from ui.state import Keys, restore_display_state, set_result
 
 
@@ -289,11 +289,12 @@ def render_config_tabs() -> tuple:
             "Leave this empty for a standalone, one-off schedule — this block is "
             "balanced on its own, with no link to fairness history. To keep fairness "
             "across months instead, upload the previous block's ledger here (residents "
-            "who carried extra get lighter targets now) and download the updated "
-            "ledger afterwards for next time."
+            "who carried extra get lighter targets now), tweak it in the grid if the "
+            "real world diverged, and download the updated ledger afterwards for "
+            "next time."
         )
-        uploaded_ledger = st.file_uploader(
-            "Load fairness ledger (JSON)", type="json", key="ledger_upload"
+        carryover_ledger = render_ledger_panel(
+            st.session_state[Keys.JUNIORS] + st.session_state[Keys.SENIORS]
         )
         st.checkbox(
             "Penalties don't earn future relief (recommended)",
@@ -310,13 +311,6 @@ def render_config_tabs() -> tuple:
             "resident is not made to catch it up in later blocks (e.g. after a "
             "perk expires).",
         )
-
-    carryover_ledger = None
-    if uploaded_ledger is not None:
-        try:
-            carryover_ledger = ledger_from_json(uploaded_ledger.getvalue().decode("utf-8"))
-        except Exception as exc:
-            st.error(f"Could not read ledger: {exc}")
 
     return session_config, uploaded_config, carryover_ledger
 
