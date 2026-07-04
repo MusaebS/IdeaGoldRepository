@@ -51,6 +51,7 @@ def build_fairness_frame(
         _resolved_target,
         calculate_label_counts,
         load_annotation_notes,
+        preference_satisfaction,
     )
 
     target_total = _resolved_target(df, "target_total", data.target_total) if df is not None else None
@@ -58,6 +59,7 @@ def build_fairness_frame(
     target_weekend = _resolved_target(df, "target_weekend", data.target_weekend) if df is not None else None
     target_nf = _resolved_target(df, "target_night_float", data.target_night_float) if df is not None else None
     counts = calculate_label_counts(df, data) if df is not None else None
+    pref_stats = preference_satisfaction(df, data) if df is not None else {}
 
     labels = sorted(
         {label for info in points.values() for label in info.get("labels", {})}
@@ -106,6 +108,9 @@ def build_fairness_frame(
                     row[f"{label} n cum"] = (
                         int(prior_counts.get(label, 0)) + counts.get(name, {}).get(label, 0)
                     )
+        if name in pref_stats:
+            matched, total = pref_stats[name]
+            row["Pref match"] = f"{matched}/{total}"
         notes = load_annotation_notes(name, data)
         if notes:
             row["Notes"] = " ".join(notes)

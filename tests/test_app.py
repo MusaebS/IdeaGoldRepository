@@ -418,3 +418,22 @@ def test_availability_apply_adds_compensated_leaves_with_dedupe():
     assert tuple(leaves[1]) == ("Bob", date(2026, 8, 10), date(2026, 8, 10), True)
     assert at.session_state["avail_preview"] is None
     assert not at.exception
+
+
+def test_preferences_editor_stores_to_session():
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob"]
+    at.session_state["shifts"] = [
+        ShiftTemplate(label="N", role="Junior", night_float=False, thu_weekend=False, points=2.0),
+    ]
+    at.run()
+    at.multiselect(key="pref_labels").set_value(["N"])
+    at.selectbox(key="pref_day").set_value("Weekends")
+    at.run()
+    set_btn = [b for b in at.button if b.key == "pref_set"]
+    set_btn[0].click()
+    at.run()
+    assert at.session_state["preferred_shifts"] == {"Alice": ["N"]}
+    assert at.session_state["preferred_day_type"] == {"Alice": "weekend"}
+    assert not at.exception

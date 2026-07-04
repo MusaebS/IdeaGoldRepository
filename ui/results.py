@@ -16,6 +16,7 @@ from model.fairness import (
     calculate_points,
     fairness_range_lines,
     format_fairness_log,
+    preference_satisfaction,
     schedule_quality,
 )
 from model.ledger import LedgerPolicy, block_adjustments, ledger_to_json, update_ledger
@@ -385,6 +386,15 @@ def render_results() -> None:
         f"Total-points range {quality['total_range']:.1f} · "
         f"weekend range {quality['weekend_range']:.1f} (smaller is fairer)"
     )
+    pref_stats = preference_satisfaction(df, data)
+    if pref_stats:
+        st.caption(
+            "Preference matches (soft, fairness untouched): "
+            + " · ".join(
+                f"{person} {matched}/{total}"
+                for person, (matched, total) in sorted(pref_stats.items())
+            )
+        )
 
     color_mode, palette = _render_customisation(df)
 

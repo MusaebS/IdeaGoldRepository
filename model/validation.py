@@ -82,7 +82,30 @@ def config_warnings(data: InputData) -> List[str]:
     warnings.extend(_exemption_perk_warnings(data))
     warnings.extend(_blackout_warnings(data))
     warnings.extend(_reduction_warnings(data))
+    warnings.extend(_preference_warnings(data))
     return warnings
+
+
+def _preference_warnings(data: InputData) -> List[str]:
+    """Advisories for preferences that can never take effect."""
+    out: List[str] = []
+    shift_by_label = {s.label: s for s in data.shifts}
+    exempt = data.exempt_shifts or {}
+    for name, labels in (data.preferred_shifts or {}).items():
+        for label in labels:
+            shift = shift_by_label.get(label)
+            if shift is None:
+                continue  # unknown labels are validate_input errors
+            pool = set(data.juniors if shift.role == "Junior" else data.seniors)
+            if shift.night_float:
+                pool &= set(data.nf_juniors if shift.role == "Junior" else data.nf_seniors)
+            if name not in pool or label in exempt.get(name, ()):
+                out.append(
+                    f"'{name}' prefers '{label}' but can never work it (role, "
+                    "night-float eligibility, or exemption); the preference "
+                    "has no effect."
+                )
+    return out
 
 
 def _reduction_warnings(data: InputData) -> List[str]:
@@ -581,6 +604,23 @@ def validate_input(data: InputData) -> List[str]:
             issues.append(
                 f"Reduction window for {who} ends ({red.end}) before it starts "
                 f"({red.start})."
+            )
+
+    for name, labels in (data.preferred_shifts or {}).items():
+        if name not in roster:
+            issues.append(f"Shift preference references unknown resident '{name}'.")
+        for label in labels:
+            if label not in shift_labels:
+                issues.append(f"'{name}' prefers unknown shift '{label}'.")
+    for name, day_kind in (data.preferred_day_type or {}).items():
+        if name not in roster:
+            issues.append(
+                f"Day-type preference references unknown resident '{name}'."
+            )
+        if day_kind not in ("weekend", "weekday"):
+            issues.append(
+                f"Day-type preference for '{name}' must be 'weekend' or "
+                f"'weekday' (got '{day_kind}')."
             )
 
     return issues

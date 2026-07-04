@@ -137,6 +137,14 @@ def input_data_to_json(data: InputData, display: dict | None = None) -> str:
             if data.reductions
             else None
         ),
+        "preferred_shifts": (
+            {name: sorted(labels) for name, labels in data.preferred_shifts.items()}
+            if data.preferred_shifts
+            else None
+        ),
+        "preferred_day_type": (
+            dict(data.preferred_day_type) if data.preferred_day_type else None
+        ),
     }
     if display:
         payload["display"] = display
@@ -306,6 +314,16 @@ def input_data_from_json(text: str) -> InputData:
                 for entry in raw["reductions"]
             ]
             if raw.get("reductions")
+            else None
+        ),
+        preferred_shifts=(
+            {str(k): [str(x) for x in v] for k, v in raw["preferred_shifts"].items()}
+            if raw.get("preferred_shifts")
+            else None
+        ),
+        preferred_day_type=(
+            {str(k): str(v) for k, v in raw["preferred_day_type"].items()}
+            if raw.get("preferred_day_type")
             else None
         ),
     )

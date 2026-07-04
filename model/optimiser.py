@@ -144,6 +144,37 @@ from .utils import weekend_holiday_dates
 from .weights import availability_weights
 
 
+def objective_weights(
+    n_days: int, n_shifts: int, has_prefs: bool
+) -> Tuple[int, int, int, int, int, int]:
+    """The lexicographic objective weights, rescaled when preferences exist.
+
+    Soft shift preferences are a new lowest tier with weight 1, so every
+    original weight is multiplied by ``K = 2·D·S + 1``:
+
+    - each of the D·S slots is assigned exactly once and can match at most 2
+      preference criteria (label + day type), so the total preference reward
+      lies in ``[-2·D·S, 0]``;
+    - every original term is a non-negative integer with minimum coefficient 1
+      (scaled deviations, unfilled slots), so any strict improvement in the
+      original weighted sum changes it by ≥ 1, i.e. by ≥ K after rescaling —
+      strictly more than the whole preference range.
+
+    Hence preferences can never buy an unfilled slot or a single scaled point
+    of any deviation; they only order exact fairness ties. ``K = 1`` when no
+    preferences are configured keeps existing objectives byte-identical (and
+    keeps the headroom: worst case ≈ 3.3×10¹⁶ ≪ 2⁶³).
+
+    Returns ``(W_MAXDEV, W_TOTAL, W_WEEKEND, W_NIGHTS, W_LABEL, W_UNFILLED)``;
+    the preference tier itself always has weight 1.
+    """
+    scale = 2 * n_days * n_shifts + 1 if has_prefs else 1
+    return (
+        10**9 * scale, 10**6 * scale, 10**3 * scale,
+        10**2 * scale, 10 * scale, scale,
+    )
+
+
 class SchedulerSolver:
     def __init__(self, data: InputData):
         self.data = data
@@ -534,6 +565,36 @@ class SchedulerSolver:
                                         start_var + self.vars[(p_idx, before, ss)] <= 1
                                     )
 
+    def _preference_rewards(self) -> Dict[Tuple[int, int, int], int]:
+        """(person, day, shift) -> reward in {1, 2} for preference matches.
+
+        One point when the slot's label is among the person's preferred shift
+        types, one when the slot's day type (weekend as classified by
+        ``classify_slot`` — including ``thu_weekend`` and weekend-flagged
+        holidays) matches their preferred day type.
+        """
+        preferred = self.data.preferred_shifts or {}
+        day_type = self.data.preferred_day_type or {}
+        if not preferred and not day_type:
+            return {}
+        rewards: Dict[Tuple[int, int, int], int] = {}
+        for p_idx, person in enumerate(self.people[:-1]):
+            labels = set(preferred.get(person, ()))
+            wants = day_type.get(person)
+            if not labels and not wants:
+                continue
+            for (d_idx, s_idx), slot in self.slots.items():
+                reward = 0
+                if slot.shift.label in labels:
+                    reward += 1
+                if wants == "weekend" and slot.weekend:
+                    reward += 1
+                elif wants == "weekday" and not slot.weekend:
+                    reward += 1
+                if reward:
+                    rewards[(p_idx, d_idx, s_idx)] = reward
+        return rewards
+
     def build_objective(self) -> None:
         unfilled_vars = [
             self.vars[(len(self.people) - 1, d_idx, s_idx)]
@@ -543,9 +604,14 @@ class SchedulerSolver:
 
         terms = []
         # Lexicographic-style weights: overall-points spread first, then total,
-        # weekend, night-float, per-label deviations, and finally unfilled slots.
-        W_MAXDEV, W_TOTAL, W_WEEKEND, W_NIGHTS, W_LABEL, W_UNFILLED = (
-            10**9, 10**6, 10**3, 10**2, 10, 1,
+        # weekend, night-float, per-label deviations, and finally unfilled
+        # slots. When soft preferences exist, objective_weights rescales the
+        # whole ladder so the preference rewards (weight 1) sit strictly below
+        # everything — they only order exact fairness ties.
+        rewards = self._preference_rewards()
+        self.pref_rewards = rewards
+        W_MAXDEV, W_TOTAL, W_WEEKEND, W_NIGHTS, W_LABEL, W_UNFILLED = objective_weights(
+            len(self.days), len(self.shifts), bool(rewards)
         )
         if self.max_dev is not None:
             terms.append(W_MAXDEV * self.max_dev)
@@ -558,6 +624,8 @@ class SchedulerSolver:
         if self.dev_label:
             terms.append(W_LABEL * sum(self.dev_label.values()))
         terms.append(W_UNFILLED * sum(unfilled_vars))
+        if rewards:
+            terms.append(sum(-r * self.vars[key] for key, r in rewards.items()))
 
         self.model.Minimize(sum(terms))
 

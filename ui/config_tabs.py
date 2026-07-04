@@ -38,6 +38,7 @@ from ui.editors import (
     holidays_editor,
     named_groups_editor,
     perks_editor,
+    preferences_editor,
     reductions_editor,
     roster_editor,
     seniority_editor,
@@ -116,6 +117,17 @@ def _active_config_maps() -> dict:
             members = tuple(m for m in b.members if m in active_people)
             if members:
                 blackouts.append(b._replace(members=members))
+    preferred_shifts = {
+        p: [lbl for lbl in labels if lbl in shift_labels]
+        for p, labels in st.session_state[Keys.PREFERRED_SHIFTS].items()
+        if p in active_people
+    }
+    preferred_shifts = {p: labels for p, labels in preferred_shifts.items() if labels}
+    preferred_day_type = {
+        p: kind
+        for p, kind in st.session_state[Keys.PREFERRED_DAY_TYPE].items()
+        if p in active_people and kind in ("weekend", "weekday")
+    }
     reductions = []
     for r in normalized_reductions(st.session_state[Keys.REDUCTIONS]):
         labels = tuple(lbl for lbl in r.labels if lbl in shift_labels)
@@ -141,6 +153,8 @@ def _active_config_maps() -> dict:
         "named_groups": named_groups or None,
         "blackouts": blackouts or None,
         "reductions": reductions or None,
+        "preferred_shifts": preferred_shifts or None,
+        "preferred_day_type": preferred_day_type or None,
     }
 
 
@@ -330,6 +344,8 @@ def render_config_tabs() -> tuple:
             people, [s.label for s in st.session_state[Keys.SHIFTS]],
             default_start=start_date, default_end=end_date,
         )
+        st.divider()
+        preferences_editor(people, [s.label for s in st.session_state[Keys.SHIFTS]])
         st.divider()
         st.subheader("Point overrides & holidays")
         weekday_points_editor([s.label for s in st.session_state[Keys.SHIFTS]])

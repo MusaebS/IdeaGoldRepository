@@ -25,6 +25,7 @@ __all__ = [
     "format_fairness_log",
     "fairness_range_lines",
     "load_annotation_notes",
+    "preference_satisfaction",
     "schedule_quality",
     "assignment_rationale",
 ]
@@ -81,6 +82,41 @@ def calculate_label_counts(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[
             per = counts.setdefault(person, {})
             per[sh.label] = per.get(sh.label, 0) + 1
     return counts
+
+
+def preference_satisfaction(df: pd.DataFrame, data: InputData) -> Dict[str, tuple]:
+    """Per person with preferences: (matched criteria, criteria opportunities).
+
+    Each assignment the person worked contributes one opportunity per
+    configured preference axis (shift type, day type) — the same counting the
+    solver's preference rewards use — so "7/10" reads: of 10 axis-checks
+    across their calls, 7 came out preferred.
+    """
+    preferred = data.preferred_shifts or {}
+    day_type = data.preferred_day_type or {}
+    people = set(preferred) | set(day_type)
+    if not people:
+        return {}
+    weekend_dates = weekend_holiday_dates(data)
+    counters: Dict[str, list] = {p: [0, 0] for p in people}
+    for row in df.to_dict("records"):
+        day = row.get("Date")
+        for sh in data.shifts:
+            person = row.get(sh.label)
+            if person not in counters:
+                continue
+            slot = classify_slot(day, sh, data, weekend_dates)
+            labels = preferred.get(person)
+            if labels:
+                counters[person][1] += 1
+                if sh.label in labels:
+                    counters[person][0] += 1
+            wants = day_type.get(person)
+            if wants in ("weekend", "weekday"):
+                counters[person][1] += 1
+                if (wants == "weekend") == bool(slot.weekend):
+                    counters[person][0] += 1
+    return {p: (matched, total) for p, (matched, total) in counters.items()}
 
 
 def fairness_range_lines(points: Dict[str, ResidentPoints]) -> List[str]:
@@ -175,6 +211,15 @@ def load_annotation_notes(person: str, data: InputData) -> List[str]:
             f"[reduced {', '.join(sorted(red.labels))} ×{red.factor:.2f} "
             f"{red.start.isoformat()}→{red.end.isoformat()} {mode}]"
         )
+    prefer_bits = []
+    labels = (data.preferred_shifts or {}).get(person)
+    if labels:
+        prefer_bits.append(", ".join(sorted(labels)))
+    wants = (data.preferred_day_type or {}).get(person)
+    if wants in ("weekend", "weekday"):
+        prefer_bits.append(f"{wants}s")
+    if prefer_bits:
+        notes.append(f"[prefers: {'; '.join(prefer_bits)}]")
     # Leave summary, clipped to the block (a window outside it has no effect).
     comp_days = uncomp_days = 0
     for name, start, end, compensated in normalized_leaves(data.leaves):

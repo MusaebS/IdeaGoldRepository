@@ -486,6 +486,59 @@ def exemptions_editor(people: list, shift_labels: list) -> None:
             ex.pop(removed, None)
 
 
+DAY_TYPE_CHOICES = {"No preference": None, "Weekends": "weekend", "Weekdays": "weekday"}
+
+
+def preferences_editor(people: list, shift_labels: list) -> None:
+    """Soft per-resident preferences: preferred shift types and day type."""
+    st.markdown("**Shift preferences — quality of life, never fairness**")
+    st.caption(
+        "Soft: preferences only break ties between equally fair schedules — "
+        "they never change anyone's fair share, deviations, or the ledger. "
+        "Two people wanting opposite things simply swap slots."
+    )
+    if not people or not shift_labels:
+        st.caption("Add participants and shift templates first.")
+        return
+    c = st.columns([3, 3, 2, 1])
+    with c[0]:
+        who = st.selectbox("Resident", people, key="pref_who")
+    with c[1]:
+        labels = st.multiselect("Prefers these shift types", shift_labels, key="pref_labels")
+    with c[2]:
+        day_choice = st.selectbox("Day type", list(DAY_TYPE_CHOICES), key="pref_day")
+    with c[3]:
+        st.markdown("&nbsp;")
+        if st.button("Set", key="pref_set"):
+            if labels:
+                st.session_state[Keys.PREFERRED_SHIFTS][who] = sorted(labels)
+            else:
+                st.session_state[Keys.PREFERRED_SHIFTS].pop(who, None)
+            day_kind = DAY_TYPE_CHOICES[day_choice]
+            if day_kind:
+                st.session_state[Keys.PREFERRED_DAY_TYPE][who] = day_kind
+            else:
+                st.session_state[Keys.PREFERRED_DAY_TYPE].pop(who, None)
+    shifts_map = st.session_state[Keys.PREFERRED_SHIFTS]
+    days_map = st.session_state[Keys.PREFERRED_DAY_TYPE]
+    everyone = sorted(set(shifts_map) | set(days_map))
+    if everyone:
+        st.table(pd.DataFrame([
+            {
+                "Resident": p,
+                "Prefers": ", ".join(shifts_map.get(p, [])) or "—",
+                "Day type": {"weekend": "Weekends", "weekday": "Weekdays"}.get(
+                    days_map.get(p, ""), "—"
+                ),
+            }
+            for p in everyone
+        ]))
+        removed = _remove_control(everyone, "Remove preference", "pref_rm")
+        if removed is not None:
+            shifts_map.pop(removed, None)
+            days_map.pop(removed, None)
+
+
 REDUCTION_MODES = {
     "Work less now, repay later": False,   # keep_total=False
     "Keep full share (more of the other shifts now)": True,

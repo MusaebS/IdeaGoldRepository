@@ -211,3 +211,16 @@ def test_reductions_round_trip_and_legacy_none():
     assert restored.reductions == data.reductions
 
     assert input_data_from_json(input_data_to_json(_sample_data())).reductions is None
+
+
+def test_preferences_round_trip_and_legacy_none():
+    data = _sample_data()
+    data.preferred_shifts = {"A": ["NF"]}
+    data.preferred_day_type = {"B": "weekday", "C": "weekend"}
+    restored = input_data_from_json(input_data_to_json(data))
+    assert restored.preferred_shifts == data.preferred_shifts
+    assert restored.preferred_day_type == data.preferred_day_type
+
+    legacy = input_data_from_json(input_data_to_json(_sample_data()))
+    assert legacy.preferred_shifts is None
+    assert legacy.preferred_day_type is None

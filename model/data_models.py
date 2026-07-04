@@ -220,6 +220,12 @@ class InputData:
     # ``factor`` of its fair share of specific shift types inside a window;
     # the shortfall is carried in the ledger and repaid, never excused.
     reductions: Sequence[LoadReduction | Tuple] | None = None
+    # Soft shift preferences: resident -> preferred shift labels, and resident
+    # -> preferred day type ("weekend" / "weekday"). Quality-of-life only:
+    # they order otherwise EQUALLY-FAIR schedules and never change targets,
+    # deviations, or the ledger (see optimiser.objective_weights).
+    preferred_shifts: Dict[str, List[str]] | None = None
+    preferred_day_type: Dict[str, str] | None = None
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None
     target_weekend: Dict[str, float] | None = None

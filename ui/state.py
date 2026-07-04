@@ -33,6 +33,8 @@ class Keys:
     NAMED_GROUPS = "named_groups"
     BLACKOUTS = "blackouts"
     REDUCTIONS = "reductions"
+    PREFERRED_SHIFTS = "preferred_shifts"
+    PREFERRED_DAY_TYPE = "preferred_day_type"
     LEDGER_NO_REFUND = "ledger_no_refund"
     LEDGER_NO_CATCHUP = "ledger_no_catchup"
     LEDGER_ROWS = "ledger_rows"          # editable grid rows (None = no ledger)
@@ -83,6 +85,8 @@ def _defaults() -> dict:
         Keys.NAMED_GROUPS: {},
         Keys.BLACKOUTS: [],
         Keys.REDUCTIONS: [],
+        Keys.PREFERRED_SHIFTS: {},
+        Keys.PREFERRED_DAY_TYPE: {},
         Keys.LEDGER_NO_REFUND: True,
         Keys.LEDGER_NO_CATCHUP: True,
         Keys.LEDGER_ROWS: None,
