@@ -261,6 +261,11 @@ class InputData:
     # deviations, or the ledger (see optimiser.objective_weights).
     preferred_shifts: Dict[str, List[str]] | None = None
     preferred_day_type: Dict[str, str] | None = None
+    # Avoid pairs: two residents never on call on the same day (any shifts).
+    # A hard constraint that never causes infeasibility on its own (slots fall
+    # to Unfilled) and leaves fairness targets untouched. The UI gates the
+    # editor behind an access code because using this needs sign-off.
+    avoid_pairs: Sequence[Tuple[str, str]] | None = None
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None
     target_weekend: Dict[str, float] | None = None

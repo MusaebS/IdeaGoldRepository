@@ -85,7 +85,26 @@ def config_warnings(data: InputData) -> List[str]:
     warnings.extend(_blackout_warnings(data))
     warnings.extend(_reduction_warnings(data))
     warnings.extend(_preference_warnings(data))
+    warnings.extend(_avoid_pair_warnings(data))
     return warnings
+
+
+def _avoid_pair_warnings(data: InputData) -> List[str]:
+    """Advisories for avoid pairs that will visibly hurt coverage."""
+    out: List[str] = []
+    role_shifts: dict = {}
+    for shift in data.shifts:
+        role_shifts[shift.role] = role_shifts.get(shift.role, 0) + 1
+    for pair in (data.avoid_pairs or []):
+        first, second = pair[0], pair[1]
+        for role, people in (("Junior", data.juniors), ("Senior", data.seniors)):
+            if role_shifts.get(role) and set(people) == {first, second}:
+                out.append(
+                    f"Avoid pair '{first}' / '{second}' are the only "
+                    f"{role.lower()}s; at most one can work per day, so expect "
+                    "unfilled slots."
+                )
+    return out
 
 
 def _preference_warnings(data: InputData) -> List[str]:
@@ -630,6 +649,14 @@ def validate_input(data: InputData) -> List[str]:
                 f"'weekday' (got '{day_kind}')."
             )
 
+    for pair in (data.avoid_pairs or []):
+        first, second = pair[0], pair[1]
+        for name in (first, second):
+            if name not in roster:
+                issues.append(f"Avoid pair references unknown resident '{name}'.")
+        if first == second:
+            issues.append(f"Avoid pair lists '{first}' with themselves.")
+
     return issues
 
 
@@ -708,6 +735,13 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
 
         for person in {p for p in assigned_today if assigned_today.count(p) > 1}:
             issues.append(f"{day}: {person} is assigned to more than one shift")
+
+        for pair in (data.avoid_pairs or []):
+            first, second = pair[0], pair[1]
+            if first != second and first in assigned_today and second in assigned_today:
+                issues.append(
+                    f"{day}: {first} and {second} are both on call (avoid pair)"
+                )
 
     # Reduced-shift caps: recompute each member's window points on the reduced
     # labels so a manual edit cannot silently exceed the cap.

@@ -220,6 +220,14 @@ def load_annotation_notes(person: str, data: InputData) -> List[str]:
         prefer_bits.append(f"{wants}s")
     if prefer_bits:
         notes.append(f"[prefers: {'; '.join(prefer_bits)}]")
+    partners = sorted(
+        other
+        for pair in (data.avoid_pairs or [])
+        for who, other in ((pair[0], pair[1]), (pair[1], pair[0]))
+        if who == person and other != person
+    )
+    if partners:
+        notes.append(f"[avoids: {', '.join(partners)}]")
     # Leave summary, clipped to the block (a window outside it has no effect).
     comp_days = uncomp_days = 0
     for name, start, end, compensated in normalized_leaves(data.leaves):

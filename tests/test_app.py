@@ -459,3 +459,31 @@ def test_rotator_coverage_feeds_exemptions():
     assert len(at.session_state["rotators"]) == 1
     assert at.session_state["exempt_shifts"]["Alice"] == ["D", "N"]
     assert not at.exception
+
+
+def test_avoid_pairs_locked_until_correct_code():
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob"]
+    at.run()
+    # Locked by default: no pair selectors rendered.
+    assert not [s for s in at.selectbox if s.key == "avoid_a"]
+    at.text_input(key="avoid_code").set_value("0000")
+    unlock = [b for b in at.button if b.key == "avoid_unlock"]
+    unlock[0].click()
+    at.run()
+    assert at.session_state["avoid_unlocked"] is False
+    assert any("Wrong code" in w.value for w in at.warning)
+    at.text_input(key="avoid_code").set_value("1221")
+    unlock = [b for b in at.button if b.key == "avoid_unlock"]
+    unlock[0].click()
+    at.run()
+    assert at.session_state["avoid_unlocked"] is True
+    # Now the editor is available; add a pair.
+    at.selectbox(key="avoid_a").set_value("Alice")
+    at.selectbox(key="avoid_b").set_value("Bob")
+    add = [b for b in at.button if b.key == "avoid_add"]
+    add[0].click()
+    at.run()
+    assert at.session_state["avoid_pairs"] == [("Alice", "Bob")]
+    assert not at.exception

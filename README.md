@@ -196,19 +196,32 @@ factors, so deviations stay honest. Configure them under **③ Advanced**.
 
 Define **named groups** (② *Groups & blackouts*) — plain member lists, e.g. four
 teams of three, fully editable — and add **blackout periods** per group (or for
-ad-hoc names): nobody covered is on call during the window **or, by default, the
-day before it**, so no one enters the period post-call. A blackout is not a
-leave: it is entered in bulk, reported separately (`[blackout Team A …]` in the
-log and Notes), and **compensated by default** — each member keeps their full
-fair share, so the missed load is made up on other days of the block or, with a
-carryover ledger, carried as debt and repaid next block (never excused).
-Untick *Compensated* for uncompensated-leave semantics instead. Group
-membership is resolved when the schedule is generated, so editing a group
-updates every blackout that references it. Pre-solve advisories flag empty
-groups, out-of-block windows, and days where blackouts + leaves + rotators
-leave fewer available residents than shifts ("expect unfilled slots").
-Note: the manual-edit dropdowns can't hide people per-day, but assigning
-someone inside their blackout is flagged by the validator and the log.
+ad-hoc names): nobody covered is on call during the window, and by default they
+are also blocked from the **night calls of the day before**, so no one is
+post-call on their first off day. "Night call" uses the roster's existing
+marker: the shifts flagged **"Thu counts as weekend"** (a Thursday night makes
+Friday post-call, hence weekend load) — day shifts on the day before stay
+allowed. **Night float is never touched by blackouts** (not in the window, not
+the day before): it is a separate rotation, not an on-call; a personal leave
+still blocks it. A blackout is not a leave: it is entered in bulk, reported
+separately (`[blackout Team A …]` in the log and Notes), and **compensated by
+default** — each member keeps their full fair share, so the missed load is made
+up on other days of the block or, with a carryover ledger, carried as debt and
+repaid next block (never excused). Untick *Compensated* for
+uncompensated-leave semantics instead. Group membership is resolved when the
+schedule is generated, so editing a group updates every blackout that
+references it — and **rotators are ordinary roster members**, so groups,
+blackouts, reductions, and preferences all apply to them while they are
+active. Pre-solve advisories flag empty groups, out-of-block windows, and days
+where blackouts + leaves + rotators leave fewer available residents than
+shifts ("expect unfilled slots"). Note: the manual-edit dropdowns can't hide
+people per-day, but assigning someone inside their blackout — or on a night
+call the day before it — is flagged by the validator and the log.
+
+When adding a **rotator** you can also pick which shift types they cover
+("Covers only these shift types"): anything left out is added to their entry
+under **③ Advanced → Exemptions** (the normal hard-block mechanism), where it
+stays visible and editable.
 
 ## Shift-type load reductions (repaid later)
 
@@ -278,6 +291,19 @@ unfilled slot or a single scaled point of any deviation. Two residents wanting
 opposite things simply swap slots — no harm, no unfairness. The results page
 shows per-person match ratios and the fairness table a `Pref match` column;
 advisories flag preferences for shifts a person can never work.
+
+## Avoid pairs (restricted)
+
+Two residents with a personal conflict can be kept apart: an **avoid pair** is
+never on call on the same day (any shift types). It is a hard constraint that
+never makes the schedule infeasible (uncoverable slots fall to *Unfilled*, and
+an advisory warns when the pair are the only two of a role) and it does not
+change anyone's fairness target. Because separating people usually needs
+approval from higher authority, the editor (③ Advanced → *Avoid pairs
+(restricted)*) hides behind an **access code** — a deliberate extra step, not
+a security measure; pairs loaded from a config file stay active and are shown
+as a count even while locked. Both residents' log lines carry an
+`[avoids: …]` note.
 
 ## Per-resident caps
 
@@ -349,6 +375,12 @@ CI runs ruff, mypy, and pytest on Python 3.11/3.12 — plus a stub-only job with
 no pandas/OR-Tools installed to guard the graceful-degradation path.
 
 ## Changelog
+- Blackouts refined: the day-before rule now blocks only the night on-calls
+  (the shifts flagged "Thu counts as weekend"), and night float is never
+  touched by blackouts (semantics change for the former "block day before"
+  flag in saved configs); rotators can declare covered shift types at entry
+  (the rest lands in Exemptions); added access-code-gated avoid pairs (two
+  residents never on call the same day, fairness untouched).
 - Added named groups with group blackout periods (off call during the window
   and, by default, the day before; compensated by default so the shortfall is
   repaid via the ledger, not excused), shift-type load reductions (a group

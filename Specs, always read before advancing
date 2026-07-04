@@ -152,6 +152,9 @@ Implementation Progress (2026-07)
 - Fairness table (counts + points per label, targets/devs, prior/cumulative ledger columns, notes, CSV) alongside the text log; per-call audit table; in-app editable carryover ledger; ledger JSON now accumulates per-label points/counts (informational; carryover stays on total/weekend/night_float; backward compatible).
 - Excel/CSV import of monthly availability requests (template, tolerant header/name/date parsing, per-row validated preview) applying as compensated leaves.
 - Soft shift preferences (`preferred_shifts`, `preferred_day_type`): a lowest objective tier under a K = 2·D·S + 1 rescale of all fairness weights, so preferences only order exact fairness ties; K = 1 (byte-identical objective) when unused.
+- Blackout refinement: the day-before rule blocks only night on-calls (`is_night_call`: thu_weekend and not night_float — the roster's existing night marker) and night float is excluded from blackouts entirely; blocking moved to slot level (`_blocked_slot_indices`).
+- Rotator shift coverage at entry (multiselect in the rotator editor feeding `exempt_shifts`); groups/blackouts/reductions confirmed to apply to rotators.
+- Avoid pairs (`avoid_pairs`): a hard same-day separation constraint per pair (never infeasible alone, fairness targets untouched), UI-gated behind an access code as deliberate friction.
 
 7 Outstanding / Future Work
 Flexible night-float block start (blocks may currently only begin on a day-0-aligned boundary).

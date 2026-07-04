@@ -507,6 +507,60 @@ def exemptions_editor(people: list, shift_labels: list) -> None:
             ex.pop(removed, None)
 
 
+# Deliberate friction, not security: using avoid pairs needs sign-off from
+# higher authority, so the editor asks for this code before revealing itself.
+AVOID_UNLOCK_CODE = "1221"
+
+
+def avoid_pairs_editor(people: list) -> None:
+    """Pairs never on call the same day; gated behind an access code."""
+    with st.expander("Avoid pairs (restricted)", expanded=False):
+        st.caption(
+            "Two residents who must never be on call on the same day. Use "
+            "only with approval from higher authority — the access code is a "
+            "deliberate extra step, not a security measure. Fairness targets "
+            "are unaffected."
+        )
+        pairs = st.session_state[Keys.AVOID_PAIRS]
+        if not st.session_state[Keys.AVOID_UNLOCKED]:
+            if pairs:
+                st.caption(f"{len(pairs)} avoid pair(s) are configured and active.")
+            code = st.text_input("Access code", type="password", key="avoid_code")
+            if st.button("Unlock", key="avoid_unlock"):
+                if code == AVOID_UNLOCK_CODE:
+                    st.session_state[Keys.AVOID_UNLOCKED] = True
+                    st.rerun()
+                else:
+                    st.warning("Wrong code.")
+            return
+        if len(people) < 2:
+            st.caption("Add at least two participants first.")
+            return
+        c = st.columns([3, 3, 1])
+        with c[0]:
+            first = st.selectbox("Resident A", people, key="avoid_a")
+        with c[1]:
+            second = st.selectbox("Resident B", people, key="avoid_b")
+        with c[2]:
+            if _add_button("avoid_add"):
+                if first == second:
+                    st.warning("Pick two different residents.")
+                elif not any({p[0], p[1]} == {first, second} for p in pairs):
+                    pairs.append((first, second))
+        if pairs:
+            st.table(pd.DataFrame(
+                [{"Resident A": p[0], "Resident B": p[1]} for p in pairs]
+            ))
+            removed = _remove_control(
+                list(range(len(pairs))),
+                "Remove pair",
+                "avoid_rm",
+                format_func=lambda i: f"{pairs[i][0]} / {pairs[i][1]}",
+            )
+            if removed is not None:
+                pairs.pop(removed)
+
+
 DAY_TYPE_CHOICES = {"No preference": None, "Weekends": "weekend", "Weekdays": "weekday"}
 
 

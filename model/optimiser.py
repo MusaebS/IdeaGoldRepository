@@ -403,6 +403,32 @@ class SchedulerSolver:
         self._add_min_gap_windows()
         self._add_nf_block_constraints()
         self._add_nf_rest_constraints()
+        self._add_avoid_pair_constraints()
+
+    def _add_avoid_pair_constraints(self) -> None:
+        """Avoid pairs: the two residents never work on the same day.
+
+        At most one of the pair is assigned per day across all shifts. Like
+        the caps this can never make the model infeasible on its own — the
+        uncoverable surplus falls to ``Unfilled`` — and it involves no
+        fairness targets.
+        """
+        pairs = self.data.avoid_pairs or []
+        if not pairs:
+            return
+        person_idx = {p: i for i, p in enumerate(self.people[:-1])}
+        n_shifts = len(self.shifts)
+        for pair in pairs:
+            a_idx = person_idx.get(pair[0])
+            b_idx = person_idx.get(pair[1])
+            if a_idx is None or b_idx is None or a_idx == b_idx:
+                continue
+            for d_idx in range(len(self.days)):
+                self.model.Add(
+                    sum(self.vars[(a_idx, d_idx, s)] for s in range(n_shifts))
+                    + sum(self.vars[(b_idx, d_idx, s)] for s in range(n_shifts))
+                    <= 1
+                )
 
     def _blocked_day_indices(self) -> Dict[int, set]:
         """Person index -> day indices that person cannot work.
