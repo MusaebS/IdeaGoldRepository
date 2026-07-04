@@ -286,3 +286,154 @@ def test_restore_display_state_applies_and_pops_widget_keys():
     assert "extra_cols_editor" not in state
     assert state["col_order"] == ["Date", "Consultant"]
     assert state["known_cols"] == ["Date", "Consultant"]  # hides stay hidden
+
+
+def test_named_groups_editor_stores_to_session():
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob", "Cara"]
+    at.run()
+    at.text_input(key="team_name").set_value("Team A")
+    add = [b for b in at.button if b.key == "team_add"]
+    add[0].click()
+    at.run()
+    assert at.session_state["named_groups"] == {"Team A": []}
+    at.multiselect(key="team_who").set_value(["Alice", "Bob"])
+    assign = [b for b in at.button if b.key == "team_assign"]
+    assign[0].click()
+    at.run()
+    assert at.session_state["named_groups"] == {"Team A": ["Alice", "Bob"]}
+    assert not at.exception
+
+
+def test_blackouts_editor_stores_to_session():
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob"]
+    at.session_state["named_groups"] = {"Team A": ["Alice", "Bob"]}
+    at.run()
+    add = [b for b in at.button if b.key == "bo_add"]
+    add[0].click()
+    at.run()
+    blackouts = at.session_state["blackouts"]
+    assert len(blackouts) == 1
+    assert blackouts[0].group == "Team A"
+    assert blackouts[0].day_before is True and blackouts[0].compensated is True
+    assert not at.exception
+
+
+def test_blackouts_editor_adhoc_names():
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob"]
+    at.run()
+    at.selectbox(key="bo_who").set_value("(ad-hoc names…)")
+    at.run()
+    at.multiselect(key="bo_adhoc").set_value(["Bob"])
+    add = [b for b in at.button if b.key == "bo_add"]
+    add[0].click()
+    at.run()
+    blackouts = at.session_state["blackouts"]
+    assert len(blackouts) == 1
+    assert blackouts[0].group is None and blackouts[0].members == ("Bob",)
+    assert not at.exception
+
+
+def test_reductions_editor_stores_to_session():
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob"]
+    at.session_state["shifts"] = [
+        ShiftTemplate(label="N", role="Junior", night_float=False, thu_weekend=False, points=2.0),
+    ]
+    at.session_state["named_groups"] = {"Team A": ["Alice"]}
+    at.run()
+    at.multiselect(key="red_labels").set_value(["N"])
+    at.run()
+    add = [b for b in at.button if b.key == "red_add"]
+    add[0].click()
+    at.run()
+    reductions = at.session_state["reductions"]
+    assert len(reductions) == 1
+    assert reductions[0].group == "Team A"
+    assert reductions[0].labels == ("N",)
+    assert reductions[0].factor == 0.0
+    assert reductions[0].keep_total is False  # "work less now" is the default mode
+    assert not at.exception
+
+
+def test_ledger_panel_start_empty_and_rows_survive_rerun():
+    at = _at()
+    at.run()
+    start = [b for b in at.button if b.key == "ledger_start"]
+    assert start, "Start an empty ledger button not found"
+    start[0].click()
+    at.run()
+    assert at.session_state["ledger_rows"] == []
+    # Seed a row as if edited in the grid; it must survive a cosmetic rerun
+    # and flow into the carryover ledger for the next Generate.
+    at.session_state["ledger_rows"] = [
+        {"Resident": "Alice", "Total": 5.0, "Weekend": 2.0, "Night float": 0.0}
+    ]
+    at.run()
+    assert at.session_state["ledger_rows"][0]["Resident"] == "Alice"
+    assert not at.exception
+
+
+def test_ledger_panel_clear_returns_to_standalone():
+    at = _at()
+    at.run()
+    at.session_state["ledger_rows"] = [
+        {"Resident": "Alice", "Total": 5.0, "Weekend": 2.0, "Night float": 0.0}
+    ]
+    at.run()
+    clear = [b for b in at.button if b.key == "ledger_clear"]
+    assert clear, "Clear ledger button not found"
+    clear[0].click()
+    at.run()
+    assert at.session_state["ledger_rows"] is None
+    assert not at.exception
+
+
+def test_availability_apply_adds_compensated_leaves_with_dedupe():
+    from model.availability import AvailabilityRow
+
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob"]
+    # One request already entered by hand, one new, one invalid.
+    at.session_state["leaves"] = [("Alice", date(2026, 8, 5), date(2026, 8, 6), True)]
+    at.session_state["avail_preview"] = [
+        AvailabilityRow(2, "Alice", "Alice", date(2026, 8, 5), date(2026, 8, 6), None),
+        AvailabilityRow(3, "Bob", "Bob", date(2026, 8, 10), date(2026, 8, 10), None),
+        AvailabilityRow(4, "Nobody", None, None, None, "'Nobody' is not on the roster."),
+    ]
+    at.run()
+    apply = [b for b in at.button if b.key == "avail_apply"]
+    assert apply and "1 request" in apply[0].label  # duplicate + invalid excluded
+    apply[0].click()
+    at.run()
+    leaves = at.session_state["leaves"]
+    assert len(leaves) == 2
+    assert tuple(leaves[1]) == ("Bob", date(2026, 8, 10), date(2026, 8, 10), True)
+    assert at.session_state["avail_preview"] is None
+    assert not at.exception
+
+
+def test_preferences_editor_stores_to_session():
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob"]
+    at.session_state["shifts"] = [
+        ShiftTemplate(label="N", role="Junior", night_float=False, thu_weekend=False, points=2.0),
+    ]
+    at.run()
+    at.multiselect(key="pref_labels").set_value(["N"])
+    at.selectbox(key="pref_day").set_value("Weekends")
+    at.run()
+    set_btn = [b for b in at.button if b.key == "pref_set"]
+    set_btn[0].click()
+    at.run()
+    assert at.session_state["preferred_shifts"] == {"Alice": ["N"]}
+    assert at.session_state["preferred_day_type"] == {"Alice": "weekend"}
+    assert not at.exception

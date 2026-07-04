@@ -30,8 +30,18 @@ class Keys:
     RESIDENT_GROUPS = "resident_groups"
     PERKS = "perks"
     EXEMPT_SHIFTS = "exempt_shifts"
+    NAMED_GROUPS = "named_groups"
+    BLACKOUTS = "blackouts"
+    REDUCTIONS = "reductions"
+    PREFERRED_SHIFTS = "preferred_shifts"
+    PREFERRED_DAY_TYPE = "preferred_day_type"
     LEDGER_NO_REFUND = "ledger_no_refund"
     LEDGER_NO_CATCHUP = "ledger_no_catchup"
+    LEDGER_ROWS = "ledger_rows"          # editable grid rows (None = no ledger)
+    LEDGER_BASE = "ledger_base"          # uploaded ledger (keeps label history)
+    LEDGER_SIG = "ledger_upload_sig"
+    AVAIL_PREVIEW = "avail_preview"      # parsed availability rows (None = no file)
+    AVAIL_SIG = "avail_upload_sig"
     DISPLAY_RESTORED = "display_restored_sig"
     DEMO_LOADED = "demo_loaded"
     RETRY_CONFIG = "retry_config"
@@ -72,8 +82,18 @@ def _defaults() -> dict:
         Keys.RESIDENT_GROUPS: {},
         Keys.PERKS: [],
         Keys.EXEMPT_SHIFTS: {},
+        Keys.NAMED_GROUPS: {},
+        Keys.BLACKOUTS: [],
+        Keys.REDUCTIONS: [],
+        Keys.PREFERRED_SHIFTS: {},
+        Keys.PREFERRED_DAY_TYPE: {},
         Keys.LEDGER_NO_REFUND: True,
         Keys.LEDGER_NO_CATCHUP: True,
+        Keys.LEDGER_ROWS: None,
+        Keys.LEDGER_BASE: None,
+        Keys.LEDGER_SIG: None,
+        Keys.AVAIL_PREVIEW: None,
+        Keys.AVAIL_SIG: None,
         Keys.DISPLAY_RESTORED: None,
         Keys.RESULT_DF: None,
         Keys.SOLVER_DF: None,

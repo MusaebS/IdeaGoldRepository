@@ -8,9 +8,19 @@ try:
 except ImportError:  # pragma: no cover - fallback when pandas missing
     from .pandas_stub import pd
 
-from .data_models import InputData, normalized_leaves, normalized_perks
+from .data_models import (
+    InputData,
+    blackout_person_windows,
+    normalized_blackouts,
+    normalized_leaves,
+    normalized_perks,
+    normalized_reductions,
+)
 from .nf_blocks import respects_nf_blocks
 from .optimiser import respects_min_gap
+from .points import classify_slot
+from .reductions import reduction_caps
+from .utils import weekend_holiday_dates
 
 __all__ = ["validate_input", "config_warnings", "validate_schedule"]
 
@@ -70,7 +80,205 @@ def config_warnings(data: InputData) -> List[str]:
 
     warnings.extend(_leave_rotator_warnings(data))
     warnings.extend(_exemption_perk_warnings(data))
+    warnings.extend(_blackout_warnings(data))
+    warnings.extend(_reduction_warnings(data))
+    warnings.extend(_preference_warnings(data))
     return warnings
+
+
+def _preference_warnings(data: InputData) -> List[str]:
+    """Advisories for preferences that can never take effect."""
+    out: List[str] = []
+    shift_by_label = {s.label: s for s in data.shifts}
+    exempt = data.exempt_shifts or {}
+    for name, labels in (data.preferred_shifts or {}).items():
+        for label in labels:
+            shift = shift_by_label.get(label)
+            if shift is None:
+                continue  # unknown labels are validate_input errors
+            pool = set(data.juniors if shift.role == "Junior" else data.seniors)
+            if shift.night_float:
+                pool &= set(data.nf_juniors if shift.role == "Junior" else data.nf_seniors)
+            if name not in pool or label in exempt.get(name, ()):
+                out.append(
+                    f"'{name}' prefers '{label}' but can never work it (role, "
+                    "night-float eligibility, or exemption); the preference "
+                    "has no effect."
+                )
+    return out
+
+
+def _reduction_warnings(data: InputData) -> List[str]:
+    """Advisories for load reductions that are likely mistakes or coverage risks."""
+    out: List[str] = []
+    if not data.reductions:
+        return out
+    named_groups = data.named_groups or {}
+    start, end = data.start_date, data.end_date
+
+    for red in normalized_reductions(data.reductions):
+        who = f"group '{red.group}'" if red.group is not None else "ad-hoc reduction"
+        if red.factor >= 1.0:
+            out.append(
+                f"Reduction {red.start}–{red.end} for {who} has a 100% load "
+                "factor and has no effect."
+            )
+        if red.group is not None and not named_groups.get(red.group):
+            out.append(
+                f"Reduction {red.start}–{red.end} references empty group "
+                f"'{red.group}' and has no effect."
+            )
+        if red.end < start or red.start > end:
+            out.append(
+                f"Reduction window {red.start}–{red.end} for {who} is outside "
+                f"the schedule dates ({start}–{end}) and has no effect."
+            )
+
+    # Coverage risk: a label whose whole eligible pool is under a factor-0
+    # reduction on some day cannot be assigned there at all.
+    zero_caps: dict = {}
+    for cap in reduction_caps(data):
+        if cap.factor <= 0:
+            for label in cap.labels:
+                zero_caps.setdefault(label, []).append(cap)
+    for shift in data.shifts:
+        caps = zero_caps.get(shift.label)
+        if not caps:
+            continue
+        pool = set(data.juniors if shift.role == "Junior" else data.seniors)
+        if shift.night_float:
+            pool &= set(data.nf_juniors if shift.role == "Junior" else data.nf_seniors)
+        pool = {p for p in pool if shift.label not in (data.exempt_shifts or {}).get(p, ())}
+        if not pool:
+            continue
+        uncovered_day = next(
+            (
+                d
+                for d in _block_days_safe(data)
+                if all(
+                    any(c.person == p and c.start <= d <= c.end for c in caps)
+                    for p in pool
+                )
+            ),
+            None,
+        )
+        if uncovered_day is not None:
+            out.append(
+                f"Every resident eligible for '{shift.label}' is fully reduced "
+                f"on {uncovered_day}; those slots will be unfilled."
+            )
+    return out
+
+
+def _block_days_safe(data: InputData) -> list:
+    from .points import block_days
+
+    return block_days(data) if data.end_date >= data.start_date else []
+
+
+def _unavailable_person_days(data: InputData) -> dict:
+    """Person -> set of block days they cannot work (leave/rotator/blackout).
+
+    The advisory-side mirror of the solver's ``_blocked_day_indices``, kept in
+    dates rather than indices so warnings can name the days.
+    """
+    from .points import block_days
+
+    rotator_windows: dict = {}
+    for name, ws, we in data.rotators:
+        rotator_windows.setdefault(name, []).append((ws, we))
+    blocked_windows: dict = {}
+    for name, ws, we, _c in normalized_leaves(data.leaves):
+        blocked_windows.setdefault(name, []).append((ws, we))
+    for name, windows in blackout_person_windows(data.blackouts, data.named_groups).items():
+        for ws, we, _c in windows:
+            blocked_windows.setdefault(name, []).append((ws, we))
+
+    days = block_days(data) if data.end_date >= data.start_date else []
+    out: dict = {}
+    for person in list(data.juniors) + list(data.seniors):
+        rwins = rotator_windows.get(person)
+        bwins = blocked_windows.get(person, [])
+        unavailable = {
+            d
+            for d in days
+            if (rwins and not any(ws <= d <= we for ws, we in rwins))
+            or any(ws <= d <= we for ws, we in bwins)
+        }
+        if unavailable:
+            out[person] = unavailable
+    return out
+
+
+def _blackout_warnings(data: InputData) -> List[str]:
+    """Advisories for group blackouts that are likely mistakes or coverage risks."""
+    out: List[str] = []
+    if not data.blackouts:
+        return out
+    named_groups = data.named_groups or {}
+    start, end = data.start_date, data.end_date
+
+    for b in normalized_blackouts(data.blackouts):
+        who = f"group '{b.group}'" if b.group is not None else "ad-hoc blackout"
+        if b.group is not None and not named_groups.get(b.group):
+            out.append(
+                f"Blackout {b.start}–{b.end} references empty group '{b.group}' "
+                "and has no effect."
+            )
+        eff_start = b.start - timedelta(days=1) if b.day_before else b.start
+        if b.end < start or eff_start > end:
+            out.append(
+                f"Blackout window {b.start}–{b.end} for {who} is outside the "
+                f"schedule dates ({start}–{end}) and has no effect."
+            )
+
+    unavailable = _unavailable_person_days(data)
+
+    # Coverage risk: a day where blackouts (plus leaves/rotator windows) leave
+    # fewer available residents of a role than that role has shifts.
+    from .points import block_days
+
+    days = block_days(data) if end >= start else []
+    role_shifts = {"Junior": 0, "Senior": 0}
+    for shift in data.shifts:
+        role_shifts[shift.role] = role_shifts.get(shift.role, 0) + 1
+    for role, people in (("Junior", data.juniors), ("Senior", data.seniors)):
+        n_shifts = role_shifts.get(role, 0)
+        if not n_shifts:
+            continue
+        short_days = [
+            d
+            for d in days
+            if sum(1 for p in people if d not in unavailable.get(p, ())) < n_shifts
+        ]
+        if short_days:
+            shown = ", ".join(str(d) for d in short_days[:5])
+            more = f" (+{len(short_days) - 5} more)" if len(short_days) > 5 else ""
+            out.append(
+                f"Blackouts/leaves leave fewer available {role.lower()}s than "
+                f"{role} shifts on {shown}{more}; expect unfilled slots."
+            )
+
+    # Whole-block compensated blackout: full share kept but no days to earn it.
+    comp_windows: dict = {}
+    for name, windows in blackout_person_windows(data.blackouts, data.named_groups).items():
+        for ws, we, comp in windows:
+            if comp:
+                comp_windows.setdefault(name, []).append((ws, we))
+    for name, windows in comp_windows.items():
+        if days and all(any(ws <= d <= we for ws, we in windows) for d in days):
+            out.append(
+                f"'{name}' is in a compensated blackout for the whole block; "
+                "their full fair share is kept but cannot be earned, so expect "
+                "a large fairness deviation."
+            )
+            if (data.extra_points or {}).get(name, 0.0) > 0:
+                out.append(
+                    f"'{name}' has mandatory extra points but is blacked out for "
+                    "the whole block; the penalty cannot fit and the schedule "
+                    "will be infeasible."
+                )
+    return out
 
 
 def _exemption_perk_warnings(data: InputData) -> List[str]:
@@ -339,6 +547,82 @@ def validate_input(data: InputData) -> List[str]:
                     f"'{name}' is exempted from unknown shift '{label}'."
                 )
 
+    for group, members in (data.named_groups or {}).items():
+        if not str(group).strip():
+            issues.append("A named group has a blank name; give every group a name.")
+        for member in members:
+            if member not in roster:
+                issues.append(
+                    f"Group '{group}' lists unknown resident '{member}'."
+                )
+
+    named_groups = data.named_groups or {}
+    for b in normalized_blackouts(data.blackouts):
+        if b.group is not None and b.group not in named_groups:
+            issues.append(f"Blackout references undefined group '{b.group}'.")
+        if b.group is None:
+            if not b.members:
+                issues.append(
+                    f"Blackout {b.start}–{b.end} has no group and no members."
+                )
+            for member in b.members:
+                if member not in roster:
+                    issues.append(
+                        f"Blackout references unknown resident '{member}'."
+                    )
+        if b.end < b.start:
+            who = f"group '{b.group}'" if b.group is not None else "ad-hoc members"
+            issues.append(
+                f"Blackout window for {who} ends ({b.end}) before it starts ({b.start})."
+            )
+
+    for red in normalized_reductions(data.reductions):
+        who = f"group '{red.group}'" if red.group is not None else "ad-hoc members"
+        if not 0.0 <= red.factor <= 1.0:
+            issues.append(
+                f"Reduction factor for {who} must be between 0 and 1 "
+                f"(got {red.factor:g})."
+            )
+        if not red.labels:
+            issues.append(f"Reduction for {who} names no shift types.")
+        for label in red.labels:
+            if label not in shift_labels:
+                issues.append(f"Reduction for {who} references unknown shift '{label}'.")
+        if red.group is not None and red.group not in named_groups:
+            issues.append(f"Reduction references undefined group '{red.group}'.")
+        if red.group is None:
+            if not red.members:
+                issues.append(
+                    f"Reduction {red.start}–{red.end} has no group and no members."
+                )
+            for member in red.members:
+                if member not in roster:
+                    issues.append(
+                        f"Reduction references unknown resident '{member}'."
+                    )
+        if red.end < red.start:
+            issues.append(
+                f"Reduction window for {who} ends ({red.end}) before it starts "
+                f"({red.start})."
+            )
+
+    for name, labels in (data.preferred_shifts or {}).items():
+        if name not in roster:
+            issues.append(f"Shift preference references unknown resident '{name}'.")
+        for label in labels:
+            if label not in shift_labels:
+                issues.append(f"'{name}' prefers unknown shift '{label}'.")
+    for name, day_kind in (data.preferred_day_type or {}).items():
+        if name not in roster:
+            issues.append(
+                f"Day-type preference references unknown resident '{name}'."
+            )
+        if day_kind not in ("weekend", "weekday"):
+            issues.append(
+                f"Day-type preference for '{name}' must be 'weekend' or "
+                f"'weekday' (got '{day_kind}')."
+            )
+
     return issues
 
 
@@ -359,6 +643,7 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
     rotator_windows: dict = {}
     for name, start, end in data.rotators:
         rotator_windows.setdefault(name, []).append((start, end))
+    blackout_windows = blackout_person_windows(data.blackouts, data.named_groups)
 
     for row in df.to_dict("records"):
         day = row.get("Date")
@@ -392,6 +677,13 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
                         f"{day}: {person} on '{shift.label}' is on leave ({ls} to {le})"
                     )
 
+            for bs, be, _comp in blackout_windows.get(person, ()):
+                if bs <= day <= be:
+                    issues.append(
+                        f"{day}: {person} on '{shift.label}' is in a group "
+                        f"blackout ({bs} to {be})"
+                    )
+
             windows = rotator_windows.get(person)
             if windows and not any(ws <= day <= we for ws, we in windows):
                 issues.append(
@@ -400,6 +692,27 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
 
         for person in {p for p in assigned_today if assigned_today.count(p) > 1}:
             issues.append(f"{day}: {person} is assigned to more than one shift")
+
+    # Reduced-shift caps: recompute each member's window points on the reduced
+    # labels so a manual edit cannot silently exceed the cap.
+    records = df.to_dict("records")
+    shift_by_label = {s.label: s for s in data.shifts}
+    weekend_dates = weekend_holiday_dates(data)
+    for cap in reduction_caps(data):
+        actual = 0.0
+        for row in records:
+            day = row.get("Date")
+            if day is None or not cap.start <= day <= cap.end:
+                continue
+            for label in cap.labels:
+                if row.get(label) == cap.person:
+                    actual += classify_slot(day, shift_by_label[label], data, weekend_dates).points
+        if actual > cap.cap_points + 1e-6:
+            labels = ", ".join(sorted(cap.labels))
+            issues.append(
+                f"{cap.person} carries {actual:.1f} points on reduced shift(s) "
+                f"{labels} in {cap.start}–{cap.end} (cap {cap.cap_points:.1f})"
+            )
 
     if not respects_min_gap(df, data.min_gap, data.shifts):
         issues.append(f"Minimum gap of {data.min_gap} day(s) is violated")

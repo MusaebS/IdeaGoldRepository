@@ -7,15 +7,25 @@ try:
 except ImportError:  # pragma: no cover - fallback when pandas missing
     from .pandas_stub import pd
 
-from .data_models import ShiftTemplate, InputData, normalized_perks
+from .data_models import (
+    ShiftTemplate,
+    InputData,
+    normalized_blackouts,
+    normalized_leaves,
+    normalized_perks,
+    normalized_reductions,
+)
 from .points import classify_slot
 from .utils import effective_points, is_weekend, weekend_holiday_dates
 
 __all__ = [
     "ResidentPoints",
     "calculate_points",
+    "calculate_label_counts",
     "format_fairness_log",
     "fairness_range_lines",
+    "load_annotation_notes",
+    "preference_satisfaction",
     "schedule_quality",
     "assignment_rationale",
 ]
@@ -59,6 +69,56 @@ def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, ResidentPoi
     return summary
 
 
+def calculate_label_counts(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, int]]:
+    """Number of calls per shift label per resident (counts, not points)."""
+    counts: Dict[str, Dict[str, int]] = {
+        name: {} for name in data.juniors + data.seniors
+    }
+    for row in df.to_dict("records"):
+        for sh in data.shifts:
+            person = row.get(sh.label)
+            if person in (None, "Unfilled"):
+                continue
+            per = counts.setdefault(person, {})
+            per[sh.label] = per.get(sh.label, 0) + 1
+    return counts
+
+
+def preference_satisfaction(df: pd.DataFrame, data: InputData) -> Dict[str, tuple]:
+    """Per person with preferences: (matched criteria, criteria opportunities).
+
+    Each assignment the person worked contributes one opportunity per
+    configured preference axis (shift type, day type) — the same counting the
+    solver's preference rewards use — so "7/10" reads: of 10 axis-checks
+    across their calls, 7 came out preferred.
+    """
+    preferred = data.preferred_shifts or {}
+    day_type = data.preferred_day_type or {}
+    people = set(preferred) | set(day_type)
+    if not people:
+        return {}
+    weekend_dates = weekend_holiday_dates(data)
+    counters: Dict[str, list] = {p: [0, 0] for p in people}
+    for row in df.to_dict("records"):
+        day = row.get("Date")
+        for sh in data.shifts:
+            person = row.get(sh.label)
+            if person not in counters:
+                continue
+            slot = classify_slot(day, sh, data, weekend_dates)
+            labels = preferred.get(person)
+            if labels:
+                counters[person][1] += 1
+                if sh.label in labels:
+                    counters[person][0] += 1
+            wants = day_type.get(person)
+            if wants in ("weekend", "weekday"):
+                counters[person][1] += 1
+                if (wants == "weekend") == bool(slot.weekend):
+                    counters[person][0] += 1
+    return {p: (matched, total) for p, (matched, total) in counters.items()}
+
+
 def fairness_range_lines(points: Dict[str, ResidentPoints]) -> List[str]:
     """Return human-readable range summaries for totals and weekends."""
     lines: List[str] = []
@@ -100,12 +160,14 @@ def _resolved_target(df, key: str, fallback):
     return attrs[key] if key in attrs and attrs[key] is not None else fallback
 
 
-def _load_annotations(person: str, data: InputData) -> str:
-    """Group / perk / exemption notes for a resident's log line.
+def load_annotation_notes(person: str, data: InputData) -> List[str]:
+    """Load-shaping notes for a resident: group / perk / exemption / leave.
 
     The fairness targets already embed the group and perk factors (via the
     availability weights), so deviations stay honest against the reduced or
-    raised share — these notes just make the *why* visible in the log.
+    raised share — these notes just make the *why* visible. Shared by the
+    fairness log lines and the fairness table's Notes column, so the two can
+    never disagree. Only configured features produce notes.
     """
     notes: List[str] = []
     group = (data.resident_groups or {}).get(person)
@@ -122,6 +184,66 @@ def _load_annotations(person: str, data: InputData) -> str:
     labels = (data.exempt_shifts or {}).get(person)
     if labels:
         notes.append(f"[exempt: {', '.join(sorted(labels))}]")
+    for b in normalized_blackouts(data.blackouts):
+        covered = (
+            (data.named_groups or {}).get(b.group, ())
+            if b.group is not None
+            else b.members
+        )
+        if person not in covered:
+            continue
+        note = f"[blackout {b.group or 'ad-hoc'} {b.start.isoformat()}→{b.end.isoformat()}"
+        if b.day_before:
+            note += " +day-before"
+        if not b.compensated:
+            note += " uncomp"
+        notes.append(note + "]")
+    for red in normalized_reductions(data.reductions):
+        covered = (
+            (data.named_groups or {}).get(red.group, ())
+            if red.group is not None
+            else red.members
+        )
+        if person not in covered:
+            continue
+        mode = "same-total" if red.keep_total else "repay-later"
+        notes.append(
+            f"[reduced {', '.join(sorted(red.labels))} ×{red.factor:.2f} "
+            f"{red.start.isoformat()}→{red.end.isoformat()} {mode}]"
+        )
+    prefer_bits = []
+    labels = (data.preferred_shifts or {}).get(person)
+    if labels:
+        prefer_bits.append(", ".join(sorted(labels)))
+    wants = (data.preferred_day_type or {}).get(person)
+    if wants in ("weekend", "weekday"):
+        prefer_bits.append(f"{wants}s")
+    if prefer_bits:
+        notes.append(f"[prefers: {'; '.join(prefer_bits)}]")
+    # Leave summary, clipped to the block (a window outside it has no effect).
+    comp_days = uncomp_days = 0
+    for name, start, end, compensated in normalized_leaves(data.leaves):
+        if name != person:
+            continue
+        lo = max(start, data.start_date)
+        hi = min(end, data.end_date)
+        days = (hi - lo).days + 1
+        if days <= 0:
+            continue
+        if compensated:
+            comp_days += days
+        else:
+            uncomp_days += days
+    if comp_days:
+        notes.append(f"[leave {comp_days}d comp]")
+    if uncomp_days:
+        notes.append(f"[leave {uncomp_days}d uncomp]")
+    return notes
+
+
+def _load_annotations(person: str, data: InputData) -> str:
+    """The log-line rendering of :func:`load_annotation_notes`."""
+    notes = load_annotation_notes(person, data)
     return (" " + " ".join(notes)) if notes else ""
 
 

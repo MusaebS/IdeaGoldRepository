@@ -6,28 +6,46 @@ import os
 from dataclasses import replace
 from datetime import date, timedelta
 
+import pandas as pd
 import streamlit as st
 
+from model.availability import (
+    availability_template_csv,
+    availability_template_xlsx,
+    parse_availability_rows,
+    read_availability_csv,
+    read_availability_xlsx,
+    rows_to_leaves,
+)
 from model.config_io import display_from_json, input_data_to_json, input_data_from_json
-from model.data_models import InputData
+from model.data_models import (
+    InputData,
+    normalized_blackouts,
+    normalized_leaves,
+    normalized_reductions,
+)
 from model.demo_data import sample_shifts, sample_names
-from model.ledger import ledger_from_json
 from model.optimiser import build_schedule
 from model.validation import validate_input, config_warnings
 
 from ui.editors import (
     WEEKDAY_LABELS,
+    blackouts_editor,
     caps_editor,
     date_range_editor,
     exemptions_editor,
     extra_points_editor,
     holidays_editor,
+    named_groups_editor,
     perks_editor,
+    preferences_editor,
+    reductions_editor,
     roster_editor,
     seniority_editor,
     shift_template_editor,
     weekday_points_editor,
 )
+from ui.ledger_panel import render_ledger_panel
 from ui.state import Keys, restore_display_state, set_result
 
 
@@ -44,8 +62,12 @@ def load_demo_data_once() -> None:
     st.session_state[Keys.DEMO_LOADED] = True
 
 
-def _active_config_maps() -> tuple:
-    """Filter caps / extra points / overrides down to the live roster & shifts."""
+def _active_config_maps() -> dict:
+    """Filter caps / extra points / overrides down to the live roster & shifts.
+
+    Returns the values ready for the ``InputData`` kwargs of the same names
+    (empty maps already collapsed to ``None``).
+    """
     active_people = set(st.session_state[Keys.JUNIORS] + st.session_state[Keys.SENIORS])
     max_total = {
         p: v["total"]
@@ -80,10 +102,152 @@ def _active_config_maps() -> tuple:
         if p in active_people
     }
     exempt_shifts = {p: labels for p, labels in exempt_shifts.items() if labels}
-    return (
-        max_total, max_nights, extra_points, weekday_points, holidays,
-        group_factors, resident_groups, perks, exempt_shifts,
-    )
+    # Groups keep their name even when every member left the roster; the
+    # blackout/reduction warnings point out empty groups where it matters.
+    named_groups = {
+        g: [m for m in members if m in active_people]
+        for g, members in st.session_state[Keys.NAMED_GROUPS].items()
+    }
+    blackouts = []
+    for b in normalized_blackouts(st.session_state[Keys.BLACKOUTS]):
+        if b.group is not None:
+            if b.group in named_groups:
+                blackouts.append(b)
+        else:
+            members = tuple(m for m in b.members if m in active_people)
+            if members:
+                blackouts.append(b._replace(members=members))
+    preferred_shifts = {
+        p: [lbl for lbl in labels if lbl in shift_labels]
+        for p, labels in st.session_state[Keys.PREFERRED_SHIFTS].items()
+        if p in active_people
+    }
+    preferred_shifts = {p: labels for p, labels in preferred_shifts.items() if labels}
+    preferred_day_type = {
+        p: kind
+        for p, kind in st.session_state[Keys.PREFERRED_DAY_TYPE].items()
+        if p in active_people and kind in ("weekend", "weekday")
+    }
+    reductions = []
+    for r in normalized_reductions(st.session_state[Keys.REDUCTIONS]):
+        labels = tuple(lbl for lbl in r.labels if lbl in shift_labels)
+        if not labels:
+            continue
+        if r.group is not None:
+            if r.group in named_groups:
+                reductions.append(r._replace(labels=labels))
+        else:
+            members = tuple(m for m in r.members if m in active_people)
+            if members:
+                reductions.append(r._replace(members=members, labels=labels))
+    return {
+        "max_total": max_total or None,
+        "max_nights": max_nights or None,
+        "extra_points": extra_points or None,
+        "weekday_points": weekday_points or None,
+        "holidays": holidays or None,
+        "group_factors": group_factors or None,
+        "resident_groups": resident_groups or None,
+        "perks": perks or None,
+        "exempt_shifts": exempt_shifts or None,
+        "named_groups": named_groups or None,
+        "blackouts": blackouts or None,
+        "reductions": reductions or None,
+        "preferred_shifts": preferred_shifts or None,
+        "preferred_day_type": preferred_day_type or None,
+    }
+
+
+def _availability_import_section(people: list) -> None:
+    """Upload a monthly availability-request form export; apply as leaves.
+
+    Parsed once per file (md5 signature guard) into a preview with a per-row
+    status, so one bad answer never blocks the rest; Apply adds only the valid
+    rows as compensated leaves, deduplicated against what is already entered.
+    """
+    with st.expander("Import availability requests (Excel/CSV)", expanded=False):
+        st.caption(
+            "Collect requests each month with a form (columns Name, Start, End "
+            "— one row per period, several rows per person are fine, an empty "
+            "End means a single day; dates as YYYY-MM-DD or DD/MM/YYYY). "
+            "Upload the exported file, review the preview, then apply: every "
+            "valid row becomes a compensated leave, exactly as if entered "
+            "above by hand."
+        )
+        tcols = st.columns(2)
+        tcols[0].download_button(
+            "Template (CSV)",
+            availability_template_csv(),
+            file_name="availability_template.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        try:
+            tcols[1].download_button(
+                "Template (Excel)",
+                availability_template_xlsx(),
+                file_name="availability_template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        except RuntimeError as exc:  # pragma: no cover - openpyxl missing
+            tcols[1].info(str(exc))
+        uploaded = st.file_uploader(
+            "Upload responses (xlsx / csv)", type=["xlsx", "csv"], key="avail_upload"
+        )
+        if uploaded is not None:
+            sig = hashlib.md5(uploaded.getvalue()).hexdigest()
+            if st.session_state.get(Keys.AVAIL_SIG) != sig:
+                st.session_state[Keys.AVAIL_SIG] = sig  # set first: a bad file never loops
+                try:
+                    blob = uploaded.getvalue()
+                    if uploaded.name.lower().endswith(".csv"):
+                        raw_rows = read_availability_csv(blob.decode("utf-8-sig"))
+                    else:
+                        raw_rows = read_availability_xlsx(blob)
+                    st.session_state[Keys.AVAIL_PREVIEW] = parse_availability_rows(
+                        raw_rows, people
+                    )
+                except Exception as exc:
+                    st.session_state[Keys.AVAIL_PREVIEW] = None
+                    st.error(f"Could not read the file: {exc}")
+
+        preview = st.session_state.get(Keys.AVAIL_PREVIEW)
+        if not preview:
+            return
+        st.dataframe(
+            pd.DataFrame([
+                {
+                    "Row": r.row_no,
+                    "Name": r.raw_name,
+                    "Matched": r.name or "—",
+                    "Start": r.start,
+                    "End": r.end,
+                    "Status": r.error or "OK",
+                }
+                for r in preview
+            ]),
+            use_container_width=True,
+        )
+        valid_leaves = rows_to_leaves(preview)
+        st.caption(f"{len(valid_leaves)} of {len(preview)} row(s) valid.")
+        existing = {tuple(lv) for lv in normalized_leaves(st.session_state[Keys.LEAVES])}
+        new_leaves = [lv for lv in valid_leaves if tuple(lv) not in existing]
+        bcols = st.columns(2)
+        if new_leaves:
+            if bcols[0].button(
+                f"Apply {len(new_leaves)} request(s) as compensated leaves",
+                key="avail_apply",
+                type="primary",
+            ):
+                st.session_state[Keys.LEAVES].extend(new_leaves)
+                st.session_state[Keys.AVAIL_PREVIEW] = None
+                st.rerun()
+        elif valid_leaves:
+            bcols[0].caption("All valid rows are already in the leaves list.")
+        if bcols[1].button("Discard preview", key="avail_discard"):
+            st.session_state[Keys.AVAIL_PREVIEW] = None
+            st.rerun()
 
 
 def _inline_config_hints(config: InputData) -> list:
@@ -150,11 +314,17 @@ def render_config_tabs() -> tuple:
             "Compensated leave keeps the resident's full fair share; uncompensated "
             "scales it down for the absence (like a rotator)."
         )
+        _availability_import_section(people)
         st.divider()
         date_range_editor(
             "Rotators — resident only available during window", Keys.ROTATORS, people,
             default_start=start_date, default_end=end_date,
         )
+        st.divider()
+        st.subheader("Groups & blackouts")
+        named_groups_editor(people)
+        st.divider()
+        blackouts_editor(people, default_start=start_date, default_end=end_date)
 
     with tab_adv:
         st.subheader("Per-resident caps & extra points")
@@ -170,15 +340,18 @@ def render_config_tabs() -> tuple:
         st.divider()
         exemptions_editor(people, [s.label for s in st.session_state[Keys.SHIFTS]])
         st.divider()
+        reductions_editor(
+            people, [s.label for s in st.session_state[Keys.SHIFTS]],
+            default_start=start_date, default_end=end_date,
+        )
+        st.divider()
+        preferences_editor(people, [s.label for s in st.session_state[Keys.SHIFTS]])
+        st.divider()
         st.subheader("Point overrides & holidays")
         weekday_points_editor([s.label for s in st.session_state[Keys.SHIFTS]])
         st.divider()
         holidays_editor(default_date=start_date)
 
-    (
-        max_total, max_nights, extra_points, weekday_points, holidays,
-        group_factors, resident_groups, perks, exempt_shifts,
-    ) = _active_config_maps()
     session_config = InputData(
         start_date=start_date,
         end_date=end_date,
@@ -193,15 +366,7 @@ def render_config_tabs() -> tuple:
         nf_block_length=nf_block_len,
         seed=int(seed),
         weekend_days=weekend_days,
-        max_total=max_total or None,
-        max_nights=max_nights or None,
-        extra_points=extra_points or None,
-        weekday_points=weekday_points or None,
-        holidays=holidays or None,
-        group_factors=group_factors or None,
-        resident_groups=resident_groups or None,
-        perks=perks or None,
-        exempt_shifts=exempt_shifts or None,
+        **_active_config_maps(),
     )
 
     # Early feedback: misconfigurations surface here as warnings while the
@@ -247,11 +412,12 @@ def render_config_tabs() -> tuple:
             "Leave this empty for a standalone, one-off schedule — this block is "
             "balanced on its own, with no link to fairness history. To keep fairness "
             "across months instead, upload the previous block's ledger here (residents "
-            "who carried extra get lighter targets now) and download the updated "
-            "ledger afterwards for next time."
+            "who carried extra get lighter targets now), tweak it in the grid if the "
+            "real world diverged, and download the updated ledger afterwards for "
+            "next time."
         )
-        uploaded_ledger = st.file_uploader(
-            "Load fairness ledger (JSON)", type="json", key="ledger_upload"
+        carryover_ledger = render_ledger_panel(
+            st.session_state[Keys.JUNIORS] + st.session_state[Keys.SENIORS]
         )
         st.checkbox(
             "Penalties don't earn future relief (recommended)",
@@ -268,13 +434,6 @@ def render_config_tabs() -> tuple:
             "resident is not made to catch it up in later blocks (e.g. after a "
             "perk expires).",
         )
-
-    carryover_ledger = None
-    if uploaded_ledger is not None:
-        try:
-            carryover_ledger = ledger_from_json(uploaded_ledger.getvalue().decode("utf-8"))
-        except Exception as exc:
-            st.error(f"Could not read ledger: {exc}")
 
     return session_config, uploaded_config, carryover_ledger
 

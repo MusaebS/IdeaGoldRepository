@@ -11,8 +11,15 @@ except ImportError:  # pragma: no cover - fallback when pandas missing
 from .coloring import schedule_cell_colors
 from .data_models import InputData
 from .fairness import ResidentPoints, calculate_points
+from .points import classify_slot
+from .utils import weekend_holiday_dates
 
-__all__ = ["build_fairness_frame", "schedule_to_excel_bytes", "schedule_to_pdf_bytes"]
+__all__ = [
+    "build_fairness_frame",
+    "build_assignment_frame",
+    "schedule_to_excel_bytes",
+    "schedule_to_pdf_bytes",
+]
 
 
 def _fmt(value) -> str:
@@ -24,23 +31,41 @@ def _fmt(value) -> str:
 
 
 def build_fairness_frame(
-    points: Dict[str, ResidentPoints], data: InputData, df=None
+    points: Dict[str, ResidentPoints],
+    data: InputData,
+    df=None,
+    prior_ledger=None,
 ) -> "pd.DataFrame":
     """Return a per-resident fairness table (total, weekend, NF, per-label).
 
-    When the solved ``df`` is given, ``Total dev`` and ``NF dev`` columns are
-    added from the same solver-resolved targets the fairness log uses, so the
-    exported sheet and the log agree on deviations (one source of truth).
+    When the solved ``df`` is given, target and deviation columns are added
+    from the same solver-resolved targets the fairness log uses (one source of
+    truth), plus per-label call *counts* (``"<label> n"``). ``prior_ledger``
+    adds ``Prior …`` / ``Cumulative …`` columns (and cumulative call counts
+    when the ledger carries a per-label history), showing the multi-block
+    picture the carryover balancing works from. A ``Notes`` column carries the
+    same load annotations as the fairness log (groups, perks, exemptions,
+    blackouts, reductions, leaves).
     """
-    from .fairness import _resolved_target  # shared target resolution
+    from .fairness import (  # shared target resolution / annotations
+        _resolved_target,
+        calculate_label_counts,
+        load_annotation_notes,
+        preference_satisfaction,
+    )
 
     target_total = _resolved_target(df, "target_total", data.target_total) if df is not None else None
     target_total_map = _resolved_target(df, "target_total_map", data.target_total_map) if df is not None else None
+    target_weekend = _resolved_target(df, "target_weekend", data.target_weekend) if df is not None else None
     target_nf = _resolved_target(df, "target_night_float", data.target_night_float) if df is not None else None
+    counts = calculate_label_counts(df, data) if df is not None else None
+    pref_stats = preference_satisfaction(df, data) if df is not None else {}
 
     labels = sorted(
         {label for info in points.values() for label in info.get("labels", {})}
     )
+    prior = prior_ledger or {}
+    prior_has_counts = any((entry or {}).get("label_counts") for entry in prior.values())
     rows = []
     for name in sorted(points):
         info = points[name]
@@ -54,12 +79,67 @@ def build_fairness_frame(
         }
         total_tgt = (target_total_map or {}).get(name, target_total)
         if total_tgt is not None:
+            row["Total target"] = round(total_tgt, 1)
             row["Total dev"] = round(info.get("total", 0.0) - total_tgt, 1)
+        if target_weekend and name in target_weekend:
+            row["Weekend target"] = round(target_weekend[name], 1)
+            row["Weekend dev"] = round(info.get("weekend", 0.0) - target_weekend[name], 1)
         if target_nf and name in target_nf:
+            row["NF target"] = round(target_nf[name], 1)
             row["NF dev"] = round(info.get("night_float", 0.0) - target_nf[name], 1)
         for label in labels:
             row[label] = info.get("labels", {}).get(label, 0.0)
+            if counts is not None:
+                row[f"{label} n"] = counts.get(name, {}).get(label, 0)
+        if prior:
+            prior_entry = prior.get(name) or {}
+            current = {
+                "total": info.get("total", 0.0),
+                "weekend": info.get("weekend", 0.0),
+                "night_float": info.get("night_float", 0.0),
+            }
+            for col, dim in (("total", "total"), ("weekend", "weekend"), ("NF", "night_float")):
+                before = float(prior_entry.get(dim, 0.0))
+                row[f"Prior {col}"] = round(before, 1)
+                row[f"Cumulative {col}"] = round(before + current[dim], 1)
+            if prior_has_counts and counts is not None:
+                prior_counts = prior_entry.get("label_counts") or {}
+                for label in labels:
+                    row[f"{label} n cum"] = (
+                        int(prior_counts.get(label, 0)) + counts.get(name, {}).get(label, 0)
+                    )
+        if name in pref_stats:
+            matched, total = pref_stats[name]
+            row["Pref match"] = f"{matched}/{total}"
+        notes = load_annotation_notes(name, data)
+        if notes:
+            row["Notes"] = " ".join(notes)
         rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def build_assignment_frame(df, data: InputData) -> "pd.DataFrame":
+    """One row per (date, shift) slot: the per-call audit detail.
+
+    Includes Unfilled slots so the record is complete; points/weekend/NF come
+    from the same ``classify_slot`` the solver and fairness reporting use.
+    """
+    weekend_dates = weekend_holiday_dates(data)
+    rows = []
+    for record in df.to_dict("records"):
+        day = record.get("Date")
+        for sh in data.shifts:
+            slot = classify_slot(day, sh, data, weekend_dates)
+            person = record.get(sh.label)
+            rows.append({
+                "Date": day,
+                "Day": record.get("Day") or (day.strftime("%A") if hasattr(day, "strftime") else ""),
+                "Shift": sh.label,
+                "Resident": "Unfilled" if person in (None, "Unfilled") else person,
+                "Points": slot.points,
+                "Weekend": slot.weekend,
+                "Night float": slot.night_float,
+            })
     return pd.DataFrame(rows)
 
 
@@ -69,6 +149,7 @@ def schedule_to_excel_bytes(
     points: Dict[str, ResidentPoints] | None = None,
     color_mode: str = "none",
     palette: Dict[str, str] | None = None,
+    prior_ledger=None,
 ) -> bytes:
     """Serialise the schedule and fairness summary to an .xlsx workbook.
 
@@ -80,7 +161,7 @@ def schedule_to_excel_bytes(
     from openpyxl.styles import PatternFill
 
     points = points if points is not None else calculate_points(df, data)
-    fairness = build_fairness_frame(points, data, df)
+    fairness = build_fairness_frame(points, data, df, prior_ledger)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Schedule", index=False)
@@ -103,6 +184,7 @@ def schedule_to_pdf_bytes(
     points: Dict[str, ResidentPoints] | None = None,
     color_mode: str = "none",
     palette: Dict[str, str] | None = None,
+    prior_ledger=None,
 ) -> bytes:
     """Render the schedule (calendar grid) and fairness summary to a PDF.
 
@@ -124,7 +206,7 @@ def schedule_to_pdf_bytes(
     )
 
     points = points if points is not None else calculate_points(df, data)
-    fairness = build_fairness_frame(points, data, df)
+    fairness = build_fairness_frame(points, data, df, prior_ledger)
 
     styles = getSampleStyleSheet()
     cell = ParagraphStyle("cell", fontName="Helvetica", fontSize=6, leading=7)

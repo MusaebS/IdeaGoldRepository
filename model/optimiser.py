@@ -131,11 +131,48 @@ except ImportError:  # pragma: no cover - simple fallback if ortools missing
         },
     )
 
-from .data_models import InputData, normalized_leaves, normalized_rotators
+from .data_models import (
+    InputData,
+    blackout_person_windows,
+    normalized_leaves,
+    normalized_rotators,
+)
 from .nf_blocks import respects_nf_blocks
 from .points import POINT_SCALE, SlotPoints, block_days, classify_slot, scaled, slot_points
+from .reductions import reduction_caps
 from .utils import weekend_holiday_dates
 from .weights import availability_weights
+
+
+def objective_weights(
+    n_days: int, n_shifts: int, has_prefs: bool
+) -> Tuple[int, int, int, int, int, int]:
+    """The lexicographic objective weights, rescaled when preferences exist.
+
+    Soft shift preferences are a new lowest tier with weight 1, so every
+    original weight is multiplied by ``K = 2·D·S + 1``:
+
+    - each of the D·S slots is assigned exactly once and can match at most 2
+      preference criteria (label + day type), so the total preference reward
+      lies in ``[-2·D·S, 0]``;
+    - every original term is a non-negative integer with minimum coefficient 1
+      (scaled deviations, unfilled slots), so any strict improvement in the
+      original weighted sum changes it by ≥ 1, i.e. by ≥ K after rescaling —
+      strictly more than the whole preference range.
+
+    Hence preferences can never buy an unfilled slot or a single scaled point
+    of any deviation; they only order exact fairness ties. ``K = 1`` when no
+    preferences are configured keeps existing objectives byte-identical (and
+    keeps the headroom: worst case ≈ 3.3×10¹⁶ ≪ 2⁶³).
+
+    Returns ``(W_MAXDEV, W_TOTAL, W_WEEKEND, W_NIGHTS, W_LABEL, W_UNFILLED)``;
+    the preference tier itself always has weight 1.
+    """
+    scale = 2 * n_days * n_shifts + 1 if has_prefs else 1
+    return (
+        10**9 * scale, 10**6 * scale, 10**3 * scale,
+        10**2 * scale, 10 * scale, scale,
+    )
 
 
 class SchedulerSolver:
@@ -189,6 +226,7 @@ class SchedulerSolver:
         self.add_deviation_constraints()
         self.add_cap_constraints()
         self.add_extra_point_constraints()
+        self.add_reduction_constraints()
         self.build_objective()
 
     def build_variables(self) -> None:
@@ -322,6 +360,41 @@ class SchedulerSolver:
             if extra.get(person, 0.0) > 0 and person in tmap:
                 self.model.Add(self.total_pts[p_idx] >= scaled(tmap[person]))
 
+    def add_reduction_constraints(self) -> None:
+        """Hard windowed caps from shift-type load reductions.
+
+        Factor 0 pins the member's variables for those (label, window-day)
+        slots to zero (stronger propagation than a ≤ 0 sum); a partial factor
+        caps the scaled points. Like ``max_total``/``max_nights`` a reduction
+        can never make the model infeasible — uncovered slots fall to
+        ``Unfilled``.
+        """
+        caps = reduction_caps(self.data)
+        if not caps:
+            return
+        person_idx = {p: i for i, p in enumerate(self.people[:-1])}
+        for cap in caps:
+            p_idx = person_idx.get(cap.person)
+            if p_idx is None:
+                continue
+            slot_keys = [
+                key for key, slot in self.slots.items()
+                if slot.shift.label in cap.labels and cap.start <= slot.day <= cap.end
+            ]
+            if not slot_keys:
+                continue
+            if cap.factor <= 0:
+                for key in slot_keys:
+                    self.model.Add(self.vars[(p_idx,) + key] == 0)
+            else:
+                self.model.Add(
+                    sum(
+                        scaled(self.slots[key].points) * self.vars[(p_idx,) + key]
+                        for key in slot_keys
+                    )
+                    <= scaled(cap.cap_points)
+                )
+
     def add_constraints(self) -> None:
         self._add_slot_coverage_and_eligibility()
         self._add_one_shift_per_day()
@@ -332,10 +405,11 @@ class SchedulerSolver:
     def _blocked_day_indices(self) -> Dict[int, set]:
         """Person index -> day indices that person cannot work.
 
-        A day is blocked by any leave covering it, or — for a rotator — by
-        falling outside all of that resident's active windows. Precomputed once
-        so the constraint loop does an O(1) membership check instead of
-        re-scanning every leave per (day, shift, person) triple.
+        A day is blocked by any leave or group-blackout window covering it, or
+        — for a rotator — by falling outside all of that resident's active
+        windows. Precomputed once so the constraint loop does an O(1)
+        membership check instead of re-scanning every leave per (day, shift,
+        person) triple.
         """
         rotator_windows: Dict[str, list] = {}
         for res, start, end in normalized_rotators(self.data.rotators):
@@ -343,6 +417,13 @@ class SchedulerSolver:
         leave_windows: Dict[str, list] = {}
         for res, start, end, _comp in normalized_leaves(self.data.leaves):
             leave_windows.setdefault(res, []).append((start, end))
+        # Blackouts block like leaves regardless of the compensated flag (that
+        # flag only affects the fairness share, in model.weights).
+        for res, windows in blackout_person_windows(
+            self.data.blackouts, self.data.named_groups
+        ).items():
+            for start, end, _comp in windows:
+                leave_windows.setdefault(res, []).append((start, end))
 
         blocked: Dict[int, set] = {}
         for p_idx, person in enumerate(self.people[:-1]):  # exclude Unfilled
@@ -353,7 +434,7 @@ class SchedulerSolver:
                 if windows and not any(s <= day <= e for s, e in windows):
                     days_blocked.add(d_idx)  # outside rotator active window
                 elif any(s <= day <= e for s, e in leaves):
-                    days_blocked.add(d_idx)  # on leave (compensated or not)
+                    days_blocked.add(d_idx)  # on leave or blacked out
             if days_blocked:
                 blocked[p_idx] = days_blocked
         return blocked
@@ -484,6 +565,36 @@ class SchedulerSolver:
                                         start_var + self.vars[(p_idx, before, ss)] <= 1
                                     )
 
+    def _preference_rewards(self) -> Dict[Tuple[int, int, int], int]:
+        """(person, day, shift) -> reward in {1, 2} for preference matches.
+
+        One point when the slot's label is among the person's preferred shift
+        types, one when the slot's day type (weekend as classified by
+        ``classify_slot`` — including ``thu_weekend`` and weekend-flagged
+        holidays) matches their preferred day type.
+        """
+        preferred = self.data.preferred_shifts or {}
+        day_type = self.data.preferred_day_type or {}
+        if not preferred and not day_type:
+            return {}
+        rewards: Dict[Tuple[int, int, int], int] = {}
+        for p_idx, person in enumerate(self.people[:-1]):
+            labels = set(preferred.get(person, ()))
+            wants = day_type.get(person)
+            if not labels and not wants:
+                continue
+            for (d_idx, s_idx), slot in self.slots.items():
+                reward = 0
+                if slot.shift.label in labels:
+                    reward += 1
+                if wants == "weekend" and slot.weekend:
+                    reward += 1
+                elif wants == "weekday" and not slot.weekend:
+                    reward += 1
+                if reward:
+                    rewards[(p_idx, d_idx, s_idx)] = reward
+        return rewards
+
     def build_objective(self) -> None:
         unfilled_vars = [
             self.vars[(len(self.people) - 1, d_idx, s_idx)]
@@ -493,9 +604,14 @@ class SchedulerSolver:
 
         terms = []
         # Lexicographic-style weights: overall-points spread first, then total,
-        # weekend, night-float, per-label deviations, and finally unfilled slots.
-        W_MAXDEV, W_TOTAL, W_WEEKEND, W_NIGHTS, W_LABEL, W_UNFILLED = (
-            10**9, 10**6, 10**3, 10**2, 10, 1,
+        # weekend, night-float, per-label deviations, and finally unfilled
+        # slots. When soft preferences exist, objective_weights rescales the
+        # whole ladder so the preference rewards (weight 1) sit strictly below
+        # everything — they only order exact fairness ties.
+        rewards = self._preference_rewards()
+        self.pref_rewards = rewards
+        W_MAXDEV, W_TOTAL, W_WEEKEND, W_NIGHTS, W_LABEL, W_UNFILLED = objective_weights(
+            len(self.days), len(self.shifts), bool(rewards)
         )
         if self.max_dev is not None:
             terms.append(W_MAXDEV * self.max_dev)
@@ -508,6 +624,8 @@ class SchedulerSolver:
         if self.dev_label:
             terms.append(W_LABEL * sum(self.dev_label.values()))
         terms.append(W_UNFILLED * sum(unfilled_vars))
+        if rewards:
+            terms.append(sum(-r * self.vars[key] for key, r in rewards.items()))
 
         self.model.Minimize(sum(terms))
 
@@ -633,6 +751,83 @@ def _carryover_targets(
 _availability_weights = availability_weights
 
 
+def _shift_reduced_targets(
+    target_map: Mapping[str, float],
+    deltas: Mapping[str, float],
+    pool: Sequence[str],
+) -> Dict[str, float]:
+    """Lower reduced members' targets and raise the others' to reconcile.
+
+    The inverse of :func:`_apply_extra_points`: the load taken off the reduced
+    members still has to be carried, so it moves onto the non-reduced pool
+    members in proportion to their targets (equally when those are all zero).
+    If everyone in the pool is reduced there is nobody to receive the load and
+    it simply falls to ``Unfilled``.
+    """
+    out = {p: float(target_map.get(p, 0.0)) for p in pool}
+    moved = 0.0
+    for person, delta in deltas.items():
+        if person not in out or delta <= 0:
+            continue
+        take = min(delta, out[person])
+        out[person] -= take
+        moved += take
+    receivers = [p for p in pool if p not in deltas]
+    if moved > 0 and receivers:
+        receiver_sum = sum(out[p] for p in receivers)
+        if receiver_sum > 0:
+            for p in receivers:
+                out[p] += moved * out[p] / receiver_sum
+        else:
+            for p in receivers:
+                out[p] += moved / len(receivers)
+    return out
+
+
+def _apply_reduction_targets(
+    data: InputData,
+    target_total_map: Dict[str, float] | None,
+    target_night_float: Dict[str, float] | None,
+    participants: Sequence[str],
+) -> Tuple[Dict[str, float] | None, Dict[str, float] | None]:
+    """Fold "work less now" reductions into the total / night-float targets.
+
+    Only ``keep_total=False`` caps lower targets (their members genuinely work
+    less this block; the ledger repays the shortfall later). ``keep_total=True``
+    caps leave targets alone so the member is compensated with other shift
+    types in-block. Weights are never touched either way, so the ledger's
+    no-catch-up policy cannot credit (excuse) the reduction.
+    """
+    caps = [c for c in reduction_caps(data) if not c.keep_total]
+    if not caps:
+        return target_total_map, target_night_float
+
+    if target_total_map:
+        totals_delta: Dict[str, float] = {}
+        for cap in caps:
+            totals_delta[cap.person] = totals_delta.get(cap.person, 0.0) + cap.reduce_total
+        target_total_map = _shift_reduced_targets(
+            target_total_map, totals_delta, participants
+        )
+
+    nf_delta: Dict[str, float] = {}
+    for cap in caps:
+        if cap.reduce_nf > 0:
+            nf_delta[cap.person] = nf_delta.get(cap.person, 0.0) + cap.reduce_nf
+    if nf_delta and target_night_float:
+        target_night_float = dict(target_night_float)
+        for role_pool in (data.nf_juniors, data.nf_seniors):
+            members = [p for p in role_pool if p in target_night_float]
+            sub = {p: nf_delta[p] for p in members if p in nf_delta}
+            if members and sub:
+                target_night_float.update(
+                    _shift_reduced_targets(
+                        {p: target_night_float[p] for p in members}, sub, members
+                    )
+                )
+    return target_total_map, target_night_float
+
+
 def _apply_extra_points(
     target_total_map: Dict[str, float],
     extra_points: Mapping[str, float],
@@ -732,6 +927,11 @@ def resolve_targets(data: InputData, ledger: Ledger | None = None) -> InputData:
         if data.extra_points and target_total_map:
             target_total_map = _apply_extra_points(
                 target_total_map, data.extra_points, participants
+            )
+
+        if data.reductions:
+            target_total_map, target_night_float = _apply_reduction_targets(
+                data, target_total_map, target_night_float, participants
             )
 
     # A copy so the caller's ``InputData`` is never mutated (re-running with

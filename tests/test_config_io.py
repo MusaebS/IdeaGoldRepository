@@ -129,12 +129,14 @@ def test_groups_perks_exemptions_round_trip():
         Perk("B", 0.9),  # forever
     ]
     data.exempt_shifts = {"A": ["NF"]}
+    data.named_groups = {"Team A": ["A", "B"], "Team B": ["C"]}
 
     restored = input_data_from_json(input_data_to_json(data))
     assert restored.group_factors == data.group_factors
     assert restored.resident_groups == data.resident_groups
     assert restored.perks == data.perks  # Perk is a NamedTuple: tuple equality
     assert restored.exempt_shifts == data.exempt_shifts
+    assert restored.named_groups == data.named_groups
 
 
 def test_legacy_config_without_new_fields_loads_none():
@@ -143,6 +145,7 @@ def test_legacy_config_without_new_fields_loads_none():
     assert restored.resident_groups is None
     assert restored.perks is None
     assert restored.exempt_shifts is None
+    assert restored.named_groups is None
 
 
 def test_config_json_has_no_display_key_when_unused():
@@ -178,3 +181,46 @@ def test_display_from_json_defensive():
         display={"palette": {"points": "#4a90d9", "bogus": "#111111", "senior": "red"}},
     )
     assert display_from_json(text) == {"palette": {"points": "#4a90d9"}}
+
+
+def test_blackouts_round_trip_and_legacy_none():
+    from model.data_models import Blackout
+
+    data = _sample_data()
+    data.named_groups = {"Team A": ["A", "B"]}
+    data.blackouts = [
+        Blackout("Team A", (), date(2023, 1, 10), date(2023, 1, 12)),
+        Blackout(None, ("C",), date(2023, 1, 20), date(2023, 1, 20), False, False),
+    ]
+    restored = input_data_from_json(input_data_to_json(data))
+    assert restored.blackouts == data.blackouts
+
+    assert input_data_from_json(input_data_to_json(_sample_data())).blackouts is None
+
+
+def test_reductions_round_trip_and_legacy_none():
+    from model.data_models import LoadReduction
+
+    data = _sample_data()
+    data.named_groups = {"Team A": ["A", "B"]}
+    data.reductions = [
+        LoadReduction("Team A", (), ("NF",), 0.25, date(2023, 1, 8), date(2023, 1, 21)),
+        LoadReduction(None, ("C",), ("Day",), 0.0, date(2023, 1, 1), date(2023, 1, 28), True),
+    ]
+    restored = input_data_from_json(input_data_to_json(data))
+    assert restored.reductions == data.reductions
+
+    assert input_data_from_json(input_data_to_json(_sample_data())).reductions is None
+
+
+def test_preferences_round_trip_and_legacy_none():
+    data = _sample_data()
+    data.preferred_shifts = {"A": ["NF"]}
+    data.preferred_day_type = {"B": "weekday", "C": "weekend"}
+    restored = input_data_from_json(input_data_to_json(data))
+    assert restored.preferred_shifts == data.preferred_shifts
+    assert restored.preferred_day_type == data.preferred_day_type
+
+    legacy = input_data_from_json(input_data_to_json(_sample_data()))
+    assert legacy.preferred_shifts is None
+    assert legacy.preferred_day_type is None

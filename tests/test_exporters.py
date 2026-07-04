@@ -90,3 +90,65 @@ def test_exports_accept_cosmetic_columns_and_palette():
         df, data, points=points, color_mode="role", palette={"senior": "#654321"}
     )
     assert xl[:2] == b"PK" and pdf[:4] == b"%PDF"
+
+
+def test_fairness_frame_with_df_adds_counts_targets_and_notes():
+    df, data = _sample()
+    df.attrs["target_total_map"] = {"Alice": 3.0, "Bob": 3.0}
+    df.attrs["target_weekend"] = {"Alice": 3.0, "Bob": 3.0}
+    df.attrs["target_night_float"] = {"Bob": 4.0}
+    data.exempt_shifts = {"Alice": ["N"]}
+    points = calculate_points(df, data)
+    frame = build_fairness_frame(points, data, df)
+    by_name = {row["Resident"]: row for row in frame.to_dict("records")}
+    assert by_name["Alice"]["D n"] == 2 and by_name["Alice"]["N n"] == 0
+    assert by_name["Bob"]["N n"] == 2
+    assert by_name["Alice"]["Total target"] == 3.0
+    assert by_name["Alice"]["Total dev"] == -1.0
+    assert by_name["Alice"]["Weekend target"] == 3.0
+    assert by_name["Bob"]["NF target"] == 4.0 and by_name["Bob"]["NF dev"] == 0.0
+    assert "[exempt: N]" in by_name["Alice"]["Notes"]
+
+
+def test_fairness_frame_with_prior_ledger_adds_cumulative():
+    df, data = _sample()
+    points = calculate_points(df, data)
+    prior = {
+        "Alice": {"total": 10.0, "weekend": 4.0, "night_float": 0.0,
+                  "label_counts": {"D": 8}},
+    }
+    frame = build_fairness_frame(points, data, df, prior)
+    by_name = {row["Resident"]: row for row in frame.to_dict("records")}
+    assert by_name["Alice"]["Prior total"] == 10.0
+    assert by_name["Alice"]["Cumulative total"] == 12.0
+    assert by_name["Alice"]["Cumulative weekend"] == 6.0
+    assert by_name["Alice"]["D n cum"] == 10  # 8 prior + 2 this block
+    assert by_name["Bob"]["Prior total"] == 0.0
+    assert by_name["Bob"]["Cumulative total"] == 4.0
+
+
+def test_fairness_frame_without_new_args_keeps_old_shape():
+    df, data = _sample()
+    points = calculate_points(df, data)
+    frame = build_fairness_frame(points, data)
+    for absent in ("Total target", "Prior total", "Cumulative total", "D n", "Notes"):
+        assert absent not in frame.columns
+
+
+def test_build_assignment_frame_lists_every_slot():
+    from model.exporters import build_assignment_frame
+
+    _, data = _sample()
+    # Built directly (not via .loc) so the pandas-stub CI job can run this too.
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 7), "Day": "Saturday", "D": "Alice", "N": "Bob"},
+        {"Date": date(2023, 1, 8), "Day": "Sunday", "D": "Alice", "N": "Unfilled"},
+    ])
+    frame = build_assignment_frame(df, data)
+    records = frame.to_dict("records")
+    assert len(records) == 4  # 2 days x 2 shifts, unfilled included
+    sat_n = next(r for r in records if r["Shift"] == "N" and r["Date"] == date(2023, 1, 7))
+    assert sat_n["Resident"] == "Bob" and sat_n["Points"] == 2.0
+    assert sat_n["Weekend"] is True and sat_n["Night float"] is True
+    sun_n = next(r for r in records if r["Shift"] == "N" and r["Date"] == date(2023, 1, 8))
+    assert sun_n["Resident"] == "Unfilled"

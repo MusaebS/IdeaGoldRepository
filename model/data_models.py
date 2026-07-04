@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import List, NamedTuple, Sequence, Tuple, Dict
 
 
@@ -67,6 +67,88 @@ def normalized_rotators(rotators):
         yield RotatorWindow(entry[0], entry[1], entry[2])
 
 
+class Blackout(NamedTuple):
+    """A no-call window for a named group (or an ad-hoc set) of residents.
+
+    Everyone covered is blocked for the window and — when ``day_before`` is
+    set — the day before it, so nobody enters the period post-call. Unlike a
+    leave it is entered per group and reported separately. ``compensated``
+    keeps each member's full fair share (the default): missed load is made up
+    on other days, or carried in the fairness ledger as repayable debt.
+    Uncompensated scales the share down like uncompensated leave.
+    """
+
+    group: str | None          # named-group reference, resolved at use time
+    members: Tuple[str, ...]   # ad-hoc names, used when group is None
+    start: date
+    end: date
+    day_before: bool = True
+    compensated: bool = True
+
+
+def normalized_blackouts(blackouts):
+    """Yield a :class:`Blackout` for each entry (typed or 4/5/6-tuple)."""
+    for entry in blackouts or []:
+        group = entry[0]
+        members = tuple(entry[1] or ())
+        start, end = entry[2], entry[3]
+        day_before = bool(entry[4]) if len(entry) > 4 else True
+        compensated = bool(entry[5]) if len(entry) > 5 else True
+        yield Blackout(group, members, start, end, day_before, compensated)
+
+
+class LoadReduction(NamedTuple):
+    """Less of specific shift types for a group inside a window.
+
+    Each covered member carries at most ``factor`` (0..1) of their fair share
+    of the ``labels`` inside the window — 0 means none of those shifts at all.
+    The availability weights are deliberately untouched, so the shortfall is
+    never excused: it carries in the fairness ledger as debt the member
+    repays in later blocks. ``keep_total`` picks the in-block behaviour:
+    False (default) also lowers the member's total/night-float targets so
+    they genuinely work less this block and repay everything later; True
+    keeps their full share, so the solver compensates them with other shift
+    types now and only what cannot fit carries over.
+    """
+
+    group: str | None          # named-group reference, resolved at use time
+    members: Tuple[str, ...]   # ad-hoc names, used when group is None
+    labels: Tuple[str, ...]
+    factor: float
+    start: date
+    end: date
+    keep_total: bool = False
+
+
+def normalized_reductions(reductions):
+    """Yield a :class:`LoadReduction` for each entry (typed or 6/7-tuple)."""
+    for entry in reductions or []:
+        group = entry[0]
+        members = tuple(entry[1] or ())
+        labels = tuple(entry[2] or ())
+        factor = float(entry[3])
+        start, end = entry[4], entry[5]
+        keep_total = bool(entry[6]) if len(entry) > 6 else False
+        yield LoadReduction(group, members, labels, factor, start, end, keep_total)
+
+
+def blackout_person_windows(blackouts, named_groups):
+    """Per-person effective blackout windows: ``{name: [(start, end, compensated)]}``.
+
+    Group references resolve to the *current* members, so editing a group
+    updates every blackout that uses it. ``day_before`` is already folded in
+    (the effective window starts one day earlier).
+    """
+    groups = named_groups or {}
+    out: Dict[str, List[Tuple[date, date, bool]]] = {}
+    for b in normalized_blackouts(blackouts):
+        people = groups.get(b.group, ()) if b.group is not None else b.members
+        eff_start = b.start - timedelta(days=1) if b.day_before else b.start
+        for person in people:
+            out.setdefault(person, []).append((eff_start, b.end, b.compensated))
+    return out
+
+
 @dataclass
 class ShiftTemplate:
     label: str
@@ -126,6 +208,24 @@ class InputData:
     # resident's targets are UNCHANGED — they carry their full share on the
     # remaining shift types. Combine with a perk to also lower the share.
     exempt_shifts: Dict[str, List[str]] | None = None
+    # Named resident groups: group name -> member names. A pure roster grouping
+    # used for bulk entry (group blackouts / load reductions); it carries no
+    # load factor — that is what group_factors/resident_groups are for. A
+    # resident may belong to several groups.
+    named_groups: Dict[str, List[str]] | None = None
+    # Group blackouts (see Blackout): whole groups off call for a window and,
+    # by default, the day before it. Compensated by default — not an excusal.
+    blackouts: Sequence[Blackout | Tuple] | None = None
+    # Shift-type load reductions (see LoadReduction): a group carries at most
+    # ``factor`` of its fair share of specific shift types inside a window;
+    # the shortfall is carried in the ledger and repaid, never excused.
+    reductions: Sequence[LoadReduction | Tuple] | None = None
+    # Soft shift preferences: resident -> preferred shift labels, and resident
+    # -> preferred day type ("weekend" / "weekday"). Quality-of-life only:
+    # they order otherwise EQUALLY-FAIR schedules and never change targets,
+    # deviations, or the ledger (see optimiser.objective_weights).
+    preferred_shifts: Dict[str, List[str]] | None = None
+    preferred_day_type: Dict[str, str] | None = None
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None
     target_weekend: Dict[str, float] | None = None

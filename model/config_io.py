@@ -5,13 +5,17 @@ from datetime import date
 from typing import List
 
 from .data_models import (
+    Blackout,
     Leave,
+    LoadReduction,
     Perk,
     RotatorWindow,
     ShiftTemplate,
     InputData,
+    normalized_blackouts,
     normalized_leaves,
     normalized_perks,
+    normalized_reductions,
     normalized_rotators,
 )
 
@@ -109,6 +113,37 @@ def input_data_to_json(data: InputData, display: dict | None = None) -> str:
             {name: sorted(labels) for name, labels in data.exempt_shifts.items()}
             if data.exempt_shifts
             else None
+        ),
+        "named_groups": (
+            {group: list(members) for group, members in data.named_groups.items()}
+            if data.named_groups
+            else None
+        ),
+        "blackouts": (
+            [
+                [b.group, list(b.members), b.start.isoformat(), b.end.isoformat(),
+                 b.day_before, b.compensated]
+                for b in normalized_blackouts(data.blackouts)
+            ]
+            if data.blackouts
+            else None
+        ),
+        "reductions": (
+            [
+                [r.group, list(r.members), list(r.labels), r.factor,
+                 r.start.isoformat(), r.end.isoformat(), r.keep_total]
+                for r in normalized_reductions(data.reductions)
+            ]
+            if data.reductions
+            else None
+        ),
+        "preferred_shifts": (
+            {name: sorted(labels) for name, labels in data.preferred_shifts.items()}
+            if data.preferred_shifts
+            else None
+        ),
+        "preferred_day_type": (
+            dict(data.preferred_day_type) if data.preferred_day_type else None
         ),
     }
     if display:
@@ -243,6 +278,52 @@ def input_data_from_json(text: str) -> InputData:
         exempt_shifts=(
             {str(k): [str(x) for x in v] for k, v in raw["exempt_shifts"].items()}
             if raw.get("exempt_shifts")
+            else None
+        ),
+        named_groups=(
+            {str(g): [str(m) for m in v] for g, v in raw["named_groups"].items()}
+            if raw.get("named_groups")
+            else None
+        ),
+        blackouts=(
+            [
+                Blackout(
+                    None if entry[0] is None else str(entry[0]),
+                    tuple(str(m) for m in entry[1] or ()),
+                    date.fromisoformat(entry[2]),
+                    date.fromisoformat(entry[3]),
+                    bool(entry[4]) if len(entry) > 4 else True,
+                    bool(entry[5]) if len(entry) > 5 else True,
+                )
+                for entry in raw["blackouts"]
+            ]
+            if raw.get("blackouts")
+            else None
+        ),
+        reductions=(
+            [
+                LoadReduction(
+                    None if entry[0] is None else str(entry[0]),
+                    tuple(str(m) for m in entry[1] or ()),
+                    tuple(str(lbl) for lbl in entry[2] or ()),
+                    float(entry[3]),
+                    date.fromisoformat(entry[4]),
+                    date.fromisoformat(entry[5]),
+                    bool(entry[6]) if len(entry) > 6 else False,
+                )
+                for entry in raw["reductions"]
+            ]
+            if raw.get("reductions")
+            else None
+        ),
+        preferred_shifts=(
+            {str(k): [str(x) for x in v] for k, v in raw["preferred_shifts"].items()}
+            if raw.get("preferred_shifts")
+            else None
+        ),
+        preferred_day_type=(
+            {str(k): str(v) for k, v in raw["preferred_day_type"].items()}
+            if raw.get("preferred_day_type")
             else None
         ),
     )

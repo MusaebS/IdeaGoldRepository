@@ -105,6 +105,18 @@ def _run_checks() -> list[str]:
                   "fairness bar chart renders")
         except Exception:
             check(False, "fairness bar chart renders")
+        # New result surfaces: the fairness table download and per-call audit.
+        try:
+            page.get_by_role("button", name="Download fairness table (CSV)").wait_for(timeout=10000)
+            check(True, "fairness table with CSV download renders")
+        except Exception:
+            check(False, "fairness table with CSV download renders")
+        try:
+            page.get_by_text("Per-call detail (audit)").first.click()
+            page.get_by_role("button", name="Download per-call CSV").wait_for(timeout=10000)
+            check(True, "per-call audit expander renders")
+        except Exception:
+            check(False, "per-call audit expander renders")
         # Open the "Customise" expander to reach the colour + column controls.
         try:
             page.get_by_text("Customise the schedule", exact=False).first.click()
