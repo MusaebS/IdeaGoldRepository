@@ -437,3 +437,25 @@ def test_preferences_editor_stores_to_session():
     assert at.session_state["preferred_shifts"] == {"Alice": ["N"]}
     assert at.session_state["preferred_day_type"] == {"Alice": "weekend"}
     assert not at.exception
+
+
+def test_rotator_coverage_feeds_exemptions():
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob"]
+    at.session_state["shifts"] = [
+        ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="N", role="Junior", night_float=False, thu_weekend=True, points=2.0),
+    ]
+    at.session_state["exempt_shifts"] = {"Alice": ["D"]}  # pre-existing entry merges
+    at.run()
+    # The leaves editor must NOT grow a coverage multiselect.
+    assert not [m for m in at.multiselect if m.key == "leaves_cover"]
+    at.multiselect(key="rotators_cover").set_value(["D"])  # covers D only
+    at.run()
+    add = [b for b in at.button if b.key == "rotators_add"]
+    add[0].click()
+    at.run()
+    assert len(at.session_state["rotators"]) == 1
+    assert at.session_state["exempt_shifts"]["Alice"] == ["D", "N"]
+    assert not at.exception

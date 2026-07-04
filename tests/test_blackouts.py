@@ -250,3 +250,21 @@ def test_validate_schedule_flags_blackout_and_night_before():
     # Night before: the night call on Jan 4 is flagged; the day shift is not.
     assert any("night call 'N'" in i and "post-call" in i for i in issues)
     assert not any("'D'" in i and str(date(2023, 1, 4)) in i and "blackout" in i for i in issues)
+
+
+def test_blackout_applies_to_rotator_group_member():
+    pytest.importorskip("ortools")
+    from model.optimiser import build_schedule
+
+    # B is a rotator (active Jan 2-5) and in a blacked-out group Jan 3-4:
+    # outside the window AND during the blackout, B must not appear.
+    data = _data(
+        rotators=[("B", date(2023, 1, 2), date(2023, 1, 5))],
+        named_groups={"T": ["B"]},
+        blackouts=[Blackout("T", (), date(2023, 1, 3), date(2023, 1, 4))],
+    )
+    df = build_schedule(data, env="test")
+    by_date = {row["Date"]: row["D"] for row in df.to_dict("records")}
+    for blocked_day in (date(2023, 1, 3), date(2023, 1, 4),
+                        date(2023, 1, 6), date(2023, 1, 7)):
+        assert by_date[blocked_day] == "A"

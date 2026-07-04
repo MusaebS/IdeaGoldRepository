@@ -49,6 +49,7 @@ def date_range_editor(
     with_compensation: bool = False,
     default_start: date | None = None,
     default_end: date | None = None,
+    shift_labels: list | None = None,
 ) -> None:
     """Inline editor for (resident, start, end[, compensated]) windows.
 
@@ -56,6 +57,9 @@ def date_range_editor(
     compensated keeps the resident's full fair share, uncompensated scales it down
     like a rotator. ``default_start`` / ``default_end`` seed the date pickers
     (pass the schedule block's range so entries land in the right month).
+    ``shift_labels`` (rotators) adds a "covers only these shift types"
+    multiselect: leaving some out exempts the resident from them, via the
+    normal exemptions mechanism.
     """
     st.markdown(f"**{title}**")
     if not people:
@@ -74,9 +78,23 @@ def date_range_editor(
         with c[3]:
             compensated = st.checkbox("Compensated", value=True, key=f"{key}_comp")
     with c[-1]:
-        if _add_button(f"{key}_add"):
-            entry = (who, start, end, compensated) if with_compensation else (who, start, end)
-            st.session_state[key].append(entry)
+        clicked = _add_button(f"{key}_add")
+    covers = None
+    if shift_labels:
+        covers = st.multiselect(
+            "Covers only these shift types (empty = all)",
+            shift_labels,
+            key=f"{key}_cover",
+            help="Anything left out is added to this resident's exemptions "
+            "(③ Advanced → Exemptions), where it can be reviewed or removed.",
+        )
+    if clicked:
+        entry = (who, start, end, compensated) if with_compensation else (who, start, end)
+        st.session_state[key].append(entry)
+        if shift_labels and covers and set(covers) != set(shift_labels):
+            merged = set(st.session_state[Keys.EXEMPT_SHIFTS].get(who, []))
+            merged |= set(shift_labels) - set(covers)
+            st.session_state[Keys.EXEMPT_SHIFTS][who] = sorted(merged)
     rows = st.session_state[key]
     if rows:
         table_rows = []

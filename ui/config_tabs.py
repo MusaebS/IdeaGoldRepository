@@ -319,6 +319,11 @@ def render_config_tabs() -> tuple:
         date_range_editor(
             "Rotators — resident only available during window", Keys.ROTATORS, people,
             default_start=start_date, default_end=end_date,
+            shift_labels=[s.label for s in st.session_state[Keys.SHIFTS]],
+        )
+        st.caption(
+            "Rotators are normal roster members while active: groups, "
+            "blackouts, reductions, and preferences all apply to them."
         )
         st.divider()
         st.subheader("Groups & blackouts")
