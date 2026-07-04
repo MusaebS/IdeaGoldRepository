@@ -393,3 +393,28 @@ def test_ledger_panel_clear_returns_to_standalone():
     at.run()
     assert at.session_state["ledger_rows"] is None
     assert not at.exception
+
+
+def test_availability_apply_adds_compensated_leaves_with_dedupe():
+    from model.availability import AvailabilityRow
+
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob"]
+    # One request already entered by hand, one new, one invalid.
+    at.session_state["leaves"] = [("Alice", date(2026, 8, 5), date(2026, 8, 6), True)]
+    at.session_state["avail_preview"] = [
+        AvailabilityRow(2, "Alice", "Alice", date(2026, 8, 5), date(2026, 8, 6), None),
+        AvailabilityRow(3, "Bob", "Bob", date(2026, 8, 10), date(2026, 8, 10), None),
+        AvailabilityRow(4, "Nobody", None, None, None, "'Nobody' is not on the roster."),
+    ]
+    at.run()
+    apply = [b for b in at.button if b.key == "avail_apply"]
+    assert apply and "1 request" in apply[0].label  # duplicate + invalid excluded
+    apply[0].click()
+    at.run()
+    leaves = at.session_state["leaves"]
+    assert len(leaves) == 2
+    assert tuple(leaves[1]) == ("Bob", date(2026, 8, 10), date(2026, 8, 10), True)
+    assert at.session_state["avail_preview"] is None
+    assert not at.exception
