@@ -35,6 +35,8 @@ class Keys:
     REDUCTIONS = "reductions"
     PREFERRED_SHIFTS = "preferred_shifts"
     PREFERRED_DAY_TYPE = "preferred_day_type"
+    AVOID_PAIRS = "avoid_pairs"
+    AVOID_UNLOCKED = "avoid_unlocked"
     LEDGER_NO_REFUND = "ledger_no_refund"
     LEDGER_NO_CATCHUP = "ledger_no_catchup"
     LEDGER_ROWS = "ledger_rows"          # editable grid rows (None = no ledger)
@@ -87,6 +89,8 @@ def _defaults() -> dict:
         Keys.REDUCTIONS: [],
         Keys.PREFERRED_SHIFTS: {},
         Keys.PREFERRED_DAY_TYPE: {},
+        Keys.AVOID_PAIRS: [],
+        Keys.AVOID_UNLOCKED: False,
         Keys.LEDGER_NO_REFUND: True,
         Keys.LEDGER_NO_CATCHUP: True,
         Keys.LEDGER_ROWS: None,

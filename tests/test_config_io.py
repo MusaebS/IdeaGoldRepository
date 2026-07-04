@@ -224,3 +224,12 @@ def test_preferences_round_trip_and_legacy_none():
     legacy = input_data_from_json(input_data_to_json(_sample_data()))
     assert legacy.preferred_shifts is None
     assert legacy.preferred_day_type is None
+
+
+def test_avoid_pairs_round_trip_and_legacy_none():
+    data = _sample_data()
+    data.avoid_pairs = [("A", "C")]
+    restored = input_data_from_json(input_data_to_json(data))
+    assert restored.avoid_pairs == [("A", "C")]
+
+    assert input_data_from_json(input_data_to_json(_sample_data())).avoid_pairs is None

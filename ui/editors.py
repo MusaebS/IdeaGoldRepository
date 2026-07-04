@@ -49,6 +49,7 @@ def date_range_editor(
     with_compensation: bool = False,
     default_start: date | None = None,
     default_end: date | None = None,
+    shift_labels: list | None = None,
 ) -> None:
     """Inline editor for (resident, start, end[, compensated]) windows.
 
@@ -56,6 +57,9 @@ def date_range_editor(
     compensated keeps the resident's full fair share, uncompensated scales it down
     like a rotator. ``default_start`` / ``default_end`` seed the date pickers
     (pass the schedule block's range so entries land in the right month).
+    ``shift_labels`` (rotators) adds a "covers only these shift types"
+    multiselect: leaving some out exempts the resident from them, via the
+    normal exemptions mechanism.
     """
     st.markdown(f"**{title}**")
     if not people:
@@ -74,9 +78,23 @@ def date_range_editor(
         with c[3]:
             compensated = st.checkbox("Compensated", value=True, key=f"{key}_comp")
     with c[-1]:
-        if _add_button(f"{key}_add"):
-            entry = (who, start, end, compensated) if with_compensation else (who, start, end)
-            st.session_state[key].append(entry)
+        clicked = _add_button(f"{key}_add")
+    covers = None
+    if shift_labels:
+        covers = st.multiselect(
+            "Covers only these shift types (empty = all)",
+            shift_labels,
+            key=f"{key}_cover",
+            help="Anything left out is added to this resident's exemptions "
+            "(③ Advanced → Exemptions), where it can be reviewed or removed.",
+        )
+    if clicked:
+        entry = (who, start, end, compensated) if with_compensation else (who, start, end)
+        st.session_state[key].append(entry)
+        if shift_labels and covers and set(covers) != set(shift_labels):
+            merged = set(st.session_state[Keys.EXEMPT_SHIFTS].get(who, []))
+            merged |= set(shift_labels) - set(covers)
+            st.session_state[Keys.EXEMPT_SHIFTS][who] = sorted(merged)
     rows = st.session_state[key]
     if rows:
         table_rows = []
@@ -351,10 +369,13 @@ def blackouts_editor(
     """Group blackout periods: nobody covered is on call during the window."""
     st.markdown("**Blackouts — a whole group is off call for a period**")
     st.caption(
-        "Everyone covered is blocked for the window and (by default) the day "
-        "before it. Not a leave: with Compensated on, each member keeps their "
-        "full fair share — missed load is made up on other days, or carried in "
-        "the fairness ledger as debt to repay next block."
+        "Everyone covered is blocked for the window, and (by default) from the "
+        "night calls of the day before it — night call meaning the shifts "
+        "flagged 'Thu counts as weekend' — so nobody is post-call on their "
+        "first off day. Night-float duty is never affected. Not a leave: with "
+        "Compensated on, each member keeps their full fair share — missed load "
+        "is made up on other days, or carried in the fairness ledger as debt "
+        "to repay next block."
     )
     if not people:
         st.caption("Add participants first to configure blackouts.")
@@ -367,7 +388,7 @@ def blackouts_editor(
     with c[2]:
         end = st.date_input("End", default_end or default_start or date.today(), key="bo_end")
     with c[3]:
-        day_before = st.checkbox("Block day before", value=True, key="bo_daybefore")
+        night_before = st.checkbox("Block night call before", value=True, key="bo_nightbefore")
     with c[4]:
         compensated = st.checkbox("Compensated", value=True, key="bo_comp")
     with c[-1]:
@@ -376,7 +397,7 @@ def blackouts_editor(
                 st.warning("Pick a group or at least one resident.")
             else:
                 st.session_state[Keys.BLACKOUTS].append(
-                    Blackout(group, members, start, end, day_before, compensated)
+                    Blackout(group, members, start, end, night_before, compensated)
                 )
     entries = list(normalized_blackouts(st.session_state[Keys.BLACKOUTS]))
     if entries:
@@ -389,7 +410,7 @@ def blackouts_editor(
                 "Members": ", ".join(covered) or "—",
                 "Start": b.start,
                 "End": b.end,
-                "Day before": b.day_before,
+                "Night call before": b.night_before,
                 "Compensated": b.compensated,
             })
         st.table(pd.DataFrame(table_rows))
@@ -484,6 +505,60 @@ def exemptions_editor(people: list, shift_labels: list) -> None:
         removed = _remove_control(list(ex.keys()), "Remove exemption", "ex_rm")
         if removed is not None:
             ex.pop(removed, None)
+
+
+# Deliberate friction, not security: using avoid pairs needs sign-off from
+# higher authority, so the editor asks for this code before revealing itself.
+AVOID_UNLOCK_CODE = "1221"
+
+
+def avoid_pairs_editor(people: list) -> None:
+    """Pairs never on call the same day; gated behind an access code."""
+    with st.expander("Avoid pairs (restricted)", expanded=False):
+        st.caption(
+            "Two residents who must never be on call on the same day. Use "
+            "only with approval from higher authority — the access code is a "
+            "deliberate extra step, not a security measure. Fairness targets "
+            "are unaffected."
+        )
+        pairs = st.session_state[Keys.AVOID_PAIRS]
+        if not st.session_state[Keys.AVOID_UNLOCKED]:
+            if pairs:
+                st.caption(f"{len(pairs)} avoid pair(s) are configured and active.")
+            code = st.text_input("Access code", type="password", key="avoid_code")
+            if st.button("Unlock", key="avoid_unlock"):
+                if code == AVOID_UNLOCK_CODE:
+                    st.session_state[Keys.AVOID_UNLOCKED] = True
+                    st.rerun()
+                else:
+                    st.warning("Wrong code.")
+            return
+        if len(people) < 2:
+            st.caption("Add at least two participants first.")
+            return
+        c = st.columns([3, 3, 1])
+        with c[0]:
+            first = st.selectbox("Resident A", people, key="avoid_a")
+        with c[1]:
+            second = st.selectbox("Resident B", people, key="avoid_b")
+        with c[2]:
+            if _add_button("avoid_add"):
+                if first == second:
+                    st.warning("Pick two different residents.")
+                elif not any({p[0], p[1]} == {first, second} for p in pairs):
+                    pairs.append((first, second))
+        if pairs:
+            st.table(pd.DataFrame(
+                [{"Resident A": p[0], "Resident B": p[1]} for p in pairs]
+            ))
+            removed = _remove_control(
+                list(range(len(pairs))),
+                "Remove pair",
+                "avoid_rm",
+                format_func=lambda i: f"{pairs[i][0]} / {pairs[i][1]}",
+            )
+            if removed is not None:
+                pairs.pop(removed)
 
 
 DAY_TYPE_CHOICES = {"No preference": None, "Weekends": "weekend", "Weekdays": "weekday"}

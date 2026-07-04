@@ -133,7 +133,9 @@ except ImportError:  # pragma: no cover - simple fallback if ortools missing
 
 from .data_models import (
     InputData,
+    blackout_night_before_dates,
     blackout_person_windows,
+    is_night_call,
     normalized_leaves,
     normalized_rotators,
 )
@@ -401,15 +403,41 @@ class SchedulerSolver:
         self._add_min_gap_windows()
         self._add_nf_block_constraints()
         self._add_nf_rest_constraints()
+        self._add_avoid_pair_constraints()
+
+    def _add_avoid_pair_constraints(self) -> None:
+        """Avoid pairs: the two residents never work on the same day.
+
+        At most one of the pair is assigned per day across all shifts. Like
+        the caps this can never make the model infeasible on its own — the
+        uncoverable surplus falls to ``Unfilled`` — and it involves no
+        fairness targets.
+        """
+        pairs = self.data.avoid_pairs or []
+        if not pairs:
+            return
+        person_idx = {p: i for i, p in enumerate(self.people[:-1])}
+        n_shifts = len(self.shifts)
+        for pair in pairs:
+            a_idx = person_idx.get(pair[0])
+            b_idx = person_idx.get(pair[1])
+            if a_idx is None or b_idx is None or a_idx == b_idx:
+                continue
+            for d_idx in range(len(self.days)):
+                self.model.Add(
+                    sum(self.vars[(a_idx, d_idx, s)] for s in range(n_shifts))
+                    + sum(self.vars[(b_idx, d_idx, s)] for s in range(n_shifts))
+                    <= 1
+                )
 
     def _blocked_day_indices(self) -> Dict[int, set]:
         """Person index -> day indices that person cannot work.
 
-        A day is blocked by any leave or group-blackout window covering it, or
-        — for a rotator — by falling outside all of that resident's active
-        windows. Precomputed once so the constraint loop does an O(1)
-        membership check instead of re-scanning every leave per (day, shift,
-        person) triple.
+        A day is blocked by any leave covering it, or — for a rotator — by
+        falling outside all of that resident's active windows. (Blackouts are
+        shift-type-aware and live in ``_blocked_slot_indices``.) Precomputed
+        once so the constraint loop does an O(1) membership check instead of
+        re-scanning every leave per (day, shift, person) triple.
         """
         rotator_windows: Dict[str, list] = {}
         for res, start, end in normalized_rotators(self.data.rotators):
@@ -417,13 +445,6 @@ class SchedulerSolver:
         leave_windows: Dict[str, list] = {}
         for res, start, end, _comp in normalized_leaves(self.data.leaves):
             leave_windows.setdefault(res, []).append((start, end))
-        # Blackouts block like leaves regardless of the compensated flag (that
-        # flag only affects the fairness share, in model.weights).
-        for res, windows in blackout_person_windows(
-            self.data.blackouts, self.data.named_groups
-        ).items():
-            for start, end, _comp in windows:
-                leave_windows.setdefault(res, []).append((start, end))
 
         blocked: Dict[int, set] = {}
         for p_idx, person in enumerate(self.people[:-1]):  # exclude Unfilled
@@ -434,9 +455,41 @@ class SchedulerSolver:
                 if windows and not any(s <= day <= e for s, e in windows):
                     days_blocked.add(d_idx)  # outside rotator active window
                 elif any(s <= day <= e for s, e in leaves):
-                    days_blocked.add(d_idx)  # on leave or blacked out
+                    days_blocked.add(d_idx)  # on leave (compensated or not)
             if days_blocked:
                 blocked[p_idx] = days_blocked
+        return blocked
+
+    def _blocked_slot_indices(self) -> Dict[int, set]:
+        """Person index -> (day, shift) index pairs blocked by group blackouts.
+
+        Blackouts are shift-type-aware, unlike leaves: the window blocks every
+        non-night-float shift (night float is a separate rotation, never
+        touched), and the night-before date blocks only the night on-calls
+        (``is_night_call``: "Thu counts as weekend", non-NF) so the member is
+        not post-call on their first off day. The compensated flag only
+        affects the fairness share (model.weights), never the blocking.
+        """
+        windows = blackout_person_windows(self.data.blackouts, self.data.named_groups)
+        night_dates = blackout_night_before_dates(
+            self.data.blackouts, self.data.named_groups
+        )
+        if not windows and not night_dates:
+            return {}
+        blocked: Dict[int, set] = {}
+        for p_idx, person in enumerate(self.people[:-1]):  # exclude Unfilled
+            person_windows = windows.get(person, ())
+            person_nights = night_dates.get(person, ())
+            slots = set()
+            for (d_idx, s_idx), slot in self.slots.items():
+                if slot.shift.night_float:
+                    continue
+                if any(s <= slot.day <= e for s, e, _comp in person_windows):
+                    slots.add((d_idx, s_idx))
+                elif slot.day in person_nights and is_night_call(slot.shift):
+                    slots.add((d_idx, s_idx))
+            if slots:
+                blocked[p_idx] = slots
         return blocked
 
     def _eligible_person_indices(self) -> Dict[int, set]:
@@ -458,6 +511,7 @@ class SchedulerSolver:
 
     def _add_slot_coverage_and_eligibility(self) -> None:
         blocked = self._blocked_day_indices()
+        slot_blocked = self._blocked_slot_indices()
         eligible = self._eligible_person_indices()
         for d_idx in range(len(self.days)):
             for s_idx in range(len(self.shifts)):
@@ -467,7 +521,11 @@ class SchedulerSolver:
                         for p_idx in range(len(self.people))) == 1
                 )
                 for p_idx in range(len(self.people) - 1):  # exclude Unfilled
-                    if p_idx not in eligible[s_idx] or d_idx in blocked.get(p_idx, ()):
+                    if (
+                        p_idx not in eligible[s_idx]
+                        or d_idx in blocked.get(p_idx, ())
+                        or (d_idx, s_idx) in slot_blocked.get(p_idx, ())
+                    ):
                         self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
 
     def _add_one_shift_per_day(self) -> None:

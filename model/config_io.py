@@ -122,7 +122,7 @@ def input_data_to_json(data: InputData, display: dict | None = None) -> str:
         "blackouts": (
             [
                 [b.group, list(b.members), b.start.isoformat(), b.end.isoformat(),
-                 b.day_before, b.compensated]
+                 b.night_before, b.compensated]
                 for b in normalized_blackouts(data.blackouts)
             ]
             if data.blackouts
@@ -144,6 +144,11 @@ def input_data_to_json(data: InputData, display: dict | None = None) -> str:
         ),
         "preferred_day_type": (
             dict(data.preferred_day_type) if data.preferred_day_type else None
+        ),
+        "avoid_pairs": (
+            [[pair[0], pair[1]] for pair in data.avoid_pairs]
+            if data.avoid_pairs
+            else None
         ),
     }
     if display:
@@ -324,6 +329,11 @@ def input_data_from_json(text: str) -> InputData:
         preferred_day_type=(
             {str(k): str(v) for k, v in raw["preferred_day_type"].items()}
             if raw.get("preferred_day_type")
+            else None
+        ),
+        avoid_pairs=(
+            [(str(a), str(b)) for a, b in raw["avoid_pairs"]]
+            if raw.get("avoid_pairs")
             else None
         ),
     )

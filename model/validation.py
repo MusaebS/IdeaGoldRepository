@@ -10,7 +10,9 @@ except ImportError:  # pragma: no cover - fallback when pandas missing
 
 from .data_models import (
     InputData,
+    blackout_night_before_dates,
     blackout_person_windows,
+    is_night_call,
     normalized_blackouts,
     normalized_leaves,
     normalized_perks,
@@ -83,7 +85,26 @@ def config_warnings(data: InputData) -> List[str]:
     warnings.extend(_blackout_warnings(data))
     warnings.extend(_reduction_warnings(data))
     warnings.extend(_preference_warnings(data))
+    warnings.extend(_avoid_pair_warnings(data))
     return warnings
+
+
+def _avoid_pair_warnings(data: InputData) -> List[str]:
+    """Advisories for avoid pairs that will visibly hurt coverage."""
+    out: List[str] = []
+    role_shifts: dict = {}
+    for shift in data.shifts:
+        role_shifts[shift.role] = role_shifts.get(shift.role, 0) + 1
+    for pair in (data.avoid_pairs or []):
+        first, second = pair[0], pair[1]
+        for role, people in (("Junior", data.juniors), ("Senior", data.seniors)):
+            if role_shifts.get(role) and set(people) == {first, second}:
+                out.append(
+                    f"Avoid pair '{first}' / '{second}' are the only "
+                    f"{role.lower()}s; at most one can work per day, so expect "
+                    "unfilled slots."
+                )
+    return out
 
 
 def _preference_warnings(data: InputData) -> List[str]:
@@ -179,8 +200,11 @@ def _block_days_safe(data: InputData) -> list:
 def _unavailable_person_days(data: InputData) -> dict:
     """Person -> set of block days they cannot work (leave/rotator/blackout).
 
-    The advisory-side mirror of the solver's ``_blocked_day_indices``, kept in
-    dates rather than indices so warnings can name the days.
+    The advisory-side mirror of the solver's blocking, kept in dates rather
+    than indices so warnings can name the days. Blackout windows count as
+    whole days here even though they spare night-float slots — a slight
+    overcount that is fine for an advisory (the night-before partial block is
+    ignored for the same reason).
     """
     from .points import block_days
 
@@ -225,8 +249,10 @@ def _blackout_warnings(data: InputData) -> List[str]:
                 f"Blackout {b.start}–{b.end} references empty group '{b.group}' "
                 "and has no effect."
             )
-        eff_start = b.start - timedelta(days=1) if b.day_before else b.start
-        if b.end < start or eff_start > end:
+        night_date = b.start - timedelta(days=1)
+        window_outside = b.end < start or b.start > end
+        night_outside = (not b.night_before) or night_date < start or night_date > end
+        if window_outside and night_outside:
             out.append(
                 f"Blackout window {b.start}–{b.end} for {who} is outside the "
                 f"schedule dates ({start}–{end}) and has no effect."
@@ -623,6 +649,14 @@ def validate_input(data: InputData) -> List[str]:
                 f"'weekday' (got '{day_kind}')."
             )
 
+    for pair in (data.avoid_pairs or []):
+        first, second = pair[0], pair[1]
+        for name in (first, second):
+            if name not in roster:
+                issues.append(f"Avoid pair references unknown resident '{name}'.")
+        if first == second:
+            issues.append(f"Avoid pair lists '{first}' with themselves.")
+
     return issues
 
 
@@ -644,6 +678,7 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
     for name, start, end in data.rotators:
         rotator_windows.setdefault(name, []).append((start, end))
     blackout_windows = blackout_person_windows(data.blackouts, data.named_groups)
+    night_before = blackout_night_before_dates(data.blackouts, data.named_groups)
 
     for row in df.to_dict("records"):
         day = row.get("Date")
@@ -677,11 +712,19 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
                         f"{day}: {person} on '{shift.label}' is on leave ({ls} to {le})"
                     )
 
-            for bs, be, _comp in blackout_windows.get(person, ()):
-                if bs <= day <= be:
+            # Blackouts never touch night float (a separate rotation).
+            if not shift.night_float:
+                for bs, be, _comp in blackout_windows.get(person, ()):
+                    if bs <= day <= be:
+                        issues.append(
+                            f"{day}: {person} on '{shift.label}' is in a group "
+                            f"blackout ({bs} to {be})"
+                        )
+                if is_night_call(shift) and day in night_before.get(person, ()):
                     issues.append(
-                        f"{day}: {person} on '{shift.label}' is in a group "
-                        f"blackout ({bs} to {be})"
+                        f"{day}: {person} on night call '{shift.label}' the day "
+                        "before their group blackout (would be post-call on an "
+                        "off day)"
                     )
 
             windows = rotator_windows.get(person)
@@ -692,6 +735,13 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
 
         for person in {p for p in assigned_today if assigned_today.count(p) > 1}:
             issues.append(f"{day}: {person} is assigned to more than one shift")
+
+        for pair in (data.avoid_pairs or []):
+            first, second = pair[0], pair[1]
+            if first != second and first in assigned_today and second in assigned_today:
+                issues.append(
+                    f"{day}: {first} and {second} are both on call (avoid pair)"
+                )
 
     # Reduced-shift caps: recompute each member's window points on the reduced
     # labels so a manual edit cannot silently exceed the cap.

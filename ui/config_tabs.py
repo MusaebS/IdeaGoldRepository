@@ -30,6 +30,7 @@ from model.validation import validate_input, config_warnings
 
 from ui.editors import (
     WEEKDAY_LABELS,
+    avoid_pairs_editor,
     blackouts_editor,
     caps_editor,
     date_range_editor,
@@ -128,6 +129,17 @@ def _active_config_maps() -> dict:
         for p, kind in st.session_state[Keys.PREFERRED_DAY_TYPE].items()
         if p in active_people and kind in ("weekend", "weekday")
     }
+    avoid_pairs = []
+    seen_pairs = set()
+    for pair in st.session_state[Keys.AVOID_PAIRS]:
+        first, second = pair[0], pair[1]
+        unordered = frozenset((first, second))
+        if (
+            first in active_people and second in active_people
+            and first != second and unordered not in seen_pairs
+        ):
+            seen_pairs.add(unordered)
+            avoid_pairs.append((first, second))
     reductions = []
     for r in normalized_reductions(st.session_state[Keys.REDUCTIONS]):
         labels = tuple(lbl for lbl in r.labels if lbl in shift_labels)
@@ -155,6 +167,7 @@ def _active_config_maps() -> dict:
         "reductions": reductions or None,
         "preferred_shifts": preferred_shifts or None,
         "preferred_day_type": preferred_day_type or None,
+        "avoid_pairs": avoid_pairs or None,
     }
 
 
@@ -319,6 +332,11 @@ def render_config_tabs() -> tuple:
         date_range_editor(
             "Rotators — resident only available during window", Keys.ROTATORS, people,
             default_start=start_date, default_end=end_date,
+            shift_labels=[s.label for s in st.session_state[Keys.SHIFTS]],
+        )
+        st.caption(
+            "Rotators are normal roster members while active: groups, "
+            "blackouts, reductions, and preferences all apply to them."
         )
         st.divider()
         st.subheader("Groups & blackouts")
@@ -346,6 +364,8 @@ def render_config_tabs() -> tuple:
         )
         st.divider()
         preferences_editor(people, [s.label for s in st.session_state[Keys.SHIFTS]])
+        st.divider()
+        avoid_pairs_editor(people)
         st.divider()
         st.subheader("Point overrides & holidays")
         weekday_points_editor([s.label for s in st.session_state[Keys.SHIFTS]])
