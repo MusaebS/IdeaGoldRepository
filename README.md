@@ -342,6 +342,30 @@ Weekend fairness defaults to Saturday/Sunday. Set **Weekend days** in the app (o
 weekend, e.g. `[4, 5]` for Friday/Saturday. The per-shift "Thu counts as weekend"
 flag still adds Thursday for individual shifts on top of this.
 
+## How fairness is verified
+
+Two guarantees underpin the "is the result actually fair?" question:
+
+- **Coverage before fairness.** The solver never leaves a *fillable* on-call
+  slot empty to make point totals look tidier — an uncovered on-call is never
+  an acceptable price for equality. Unfilled slots appear only when coverage
+  is genuinely impossible (caps, blackouts, eligibility, too few residents).
+- **Per-shift-type balance.** Equal *total* points is not enough if one
+  resident works all the heavy nights and another only day shifts. On top of
+  total / weekend / night-float balance, each shift type's points are split
+  fairly among the residents eligible for it (the spec's per-label share), so
+  the *mix* is even too — auto-enabled for departments up to
+  `LABEL_TARGET_MAX_CELLS` (residents × days × shifts); very large rosters
+  skip it so the extra variables can't starve the primary balance under a
+  solve-time limit. Load reductions and shift preferences deliberately opt a
+  resident out of this pin (the whole point of those features is a chosen mix).
+
+`python scripts/fairness_audit.py` solves ~20 scenarios end-to-end (small,
+large, extreme, and every feature) and checks the *outcome*: total / weekend /
+night-float spread, per-shift-type distribution, coverage, hard-rule
+violations, multi-block ledger convergence, and preference neutrality. It exits
+non-zero if any scenario fails its stated fairness expectation.
+
 ## Benchmarking
 
 `python scripts/benchmark.py` times `build_schedule` across a few sizes against the
@@ -375,6 +399,11 @@ CI runs ruff, mypy, and pytest on Python 3.11/3.12 — plus a stub-only job with
 no pandas/OR-Tools installed to guard the graceful-degradation path.
 
 ## Changelog
+- Fairness audit + two outcome fixes: the solver no longer leaves a fillable
+  slot unfilled to shrink point deviation (coverage now dominates the fairness
+  objective), and per-shift-type balance is enforced via auto per-label targets
+  (gated by roster size) so equal totals no longer hide an unequal night/day
+  mix; added `scripts/fairness_audit.py` to check the outcome across scenarios.
 - Blackouts refined: the day-before rule now blocks only the night on-calls
   (the shifts flagged "Thu counts as weekend"), and night float is never
   touched by blackouts (semantics change for the former "block day before"

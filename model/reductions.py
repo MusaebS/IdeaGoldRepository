@@ -28,7 +28,7 @@ from .points import block_days, classify_slot
 from .utils import weekend_holiday_dates
 from .weights import availability_weights
 
-__all__ = ["ReductionCap", "reduction_caps"]
+__all__ = ["ReductionCap", "reduction_caps", "eligible_for_shift"]
 
 
 class ReductionCap(NamedTuple):
@@ -45,7 +45,13 @@ class ReductionCap(NamedTuple):
     keep_total: bool
 
 
-def _eligible(person: str, shift: ShiftTemplate, data: InputData) -> bool:
+def eligible_for_shift(person: str, shift: ShiftTemplate, data: InputData) -> bool:
+    """True if ``person`` may ever work ``shift`` (role, NF pool, exemptions).
+
+    The single eligibility predicate shared by reduction caps, per-label
+    fairness targets, and the audit harness, so they can never disagree on
+    who is in a shift's pool.
+    """
     if shift.role == "Junior":
         pool, nf_pool = data.juniors, data.nf_juniors
     else:
@@ -55,6 +61,10 @@ def _eligible(person: str, shift: ShiftTemplate, data: InputData) -> bool:
     if shift.night_float and person not in nf_pool:
         return False
     return shift.label not in (data.exempt_shifts or {}).get(person, ())
+
+
+# Back-compat private alias (existing internal callers).
+_eligible = eligible_for_shift
 
 
 def reduction_caps(data: InputData) -> List[ReductionCap]:

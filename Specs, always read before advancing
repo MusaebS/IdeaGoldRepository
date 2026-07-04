@@ -155,6 +155,7 @@ Implementation Progress (2026-07)
 - Blackout refinement: the day-before rule blocks only night on-calls (`is_night_call`: thu_weekend and not night_float — the roster's existing night marker) and night float is excluded from blackouts entirely; blocking moved to slot level (`_blocked_slot_indices`).
 - Rotator shift coverage at entry (multiselect in the rotator editor feeding `exempt_shifts`); groups/blackouts/reductions confirmed to apply to rotators.
 - Avoid pairs (`avoid_pairs`): a hard same-day separation constraint per pair (never infeasible alone, fairness targets untouched), UI-gated behind an access code as deliberate friction.
+- Fairness-outcome audit (`scripts/fairness_audit.py`) with two fixes: (1) coverage now dominates the objective (`objective_weights` gives `W_UNFILLED = max_slot_points × Σ deviation weights + 1`), so a fillable slot is never dropped to reduce deviation; (2) the spec's per-label balance is auto-enforced (`_auto_label_targets` sets `target_label` for every eligible resident, feeding the existing `dev_label` tier), gated by `LABEL_TARGET_MAX_CELLS` and skipping reduction- and preference-covered residents. Verified: small/mid problems reach equal totals AND equal per-shift-type mix; multi-block ledger repays blackout/reduction debt to convergence.
 
 7 Outstanding / Future Work
 Flexible night-float block start (blocks may currently only begin on a day-0-aligned boundary).

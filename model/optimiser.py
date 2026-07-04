@@ -141,40 +141,43 @@ from .data_models import (
 )
 from .nf_blocks import respects_nf_blocks
 from .points import POINT_SCALE, SlotPoints, block_days, classify_slot, scaled, slot_points
-from .reductions import reduction_caps
+from .reductions import eligible_for_shift, reduction_caps
 from .utils import weekend_holiday_dates
 from .weights import availability_weights
 
 
 def objective_weights(
-    n_days: int, n_shifts: int, has_prefs: bool
+    n_days: int, n_shifts: int, has_prefs: bool, max_slot_points_scaled: int = 1
 ) -> Tuple[int, int, int, int, int, int]:
-    """The lexicographic objective weights, rescaled when preferences exist.
+    """The objective weights: coverage on top, then fairness, then preferences.
 
-    Soft shift preferences are a new lowest tier with weight 1, so every
-    original weight is multiplied by ``K = 2·D·S + 1``:
+    **Coverage dominates fairness.** Leaving a *fillable* slot empty must never
+    reduce the objective — an uncovered on-call is never an acceptable price
+    for tidier point totals. One unfilled slot removes at most its own points
+    from one resident, so it can improve the whole fairness objective by at
+    most ``max_slot_points × (sum of the deviation weights)``; setting
+    ``W_UNFILLED`` just above that makes filling any coverable slot always
+    worth it. When a slot genuinely cannot be filled (caps, blackouts,
+    eligibility — all hard constraints) ``Unfilled`` still absorbs it, so this
+    never causes infeasibility.
 
-    - each of the D·S slots is assigned exactly once and can match at most 2
-      preference criteria (label + day type), so the total preference reward
-      lies in ``[-2·D·S, 0]``;
-    - every original term is a non-negative integer with minimum coefficient 1
-      (scaled deviations, unfilled slots), so any strict improvement in the
-      original weighted sum changes it by ≥ 1, i.e. by ≥ K after rescaling —
-      strictly more than the whole preference range.
+    **Fairness ladder** (below coverage): overall spread (``max_dev``), then
+    total, weekend, night-float, and per-label deviations.
 
-    Hence preferences can never buy an unfilled slot or a single scaled point
-    of any deviation; they only order exact fairness ties. ``K = 1`` when no
-    preferences are configured keeps existing objectives byte-identical (and
-    keeps the headroom: worst case ≈ 3.3×10¹⁶ ≪ 2⁶³).
+    **Preferences** are the lowest tier (weight 1). Every fairness weight is
+    multiplied by ``K = 2·D·S + 1`` so the preference reward (in
+    ``[-2·D·S, 0]``) can never buy a single scaled point of any deviation;
+    they only order exact fairness ties. ``K = 1`` when no preferences are set.
 
-    Returns ``(W_MAXDEV, W_TOTAL, W_WEEKEND, W_NIGHTS, W_LABEL, W_UNFILLED)``;
-    the preference tier itself always has weight 1.
+    Returns ``(W_MAXDEV, W_TOTAL, W_WEEKEND, W_NIGHTS, W_LABEL, W_UNFILLED)``.
     """
     scale = 2 * n_days * n_shifts + 1 if has_prefs else 1
-    return (
-        10**9 * scale, 10**6 * scale, 10**3 * scale,
-        10**2 * scale, 10 * scale, scale,
+    w_maxdev, w_total, w_weekend, w_nights, w_label = (
+        10**9 * scale, 10**6 * scale, 10**3 * scale, 10**2 * scale, 10 * scale,
     )
+    fair_sum = w_maxdev + w_total + w_weekend + w_nights + w_label
+    w_unfilled = max(1, max_slot_points_scaled) * fair_sum + 1
+    return (w_maxdev, w_total, w_weekend, w_nights, w_label, w_unfilled)
 
 
 class SchedulerSolver:
@@ -668,8 +671,9 @@ class SchedulerSolver:
         # everything — they only order exact fairness ties.
         rewards = self._preference_rewards()
         self.pref_rewards = rewards
+        max_slot = max((scaled(slot.points) for slot in self.slots.values()), default=1)
         W_MAXDEV, W_TOTAL, W_WEEKEND, W_NIGHTS, W_LABEL, W_UNFILLED = objective_weights(
-            len(self.days), len(self.shifts), bool(rewards)
+            len(self.days), len(self.shifts), bool(rewards), max_slot
         )
         if self.max_dev is not None:
             terms.append(W_MAXDEV * self.max_dev)
@@ -907,6 +911,62 @@ def _apply_extra_points(
     return {p: extra[p] for p in participants}
 
 
+# Per-label fairness adds ~residents×labels deviation variables. On small and
+# mid-size rosters (a typical department) that is free — the solver reaches
+# optimality and the low-priority label tier is satisfied only after total,
+# weekend, and night-float balance. On a very large, time-limited problem the
+# extra variables instead starve the primary balance without achieving label
+# balance, so per-label targets are only auto-set below this size (measured:
+# safe to ~24×28×8 ≈ 5.4k cells; harmful at 45×28×10 ≈ 12.6k). Set
+# ``target_label`` explicitly to override the gate.
+LABEL_TARGET_MAX_CELLS = 6000
+
+
+def _auto_label_targets(
+    data: InputData, availability: Mapping[str, float]
+) -> Dict[Tuple[str, str], float]:
+    """Per-(resident, label) fair share of each shift type's points.
+
+    Fulfils the spec's per-label balance ("every resident's points on each
+    label equal their fractional share"): equal total points are not enough
+    if one resident works all the heavy nights and another only day shifts.
+    Each label's points are split availability-weighted across the residents
+    eligible for it, feeding the existing ``dev_label`` tier (the lowest
+    deviation weight, so it never overrides total/weekend/night-float
+    balance). Deliberately skipped so it doesn't fight other features:
+
+    * night-float shifts — already balanced by the night-float dimension;
+    * (resident, label) pairs under a load reduction — the cap governs the mix;
+    * residents with any shift/day-type preference — their mix is intentionally
+      free (two people preferring opposite shifts swap, which is fair).
+    """
+    participants = list(data.juniors) + list(data.seniors)
+    pref_people = set(data.preferred_shifts or {}) | set(data.preferred_day_type or {})
+    capped = {(cap.person, lbl) for cap in reduction_caps(data) for lbl in cap.labels}
+
+    label_points: Dict[str, float] = {}
+    for slot in slot_points(data):
+        if slot.shift.night_float:
+            continue
+        label_points[slot.shift.label] = label_points.get(slot.shift.label, 0.0) + slot.points
+
+    targets: Dict[Tuple[str, str], float] = {}
+    for shift in data.shifts:
+        if shift.night_float or shift.label not in label_points:
+            continue
+        pool = [p for p in participants if eligible_for_shift(p, shift, data)]
+        pool_weight = sum(availability.get(p, 0.0) for p in pool)
+        if pool_weight <= 0:
+            continue
+        for person in pool:
+            if person in pref_people or (person, shift.label) in capped:
+                continue
+            targets[(person, shift.label)] = (
+                label_points[shift.label] * availability.get(person, 0.0) / pool_weight
+            )
+    return targets
+
+
 def resolve_targets(data: InputData, ledger: Ledger | None = None) -> InputData:
     """Return a copy of ``data`` with all fairness targets resolved.
 
@@ -920,6 +980,7 @@ def resolve_targets(data: InputData, ledger: Ledger | None = None) -> InputData:
     target_total_map = data.target_total_map
     target_weekend = data.target_weekend
     target_night_float = data.target_night_float
+    target_label = data.target_label
 
     if participants:
         total_points = 0.0
@@ -992,6 +1053,12 @@ def resolve_targets(data: InputData, ledger: Ledger | None = None) -> InputData:
                 data, target_total_map, target_night_float, participants
             )
 
+        if target_label is None:
+            day_count = (data.end_date - data.start_date).days + 1
+            cells = len(participants) * max(1, day_count) * max(1, len(data.shifts))
+            if cells <= LABEL_TARGET_MAX_CELLS:
+                target_label = _auto_label_targets(data, availability) or None
+
     # A copy so the caller's ``InputData`` is never mutated (re-running with
     # changed dates previously reused stale auto-targets).
     return replace(
@@ -1000,6 +1067,7 @@ def resolve_targets(data: InputData, ledger: Ledger | None = None) -> InputData:
         target_total_map=target_total_map,
         target_weekend=target_weekend,
         target_night_float=target_night_float,
+        target_label=target_label,
     )
 
 
@@ -1037,6 +1105,7 @@ def build_schedule(data: InputData, env: str | None = None, ledger: Ledger | Non
     df.attrs["target_total_map"] = target_total_map
     df.attrs["target_weekend"] = target_weekend
     df.attrs["target_night_float"] = target_night_float
+    df.attrs["target_label"] = solve_data.target_label
     if using_stub:
         df.attrs["solver_warning"] = (
             "OR-Tools not installed; using fallback output with unfilled shifts."
