@@ -192,6 +192,93 @@ All three are annotated on the resident's fairness-log line (`[R2 ×0.90]`,
 `[perk ×0.80 →2026-08-01]`, `[exempt: NF]`) and the targets already embed the
 factors, so deviations stay honest. Configure them under **③ Advanced**.
 
+## Groups & blackouts
+
+Define **named groups** (② *Groups & blackouts*) — plain member lists, e.g. four
+teams of three, fully editable — and add **blackout periods** per group (or for
+ad-hoc names): nobody covered is on call during the window **or, by default, the
+day before it**, so no one enters the period post-call. A blackout is not a
+leave: it is entered in bulk, reported separately (`[blackout Team A …]` in the
+log and Notes), and **compensated by default** — each member keeps their full
+fair share, so the missed load is made up on other days of the block or, with a
+carryover ledger, carried as debt and repaid next block (never excused).
+Untick *Compensated* for uncompensated-leave semantics instead. Group
+membership is resolved when the schedule is generated, so editing a group
+updates every blackout that references it. Pre-solve advisories flag empty
+groups, out-of-block windows, and days where blackouts + leaves + rotators
+leave fewer available residents than shifts ("expect unfilled slots").
+Note: the manual-edit dropdowns can't hide people per-day, but assigning
+someone inside their blackout is flagged by the validator and the log.
+
+## Shift-type load reductions (repaid later)
+
+Sometimes a group should carry **less of specific shift types** for a while —
+e.g. few or no night calls during a heavy rotation, with others covering.
+Add a **reduction** (③ Advanced): group (or names) + shift types + a **load %
+of fair share** (0% = none of those shifts in the window) + a period. It is
+enforced as a hard cap that can never make the schedule infeasible.
+Per entry, choose what happens to the rest of their load *this* block:
+
+- **Work less now, repay later** (default): their total (and night-float)
+  targets drop by the reduced amount, others absorb it, and the whole
+  shortfall is carried in the fairness ledger as debt — the next block's
+  carryover targets make them repay it.
+- **Keep full share**: targets are untouched, so the solver compensates them
+  with *other* shift types in the same block; only what cannot fit carries over.
+
+Either way — and unlike perks or group factors — the reduction is **never
+excused**: the ledger's no-catch-up policy issues no credit for it, so the
+deficit is always repaid through carryover. Caveat: repayment is tracked on
+the total / weekend / night-float dimensions, so a reduced label that is
+neither night-float nor weekend repays via total points (per-label carryover
+targets are future work).
+
+## Fairness table, per-call audit & ledger editor
+
+Beyond the text log, the results page shows a **fairness table**: per resident,
+call *counts* and points per shift type, total/weekend/night-float with targets
+and deviations, **prior + cumulative** columns when a carryover ledger is
+loaded (including cumulative per-shift-type call counts), a `Pref match`
+column, and a Notes column with the same annotations as the log — downloadable
+as CSV, and mirrored in the Excel/PDF Fairness sheet. A **Per-call detail
+(audit)** expander lists every (date, shift) slot with its holder, points, and
+weekend/night-float flags — download the CSV each month for future reference.
+
+The carryover ledger is now **editable in-app** (④ Save / carryover): upload
+it, adjust any resident's cumulative numbers after a real-world change, add or
+remove residents, download the edited JSON without generating — and whatever
+the grid shows is what the next Generate balances against. The saved ledger
+also accumulates per-shift-type points and call counts across blocks
+(informational; carryover balancing stays on the three dimensions; old ledger
+files load unchanged).
+
+## Importing availability requests
+
+Collect monthly "I need to be free on these dates" requests with any form tool,
+export them as a sheet, and import them in one go (② under Leaves): download
+the **template** (CSV or Excel; columns `Name`, `Start`, `End`), upload the
+responses (`.xlsx` or `.csv`), review the **preview** — every row gets an OK or
+a per-row error (unknown name, unreadable date, backwards range), so one bad
+answer never blocks the rest — then **Apply**: each valid row becomes a
+compensated leave, exactly as if entered by hand (deduplicated against
+existing entries). Header synonyms (`Resident`, `From`/`To`…), several rows
+per person, an empty End for a single day, and typed date cells / ISO /
+`DD/MM/YYYY` strings are all accepted.
+
+## Shift preferences (soft)
+
+Residents can prefer **specific shift types** (e.g. nights vs mornings) and a
+**day type** (weekends vs weekdays) — ③ Advanced. Preferences are strictly
+quality-of-life: they only choose *among equally fair schedules* and never
+change anyone's fair share, deviations, the log, or the ledger. Mechanically,
+when preferences exist every fairness weight in the objective is multiplied by
+`K = 2·days·shifts + 1` while each matched assignment earns a reward of 1–2;
+since the total preference reward can never reach `K`, no preference can buy an
+unfilled slot or a single scaled point of any deviation. Two residents wanting
+opposite things simply swap slots — no harm, no unfairness. The results page
+shows per-person match ratios and the fairness table a `Pref match` column;
+advisories flag preferences for shifts a person can never work.
+
 ## Per-resident caps
 
 `InputData.max_total` and `InputData.max_nights` (maps of resident → points) put a
@@ -262,6 +349,18 @@ CI runs ruff, mypy, and pytest on Python 3.11/3.12 — plus a stub-only job with
 no pandas/OR-Tools installed to guard the graceful-degradation path.
 
 ## Changelog
+- Added named groups with group blackout periods (off call during the window
+  and, by default, the day before; compensated by default so the shortfall is
+  repaid via the ledger, not excused), shift-type load reductions (a group
+  carries a set % of its fair share of chosen shift types for a window, with
+  per-entry "work less now, repay later" / "keep full share" modes), a
+  per-resident fairness table (counts + points per shift type, targets,
+  prior/cumulative ledger columns, notes) with CSV download, a per-call audit
+  table, an in-app editable carryover ledger (with per-shift-type history in
+  the ledger JSON), Excel/CSV import of monthly availability requests
+  (template + per-row validated preview → compensated leaves), and soft shift
+  preferences (preferred shift types and weekend/weekday) that only break
+  ties between equally fair schedules.
 - Added seniority groups (R1/R2… load percentages), windowed per-resident perks,
   and shift-type exemptions — all flowing through fairness targets and annotated
   in the log; the ledger no longer auto-compensates penalties or excused

@@ -146,8 +146,17 @@ Implementation Progress (2026-06)
 
 
 
+Implementation Progress (2026-07)
+- Named resident groups (`named_groups`) as a shared foundation, plus group blackouts (`blackouts`): whole groups off call for a window and, by default, the day before; compensated by default — weights untouched, so the ledger's no-catch-up policy issues no credit and the shortfall is repaid via carryover, never excused.
+- Shift-type load reductions (`reductions`): per-person hard caps at factor × fair share of chosen labels inside a window (never infeasible; Unfilled absorbs), with per-entry modes — "work less now" (total/NF targets lowered, whole shortfall repaid later) or "keep full share" (other shift types compensate in-block).
+- Fairness table (counts + points per label, targets/devs, prior/cumulative ledger columns, notes, CSV) alongside the text log; per-call audit table; in-app editable carryover ledger; ledger JSON now accumulates per-label points/counts (informational; carryover stays on total/weekend/night_float; backward compatible).
+- Excel/CSV import of monthly availability requests (template, tolerant header/name/date parsing, per-row validated preview) applying as compensated leaves.
+- Soft shift preferences (`preferred_shifts`, `preferred_day_type`): a lowest objective tier under a K = 2·D·S + 1 rescale of all fairness weights, so preferences only order exact fairness ties; K = 1 (byte-identical objective) when unused.
+
 7 Outstanding / Future Work
 Flexible night-float block start (blocks may currently only begin on a day-0-aligned boundary).
+
+Per-label ledger carryover targets (a reduced shift type is currently repaid via the total / weekend / night-float dimensions, not necessarily in the same label).
 
 Performance benchmark *page* in the UI (a CLI benchmark now lives at `scripts/benchmark.py`).
 
