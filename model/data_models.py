@@ -359,6 +359,13 @@ class InputData:
     # many total / night-float points; uncovered slots fall to ``Unfilled``.
     max_total: Dict[str, float] | None = None
     max_nights: Dict[str, float] | None = None
+    # Per-cap carryover policy: ``True`` = "do not compensate later" — the
+    # shortfall below the resident's fair share is *excused* in the ledger (a
+    # standing reduced capacity, credited like a perk, never caught up).
+    # ``False`` / absent = "compensate later" — the shortfall is not excused, so
+    # cumulative balancing loads the resident up in later blocks to make it up
+    # (the historical behaviour). Only meaningful with a ``max_total`` entry.
+    max_total_excused: Dict[str, bool] | None = None
     # Per-resident mandatory extra points (e.g. a penalty). A resident in the map
     # must carry this many points above their share: their total target is raised
     # by it (others' lowered to reconcile) and a hard floor enforces it.

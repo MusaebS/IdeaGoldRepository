@@ -79,6 +79,12 @@ def _active_config_maps() -> dict:
         for p, v in st.session_state[Keys.CAPS].items()
         if p in active_people and v.get("total")
     }
+    # "Do not compensate later" flag per active cap (excused shortfall).
+    max_total_excused = {
+        p: True
+        for p, v in st.session_state[Keys.CAPS].items()
+        if p in max_total and v.get("excused")
+    }
     extra_points = {
         p: v
         for p, v in st.session_state[Keys.EXTRA_POINTS].items()
@@ -174,6 +180,7 @@ def _active_config_maps() -> dict:
     ]
     return {
         "max_total": max_total or None,
+        "max_total_excused": max_total_excused or None,
         "extra_points": extra_points or None,
         "weekday_points": weekday_points or None,
         "holidays": holidays or None,

@@ -264,6 +264,80 @@ def test_nf_duty_days_carried_forward_across_blocks():
     assert updated["A"]["total"] == 0.0  # NF cells never add regular points
 
 
+def _cap_data(start, cap_active, excused, days=14):
+    from dataclasses import replace
+    shifts = [
+        ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="E", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+    ]
+    from datetime import timedelta
+    return replace(
+        _data(), start_date=start, end_date=start + timedelta(days=days - 1),
+        shifts=shifts, juniors=["A", "B", "C", "D"],
+        max_total={"A": 2.0} if cap_active else None,
+        max_total_excused={"A": True} if (cap_active and excused) else None,
+    )
+
+
+def test_excused_cap_credits_sum_to_zero():
+    from model.ledger import block_adjustments
+
+    adj = block_adjustments(None, _cap_data(date(2023, 1, 1), True, True))
+    assert sum(v["excused_total"] for v in adj.values()) == pytest.approx(0.0)
+    # A (capped at 2, fair share 7) is credited its 5-point shortfall.
+    assert adj["A"]["excused_total"] == pytest.approx(5.0)
+
+
+def test_excused_cap_does_not_diverge_across_blocks():
+    """A permanent 'do not compensate later' cap keeps the ledger balanced — the
+    capped resident is recorded at fair standing, never caught up — whereas the
+    'compensate later' cap builds an ever-growing (unrepayable) debt."""
+    pytest.importorskip("ortools")
+    from datetime import timedelta
+    from model.optimiser import build_schedule
+
+    def final_range(excused):
+        ledger: dict = {}
+        for b in range(4):
+            data = _cap_data(date(2023, 1, 1) + timedelta(days=14 * b), True, excused)
+            df = build_schedule(data, env="test", ledger=ledger or None)
+            ledger = update_ledger(ledger, df, data)
+        totals = [ledger[p]["total"] for p in ("A", "B", "C", "D")]
+        return max(totals) - min(totals)
+
+    excused_range = final_range(True)
+    compensate_range = final_range(False)
+    assert excused_range <= 4.0  # bounded, near-balanced
+    # The excused cap is dramatically tighter than the diverging compensate case.
+    assert excused_range < compensate_range / 3
+
+
+def test_compensate_later_cap_catches_up_when_lifted():
+    """A temporary 'compensate later' cap: the shortfall is repaid once the cap
+    lifts, so cumulative totals converge."""
+    pytest.importorskip("ortools")
+    from datetime import timedelta
+    from model.optimiser import build_schedule
+
+    ledger: dict = {}
+    for b in range(4):
+        # Cap A for the first two blocks only, then lift it.
+        data = _cap_data(date(2023, 1, 1) + timedelta(days=14 * b), b < 2, False)
+        df = build_schedule(data, env="test", ledger=ledger or None)
+        ledger = update_ledger(ledger, df, data)
+    totals = [ledger[p]["total"] for p in ("A", "B", "C", "D")]
+    assert max(totals) - min(totals) <= 1.0  # caught up after the cap lifted
+
+
+def test_max_total_excused_config_round_trip():
+    from model.config_io import input_data_from_json, input_data_to_json
+
+    data = _cap_data(date(2023, 1, 1), True, True)
+    restored = input_data_from_json(input_data_to_json(data))
+    assert restored.max_total == {"A": 2.0}
+    assert restored.max_total_excused == {"A": True}
+
+
 def test_invariant_excused_shortfall_not_repaid_next_block():
     """The flagship guarantee: after a perk/group reduction, the saved ledger
 

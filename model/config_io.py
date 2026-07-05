@@ -91,6 +91,7 @@ def input_data_to_json(data: InputData, display: dict | None = None) -> str:
         "seed": data.seed,
         "weekend_days": data.weekend_days,
         "max_total": data.max_total,
+        "max_total_excused": data.max_total_excused or None,
         "max_nights": data.max_nights,
         "extra_points": data.extra_points,
         "weekday_points": (
@@ -265,6 +266,11 @@ def input_data_from_json(text: str) -> InputData:
         max_total=(
             {str(k): float(v) for k, v in raw["max_total"].items()}
             if raw.get("max_total")
+            else None
+        ),
+        max_total_excused=(
+            {str(k): bool(v) for k, v in raw["max_total_excused"].items()}
+            if raw.get("max_total_excused")
             else None
         ),
         max_nights=(

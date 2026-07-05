@@ -125,18 +125,29 @@ def caps_editor(people: list) -> None:
     if not people:
         st.caption("Add participants first to configure caps.")
         return
-    c = st.columns([3, 2, 1])
+    c = st.columns([3, 2, 2, 1])
     with c[0]:
         who = st.selectbox("Resident", people, key="cap_who")
     with c[1]:
         mt = st.number_input("Max total pts", 0.0, 999.0, 0.0, 0.5, key="cap_total")
     with c[2]:
+        compensate = st.checkbox(
+            "Compensate later", value=True, key="cap_comp",
+            help="On: the shortfall below the resident's fair share is made up "
+            "in later blocks (cumulative fairness). Off: the reduced capacity is "
+            "excused — a standing limit that is never caught up (like a perk).",
+        )
+    with c[3]:
         if _add_button("cap_add"):
-            st.session_state[Keys.CAPS][who] = {"total": mt}
+            st.session_state[Keys.CAPS][who] = {"total": mt, "excused": not compensate}
     caps = st.session_state[Keys.CAPS]
     if caps:
         st.table(pd.DataFrame([
-            {"Resident": p, "Max total": v.get("total") or "—"}
+            {
+                "Resident": p,
+                "Max total": v.get("total") or "—",
+                "Carryover": "excused" if v.get("excused") else "compensate later",
+            }
             for p, v in caps.items()
         ]))
         removed = _remove_control(list(caps.keys()), "Remove cap", "cap_rm")
