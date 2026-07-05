@@ -30,9 +30,40 @@ from .data_models import (
 )
 from .points import block_days
 
-__all__ = ["resolve_night_float", "nf_leave_windows", "nf_duty_days"]
+__all__ = [
+    "resolve_night_float",
+    "nf_leave_windows",
+    "nf_duty_days",
+    "nf_cells_to_attr",
+    "nf_cells_from_attr",
+]
 
 Slot = Tuple[date, str]
+
+
+def nf_cells_to_attr(nf_cells: Dict[Slot, str]) -> Dict[str, Dict[str, str]]:
+    """``{(date, label): name}`` → a JSON/Arrow-serializable nested dict.
+
+    ``df.attrs`` is serialized by pandas/Streamlit, which rejects tuple keys, so
+    the overlay cells are stored on the frame as ``{date-iso: {label: name}}``.
+    """
+    out: Dict[str, Dict[str, str]] = {}
+    for (day, label), name in nf_cells.items():
+        key = day.isoformat() if hasattr(day, "isoformat") else str(day)
+        out.setdefault(key, {})[label] = name
+    return out
+
+
+def nf_cells_from_attr(df) -> Dict[Tuple[str, str], str]:
+    """Read ``df.attrs['nf_cells']`` back into ``{(date-iso, label): name}``."""
+    attrs = getattr(df, "attrs", {}) or {}
+    raw = attrs.get("nf_cells", {}) or {}
+    out: Dict[Tuple[str, str], str] = {}
+    for iso, labels in raw.items():
+        if isinstance(labels, dict):  # {date-iso: {label: name}}
+            for label, name in labels.items():
+                out[(str(iso), str(label))] = name
+    return out
 
 
 def nf_leave_windows(data: InputData) -> List[Leave]:
@@ -59,6 +90,10 @@ def resolve_night_float(
     )
     # Deterministic coverer selection: earliest start, then name.
     assignments.sort(key=lambda a: (a.start, a.name))
+    # A coverer only covers night-float shifts of their own role (a junior never
+    # ends up written onto a senior night-float shift, and vice versa).
+    role_of: Dict[str, str] = {p: "Junior" for p in data.juniors}
+    role_of.update({p: "Senior" for p in data.seniors})
 
     nf_cells: Dict[Slot, str] = {}
     gap_slots: Set[Slot] = set()
@@ -66,7 +101,7 @@ def resolve_night_float(
         for shift in data.shifts:
             if not nf_covered(day, shift, data):
                 continue
-            coverer = _coverer_for(day, shift.label, assignments)
+            coverer = _coverer_for(day, shift, assignments, role_of)
             if coverer is None:
                 gap_slots.add((day, shift.label))  # → regular fallback
             else:
@@ -75,9 +110,18 @@ def resolve_night_float(
     return nf_cells, gap_slots, nf_leave_windows(data)
 
 
-def _coverer_for(day: date, label: str, assignments) -> str | None:
+def _coverer_for(day: date, shift, assignments, role_of: Dict[str, str]) -> str | None:
+    """The assignment covering ``shift`` on ``day``, role-matched.
+
+    An empty ``labels`` means "all night-float shifts of the coverer's role", so
+    a junior with a blanket assignment covers only junior night-float shifts.
+    """
     for a in assignments:
-        if a.start <= day <= a.end and (not a.labels or label in a.labels):
+        if not (a.start <= day <= a.end):
+            continue
+        if role_of.get(a.name) != shift.role:
+            continue  # a coverer only covers their own role's NF shifts
+        if not a.labels or shift.label in a.labels:
             return a.name
     return None
 

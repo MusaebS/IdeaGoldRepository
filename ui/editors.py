@@ -118,29 +118,23 @@ def date_range_editor(
 
 
 def caps_editor(people: list) -> None:
-    """Inline editor for per-resident hard caps (0 = no cap)."""
-    st.markdown("**Caps — limit a resident's total / night-float points (0 = no cap)**")
+    """Inline editor for per-resident hard caps on total points (0 = no cap)."""
+    st.markdown("**Caps — limit a resident's total points (0 = no cap)**")
     if not people:
         st.caption("Add participants first to configure caps.")
         return
-    c = st.columns([3, 2, 2, 1])
+    c = st.columns([3, 2, 1])
     with c[0]:
         who = st.selectbox("Resident", people, key="cap_who")
     with c[1]:
         mt = st.number_input("Max total pts", 0.0, 999.0, 0.0, 0.5, key="cap_total")
     with c[2]:
-        mn = st.number_input("Max night pts", 0.0, 999.0, 0.0, 0.5, key="cap_nights")
-    with c[3]:
         if _add_button("cap_add"):
-            st.session_state[Keys.CAPS][who] = {"total": mt, "nights": mn}
+            st.session_state[Keys.CAPS][who] = {"total": mt}
     caps = st.session_state[Keys.CAPS]
     if caps:
         st.table(pd.DataFrame([
-            {
-                "Resident": p,
-                "Max total": v["total"] or "—",
-                "Max nights": v["nights"] or "—",
-            }
+            {"Resident": p, "Max total": v.get("total") or "—"}
             for p, v in caps.items()
         ]))
         removed = _remove_control(list(caps.keys()), "Remove cap", "cap_rm")
@@ -702,19 +696,25 @@ def reductions_editor(
 
 def night_float_editor(
     people: list,
-    nf_shift_labels: list,
+    nf_shift_roles: dict,
     default_start: date | None = None,
     default_end: date | None = None,
 ) -> None:
-    """Night-float overlay: coverage pattern, coverer periods, rest, points toggle."""
+    """Night-float overlay: coverage pattern, coverer periods, and rest days.
+
+    ``nf_shift_roles`` maps each night-float-eligible shift label to its role, so
+    the editor can restrict a coverer to their own role's shifts.
+    """
     st.markdown("**Night float — a separate coverage layer, outside regular fairness**")
     st.caption(
         "Mark shifts night-float-eligible in the shift editor. Here you choose "
         "which dates the overlay actually covers (the rest stay regular shifts) "
         "and who covers them, for which period. A floater is off regular shifts "
         "during their block plus rest days, works less regular load (no future "
-        "catch-up), and their NF duty is tracked separately."
+        "catch-up), and their NF duty is tracked separately — it never counts "
+        "toward regular points."
     )
+    nf_shift_labels = list(nf_shift_roles)
     if not nf_shift_labels:
         st.caption("Mark at least one shift 'Night-float eligible' first.")
         return
@@ -729,8 +729,8 @@ def night_float_editor(
             else []
         )
         chosen = st.multiselect(
-            f"'{label}' covered on", WEEKDAY_LABELS, default=default_days,
-            key=f"nfcov_{label}",
+            f"'{label}' ({nf_shift_roles[label]}) covered on", WEEKDAY_LABELS,
+            default=default_days, key=f"nfcov_{label}",
             help="Weekends are covered only if you select them here; unselected "
             "days are filled by regular shifters.",
         )
@@ -742,22 +742,12 @@ def night_float_editor(
             coverage.pop(label, None)
 
     st.divider()
-    rc = st.columns(2)
-    with rc[0]:
-        st.session_state[Keys.NF_REST_DAYS] = st.number_input(
-            "Default rest days after an NF block", 0, 7,
-            int(st.session_state[Keys.NF_REST_DAYS]), 1,
-            help="A leave-like buffer so nobody goes straight from nights to a "
-            "regular shift.",
-        )
-    with rc[1]:
-        st.markdown("&nbsp;")
-        st.session_state[Keys.NF_COUNT_POINTS] = st.checkbox(
-            "Count NF as regular points",
-            value=bool(st.session_state[Keys.NF_COUNT_POINTS]),
-            help="Off (default): NF is outside the regular point/fairness system. "
-            "On: NF work also counts toward regular totals.",
-        )
+    st.session_state[Keys.NF_REST_DAYS] = st.number_input(
+        "Default rest days after an NF block", 0, 7,
+        int(st.session_state[Keys.NF_REST_DAYS]), 1,
+        help="A leave-like buffer so nobody goes straight from nights to a "
+        "regular shift.",
+    )
 
     st.markdown("**Night-float assignments — who covers the overlay, when**")
     nf_pool = [p for p in people if p in set(st.session_state[Keys.NF_JUNIORS])
@@ -765,15 +755,24 @@ def night_float_editor(
     if not nf_pool:
         st.caption("Mark residents 'Night-float eligible' in the roster first.")
         return
+    juniors = set(st.session_state[Keys.JUNIORS])
     c = st.columns([3, 2, 2, 3, 1, 1])
     with c[0]:
         who = st.selectbox("Resident", nf_pool, key="nfasg_who")
+    # A coverer only covers their own role's NF shifts (the role comes from the
+    # roster — no need to re-enter it). Key the label picker by role so switching
+    # coverer never leaves a stale cross-role selection behind.
+    who_role = "Junior" if who in juniors else "Senior"
+    role_labels = [lbl for lbl in nf_shift_labels if nf_shift_roles[lbl] == who_role]
     with c[1]:
         start = st.date_input("Start", default_start or date.today(), key="nfasg_start")
     with c[2]:
         end = st.date_input("End", default_end or default_start or date.today(), key="nfasg_end")
     with c[3]:
-        labels = st.multiselect("Covers (empty = all NF)", nf_shift_labels, key="nfasg_labels")
+        labels = st.multiselect(
+            f"Covers (empty = all {who_role} NF)", role_labels,
+            key=f"nfasg_labels_{who_role}",
+        )
     with c[4]:
         rest = st.number_input("Rest", 0, 7, int(st.session_state[Keys.NF_REST_DAYS]), 1,
                                key="nfasg_rest")
@@ -876,16 +875,21 @@ def roster_editor() -> None:
             )
     with cols[1]:
         st.subheader("Night-float eligible")
-        st.session_state[Keys.NF_JUNIORS] = st.multiselect(
-            "Juniors", st.session_state[Keys.JUNIORS],
-            default=[n for n in st.session_state[Keys.NF_JUNIORS]
-                     if n in st.session_state[Keys.JUNIORS]],
+        juniors = st.session_state[Keys.JUNIORS]
+        seniors = st.session_state[Keys.SENIORS]
+        all_people = juniors + seniors
+        prior = list(st.session_state[Keys.NF_JUNIORS]) + list(st.session_state[Keys.NF_SENIORS])
+        chosen = st.multiselect(
+            "Residents who can cover night float", all_people,
+            default=[n for n in prior if n in all_people],
+            help="Pick anyone from the roster — their role (junior/senior) is "
+            "taken from the lists on the left, so you don't re-enter it.",
         )
-        st.session_state[Keys.NF_SENIORS] = st.multiselect(
-            "Seniors", st.session_state[Keys.SENIORS],
-            default=[n for n in st.session_state[Keys.NF_SENIORS]
-                     if n in st.session_state[Keys.SENIORS]],
-        )
+        # Split back into role pools for the model (a coverer only ever covers
+        # their own role's night-float shifts).
+        jset = set(juniors)
+        st.session_state[Keys.NF_JUNIORS] = [n for n in chosen if n in jset]
+        st.session_state[Keys.NF_SENIORS] = [n for n in chosen if n not in jset]
 
 
 def custom_columns_editor(base_df) -> None:

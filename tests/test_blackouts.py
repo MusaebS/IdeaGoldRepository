@@ -255,9 +255,10 @@ def test_validate_schedule_flags_blackout_and_night_before():
         {"Date": date(2023, 1, 5), "D": "A", "N": "B", "NF": "A"},
     ])
     # The overlay marks NF-covered cells so validation skips them as regular.
+    # Stored as {date-iso: {label: name}} (the serializable df.attrs form).
     df.attrs["nf_cells"] = {
-        (date(2023, 1, 4).isoformat(), "NF"): "B",
-        (date(2023, 1, 5).isoformat(), "NF"): "A",
+        date(2023, 1, 4).isoformat(): {"NF": "B"},
+        date(2023, 1, 5).isoformat(): {"NF": "A"},
     }
     issues = validate_schedule(df, data)
     # Window: the day shift on Jan 5 is flagged; NF the same day is NOT.

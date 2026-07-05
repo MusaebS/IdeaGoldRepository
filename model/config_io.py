@@ -172,7 +172,6 @@ def input_data_to_json(data: InputData, display: dict | None = None) -> str:
             if data.nf_assignments
             else None
         ),
-        "count_nf_points": data.count_nf_points or None,
         "nf_rest_days": data.nf_rest_days,
     }
     if display:
@@ -387,6 +386,5 @@ def input_data_from_json(text: str) -> InputData:
             if raw.get("nf_assignments")
             else None
         ),
-        count_nf_points=bool(raw.get("count_nf_points", False)),
         nf_rest_days=int(raw.get("nf_rest_days", 1)),
     )
