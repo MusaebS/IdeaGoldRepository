@@ -138,8 +138,8 @@ from .data_models import (
     normalized_leaves,
     normalized_rotators,
 )
+from .closures import closed_cells_to_attr, reserved_cell_keys, resolve_closures
 from .night_float import (
-    nf_cells_from_attr,
     nf_cells_to_attr,
     nf_leave_windows,
     resolve_night_float,
@@ -185,7 +185,12 @@ def objective_weights(
 
 
 class SchedulerSolver:
-    def __init__(self, data: InputData, nf_cells: Dict[Tuple, str] | None = None):
+    def __init__(
+        self,
+        data: InputData,
+        nf_cells: Dict[Tuple, str] | None = None,
+        closed_cells: set | None = None,
+    ):
         self.data = data
         self.model = cp_model.CpModel()
         self.SCALE = POINT_SCALE
@@ -205,6 +210,11 @@ class SchedulerSolver:
         # removed from the regular scheduler's demand, points and constraints,
         # and written straight into the output. Map (date,label) → (d_idx,s_idx).
         self.nf_cells = nf_cells or {}
+        # Closed cells: shifts stood down for the block (a resident shortage,
+        # a dropped holiday shift). Like NF cells they are non-regular — removed
+        # from demand/points/constraints — but they get no coverer; they are
+        # written into the schedule as "Closed".
+        self.closed_cells = set(closed_cells or set())
         day_index = {day: i for i, day in enumerate(self.days)}
         label_index = {sh.label: i for i, sh in enumerate(self.shifts)}
         self.nf_slots: set = {
@@ -212,6 +222,13 @@ class SchedulerSolver:
             for (d, lbl) in self.nf_cells
             if d in day_index and lbl in label_index
         }
+        self.closed_slots: set = {
+            (day_index[d], label_index[lbl])
+            for (d, lbl) in self.closed_cells
+            if d in day_index and lbl in label_index
+        }
+        # Every cell the regular scheduler does not fill (see model.closures).
+        self.reserved_slots: set = self.nf_slots | self.closed_slots
         self.vars: Dict[Tuple[int, int, int], CpVar] = {}
         self.label_pts: Dict[Tuple[int, str], CpVar] = {}
         self.total_pts: Dict[int, CpVar] = {}
@@ -246,8 +263,12 @@ class SchedulerSolver:
         self.build_objective()
 
     def _is_regular(self, d_idx: int, s_idx: int) -> bool:
-        """A slot handled by the regular scheduler (not covered by NF overlay)."""
-        return (d_idx, s_idx) not in self.nf_slots
+        """A slot handled by the regular scheduler (not reserved).
+
+        Reserved = covered by the night-float overlay *or* closed. Both are
+        removed from regular demand, points and constraints.
+        """
+        return (d_idx, s_idx) not in self.reserved_slots
 
     def build_variables(self) -> None:
         for p_idx in range(len(self.people)):
@@ -708,6 +729,12 @@ class SchedulerSolver:
         for d_idx, day in enumerate(self.days):
             row = {"Date": day, "Day": day.strftime("%A")}
             for s_idx, shift in enumerate(self.shifts):
+                if (day, shift.label) in self.closed_cells:
+                    # Closed cell: the shift is stood down on this date. A
+                    # closure wins over NF coverage on the same cell, matching
+                    # how the fairness report treats it.
+                    row[shift.label] = "Closed"
+                    continue
                 if (day, shift.label) in self.nf_cells:
                     # Night-float overlay cell: the coverer, decided outside the
                     # regular scheduler, is written straight in.
@@ -729,6 +756,7 @@ class SchedulerSolver:
             # Stored as {date-iso: {label: name}} so pandas/Streamlit can
             # serialize df.attrs (tuple keys are rejected by Arrow).
             df.attrs["nf_cells"] = nf_cells_to_attr(self.nf_cells)
+            df.attrs["closed_cells"] = closed_cells_to_attr(self.closed_cells)
         except (AttributeError, TypeError):  # pragma: no cover - stub frames
             pass
         # Only a real solver response carries a meaningful status / wall time;
@@ -891,7 +919,9 @@ LABEL_TARGET_MAX_CELLS = 6000
 
 
 def _auto_label_targets(
-    data: InputData, availability: Mapping[str, float]
+    data: InputData,
+    availability: Mapping[str, float],
+    excluded: set | None = None,
 ) -> Dict[Tuple[str, str], float]:
     """Per-(resident, label) fair share of each shift type's points.
 
@@ -911,10 +941,11 @@ def _auto_label_targets(
     participants = list(data.juniors) + list(data.seniors)
     pref_people = set(data.preferred_shifts or {}) | set(data.preferred_day_type or {})
     capped = {(cap.person, lbl) for cap in reduction_caps(data) for lbl in cap.labels}
+    excluded = excluded or set()
 
     label_points: Dict[str, float] = {}
     for slot in slot_points(data):
-        if slot.shift.night_float:
+        if slot.shift.night_float or (slot.day, slot.shift.label) in excluded:
             continue
         label_points[slot.shift.label] = label_points.get(slot.shift.label, 0.0) + slot.points
 
@@ -936,18 +967,24 @@ def _auto_label_targets(
 
 
 def resolve_targets(
-    data: InputData, ledger: Ledger | None = None, nf_cells: Mapping | None = None
+    data: InputData,
+    ledger: Ledger | None = None,
+    nf_cells: Mapping | None = None,
+    closed_cells: set | None = None,
 ) -> InputData:
     """Return a copy of ``data`` with all fairness targets resolved.
 
     Targets the caller left unset are auto-computed (equal shares weighted by
     availability); a ``ledger`` of prior-block points switches the totals to
     cumulative carryover balancing; ``extra_points`` penalties are folded into
-    the total map. ``nf_cells`` (from the night-float overlay) are excluded
-    from the regular point pools so NF work never counts toward regular
-    targets. The caller's ``InputData`` is never mutated.
+    the total map. ``nf_cells`` (night-float overlay) and ``closed_cells``
+    (stood-down shifts) are excluded from the regular point pools so neither
+    counts toward regular targets. The caller's ``InputData`` is never mutated.
     """
     nf_cells = nf_cells or {}
+    # Cells outside the regular point pool: NF-covered plus closed (see
+    # model.closures) — the fair-share targets are computed on the open demand.
+    excluded = set(nf_cells) | set(closed_cells or set())
     participants = data.juniors + data.seniors
     target_total = data.target_total
     target_total_map = data.target_total_map
@@ -956,11 +993,12 @@ def resolve_targets(
     target_label = data.target_label
 
     if participants:
-        # Regular demand only: night-float-covered cells carry no regular points.
+        # Regular demand only: reserved (NF-covered / closed) cells carry no
+        # regular points.
         total_points = 0.0
         weekend_points = 0.0
         for slot in slot_points(data):
-            if (slot.day, slot.shift.label) in nf_cells:
+            if (slot.day, slot.shift.label) in excluded:
                 continue
             total_points += slot.points
             if slot.weekend:
@@ -1012,7 +1050,7 @@ def resolve_targets(
             day_count = (data.end_date - data.start_date).days + 1
             cells = len(participants) * max(1, day_count) * max(1, len(data.shifts))
             if cells <= LABEL_TARGET_MAX_CELLS:
-                target_label = _auto_label_targets(data, availability) or None
+                target_label = _auto_label_targets(data, availability, excluded) or None
 
     # A copy so the caller's ``InputData`` is never mutated (re-running with
     # changed dates previously reused stale auto-targets).
@@ -1050,14 +1088,17 @@ def build_schedule(data: InputData, env: str | None = None, ledger: Ledger | Non
     # here — this keeps the ledger consistent when it re-derives adjustments
     # from the same config.
     nf_cells, _gap_slots, _nf_leaves = resolve_night_float(data)
+    # Closed cells: shifts stood down for the block. Like NF-covered cells they
+    # are removed from regular demand and excluded from the point/fairness pools.
+    closed_cells = resolve_closures(data)
     # The resolved targets are exposed on ``df.attrs`` below.
-    solve_data = resolve_targets(data, ledger, nf_cells=nf_cells)
+    solve_data = resolve_targets(data, ledger, nf_cells=nf_cells, closed_cells=closed_cells)
     target_total = solve_data.target_total
     target_total_map = solve_data.target_total_map
     target_weekend = solve_data.target_weekend
     target_night_float = solve_data.target_night_float
     using_stub = not ORTOOLS_AVAILABLE
-    solver = SchedulerSolver(solve_data, nf_cells=nf_cells)
+    solver = SchedulerSolver(solve_data, nf_cells=nf_cells, closed_cells=closed_cells)
     env = (env or os.environ.get("ENV", "prod")).lower()
     limit = compute_time_limit(env, len(participants) or 1, day_count, len(data.shifts) or 1)
     df = solver.solve(time_limit_sec=limit)
@@ -1081,15 +1122,16 @@ def build_schedule(data: InputData, env: str | None = None, ledger: Ledger | Non
 def respects_min_gap(df: pd.DataFrame, gap: int, shifts=None) -> bool:
     """Return True if the schedule respects ``gap`` days of rest between shifts.
 
-    A resident's regular shifts must be more than ``gap`` days apart.
-    Night-float-covered cells (the overlay, marked in ``df.attrs["nf_cells"]``)
-    are not regular assignments and are skipped — the coverer's rest is handled
-    by the overlay's rest-leave, not min_gap. ``shifts`` is accepted for
-    backwards compatibility and no longer affects the check.
+    A resident's regular shifts must be more than ``gap`` days apart. Reserved
+    cells — night-float overlay cells and closed cells (see model.closures) —
+    are not regular assignments and are skipped: the NF coverer's rest is
+    handled by the overlay's rest-leave, and a closed cell holds no resident.
+    ``shifts`` is accepted for backwards compatibility and no longer affects the
+    check.
     """
     if gap <= 0:
         return True
-    nf_cells = nf_cells_from_attr(df)
+    reserved = reserved_cell_keys(df)  # NF-covered + closed cells, not regular
     records = df.to_dict("records")
     if hasattr(df, "columns"):
         # Every column except the date/day labels holds resident names. Do not
@@ -1109,8 +1151,8 @@ def respects_min_gap(df: pd.DataFrame, gap: int, shifts=None) -> bool:
             continue
         day_key = day.isoformat() if hasattr(day, "isoformat") else day
         for label in shift_cols:
-            if (day_key, label) in nf_cells:
-                continue  # night-float overlay cell, not a regular assignment
+            if (day_key, label) in reserved:
+                continue  # NF overlay or closed cell, not a regular assignment
             person = row.get(label)
             if person in (None, "Unfilled") or not isinstance(person, str):
                 continue

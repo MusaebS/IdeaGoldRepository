@@ -107,6 +107,7 @@ def block_adjustments(prior, data: InputData) -> Dict[str, Dict[str, float]]:
     first block (``prior`` empty) the two are identical, so the one-time
     excusal guarantee — and every exact-number test — is unchanged.
     """
+    from .closures import resolve_closures  # local: avoids a module cycle
     from .night_float import resolve_night_float  # local: avoids a module cycle
 
     participants = list(data.juniors) + list(data.seniors)
@@ -122,9 +123,11 @@ def block_adjustments(prior, data: InputData) -> Dict[str, Dict[str, float]]:
         if p in out and extra > 0:
             out[p]["penalty"] = float(extra)
 
-    # Regular demand only — night-float-covered cells are outside the point pool.
+    # Regular demand only — reserved (night-float-covered or closed) cells are
+    # outside the point pool.
     nf_cells, _gaps, _leaves = resolve_night_float(data)
-    slots = [s for s in slot_points(data) if (s.day, s.shift.label) not in nf_cells]
+    reserved = set(nf_cells) | resolve_closures(data)
+    slots = [s for s in slot_points(data) if (s.day, s.shift.label) not in reserved]
     p_tot = sum(s.points for s in slots)
     p_wk = sum(s.points for s in slots if s.weekend)
 

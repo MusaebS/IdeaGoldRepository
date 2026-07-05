@@ -21,6 +21,7 @@ from model.config_io import display_from_json, input_data_to_json, input_data_fr
 from model.data_models import (
     InputData,
     normalized_blackouts,
+    normalized_closures,
     normalized_leaves,
     normalized_nf_assignments,
     normalized_reductions,
@@ -34,6 +35,7 @@ from ui.editors import (
     avoid_pairs_editor,
     blackouts_editor,
     caps_editor,
+    closures_editor,
     date_range_editor,
     exemptions_editor,
     extra_points_editor,
@@ -165,6 +167,11 @@ def _active_config_maps() -> dict:
             continue
         keep_labels = tuple(lbl for lbl in a.labels if lbl in nf_labels)
         nf_assignments.append(a._replace(labels=keep_labels))
+    # Closures: keep only those naming a shift still on the roster.
+    closures = [
+        c for c in normalized_closures(st.session_state[Keys.CLOSURES])
+        if c.label in shift_labels
+    ]
     return {
         "max_total": max_total or None,
         "extra_points": extra_points or None,
@@ -183,6 +190,7 @@ def _active_config_maps() -> dict:
         "nf_coverage": nf_coverage or None,
         "nf_assignments": nf_assignments or None,
         "nf_rest_days": int(st.session_state[Keys.NF_REST_DAYS]),
+        "closures": closures or None,
     }
 
 
@@ -361,6 +369,12 @@ def render_config_tabs() -> tuple:
         named_groups_editor(people)
         st.divider()
         blackouts_editor(people, default_start=start_date, default_end=end_date)
+        st.divider()
+        st.subheader("Shift closures")
+        closures_editor(
+            [s.label for s in st.session_state[Keys.SHIFTS]],
+            default_start=start_date, default_end=end_date,
+        )
 
     with tab_adv:
         st.subheader("Per-resident caps & extra points")

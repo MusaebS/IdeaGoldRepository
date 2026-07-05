@@ -12,9 +12,11 @@ from .data_models import (
     NightFloatCoverage,
     Perk,
     RotatorWindow,
+    ShiftClosure,
     ShiftTemplate,
     InputData,
     normalized_blackouts,
+    normalized_closures,
     normalized_leaves,
     normalized_nf_assignments,
     normalized_nf_coverage,
@@ -173,6 +175,14 @@ def input_data_to_json(data: InputData, display: dict | None = None) -> str:
             else None
         ),
         "nf_rest_days": data.nf_rest_days,
+        "closures": (
+            [
+                [c.label, c.start.isoformat(), c.end.isoformat(), list(c.weekdays)]
+                for c in normalized_closures(data.closures)
+            ]
+            if data.closures
+            else None
+        ),
     }
     if display:
         payload["display"] = display
@@ -387,4 +397,17 @@ def input_data_from_json(text: str) -> InputData:
             else None
         ),
         nf_rest_days=int(raw.get("nf_rest_days", 1)),
+        closures=(
+            [
+                ShiftClosure(
+                    str(entry[0]),
+                    date.fromisoformat(entry[1]),
+                    date.fromisoformat(entry[2]),
+                    tuple(int(w) for w in (entry[3] if len(entry) > 3 else []) or []),
+                )
+                for entry in raw["closures"]
+            ]
+            if raw.get("closures")
+            else None
+        ),
     )

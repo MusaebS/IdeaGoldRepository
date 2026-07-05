@@ -57,6 +57,13 @@ def _nf_cell_keys(df) -> set:
     return set(nf_cells_from_attr(df))
 
 
+def _closed_cell_keys(df) -> set:
+    """(date-iso, label) cells that are closed (stood down), from attrs."""
+    from .closures import closed_cells_from_attr
+
+    return set(closed_cells_from_attr(df))
+
+
 def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, ResidentPoints]:
     """Per-resident regular points; night-float-covered cells are excluded."""
     summary: Dict[str, ResidentPoints] = {
@@ -64,10 +71,14 @@ def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, ResidentPoi
     }
     weekend_dates = weekend_holiday_dates(data)
     nf_cells = _nf_cell_keys(df)
+    closed_cells = _closed_cell_keys(df)
     for row in df.to_dict("records"):
         day = row.get("Date")
         day_key = day.isoformat() if hasattr(day, "isoformat") else day
         for sh in data.shifts:
+            if (day_key, sh.label) in closed_cells:
+                # Closed cell: the shift is stood down — no resident, no points.
+                continue
             person = row.get(sh.label)
             if person in (None, "Unfilled"):
                 continue
@@ -96,15 +107,15 @@ def calculate_label_counts(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[
     counts: Dict[str, Dict[str, int]] = {
         name: {} for name in data.juniors + data.seniors
     }
-    nf_cells = _nf_cell_keys(df)
+    reserved = _nf_cell_keys(df) | _closed_cell_keys(df)
     for row in df.to_dict("records"):
         day = row.get("Date")
         day_key = day.isoformat() if hasattr(day, "isoformat") else day
         for sh in data.shifts:
+            if (day_key, sh.label) in reserved:
+                continue  # NF overlay or closed cell — not a regular call
             person = row.get(sh.label)
             if person in (None, "Unfilled"):
-                continue
-            if (day_key, sh.label) in nf_cells:
                 continue
             per = counts.setdefault(person, {})
             per[sh.label] = per.get(sh.label, 0) + 1
@@ -301,25 +312,37 @@ def format_fairness_log(
     shift_by_label = {s.label: s for s in data.shifts}
     labels = list(shift_by_label)
     nf_cells = _nf_cell_keys(df)
+    closed_cells = _closed_cell_keys(df)
 
     def _is_nf_cell(day, label) -> bool:
         key = day.isoformat() if hasattr(day, "isoformat") else day
         return (key, label) in nf_cells
 
+    def _is_reserved(day, label) -> bool:
+        key = day.isoformat() if hasattr(day, "isoformat") else day
+        return (key, label) in nf_cells or (key, label) in closed_cells
+
+    # A closed cell holds "Closed" (not None/"Unfilled"), so it is neither a
+    # coverage gap nor a regular assignment — exclude reserved cells from both.
     unfilled = [
         (row.get("Date"), label)
         for row in records
         for label in labels
         if row.get(label) in (None, "Unfilled")
+        and not _is_reserved(row.get("Date"), label)
     ]
     nf_covered = sum(
         1 for row in records for label in labels if _is_nf_cell(row.get("Date"), label)
     )
-    total_slots = len(records) * len(labels) - nf_covered  # regular demand only
+    closed = sum(
+        1 for row in records for label in labels
+        if _is_reserved(row.get("Date"), label) and not _is_nf_cell(row.get("Date"), label)
+    )
+    total_slots = len(records) * len(labels) - nf_covered - closed  # regular demand
     filled = total_slots - len(unfilled)
 
-    # Checksum over *regular* demand: assigned + unfilled = available (NF-covered
-    # cells are the overlay, outside the regular point system).
+    # Checksum over *regular* demand: assigned + unfilled = available (reserved
+    # cells — NF overlay and closed — are outside the regular point system).
     assigned_pts = sum(info["total"] for info in pts.values())
     unfilled_pts = sum(
         effective_points(day, shift_by_label[label], data) for day, label in unfilled
@@ -327,7 +350,7 @@ def format_fairness_log(
     available_pts = sum(
         effective_points(row.get("Date"), sh, data)
         for row in records for sh in data.shifts
-        if not _is_nf_cell(row.get("Date"), sh.label)
+        if not _is_reserved(row.get("Date"), sh.label)
     )
 
     def _person_total_target(person):
@@ -337,8 +360,10 @@ def format_fairness_log(
         tgt = _person_total_target(person)
         return None if tgt is None else pts[person]["total"] - tgt
 
+    closed_note = f", {closed} closed" if closed else ""
     lines: List[str] = [
-        f"Schedule health: {filled}/{total_slots} slots filled ({len(unfilled)} unfilled).",
+        f"Schedule health: {filled}/{total_slots} slots filled "
+        f"({len(unfilled)} unfilled{closed_note}).",
         f"Points: {assigned_pts:.1f} assigned + {unfilled_pts:.1f} unfilled "
         f"= {available_pts:.1f} available"
         + ("" if abs(assigned_pts + unfilled_pts - available_pts) < 1e-6
@@ -401,11 +426,22 @@ def schedule_quality(
     pts = points if points is not None else calculate_points(df, data)
     labels = [s.label for s in data.shifts]
     records = df.to_dict("records")
+    reserved = _nf_cell_keys(df) | _closed_cell_keys(df)
 
-    total_slots = len(records) * len(labels)
+    def _key(day, label):
+        return (day.isoformat() if hasattr(day, "isoformat") else day, label)
+
+    # Coverage is over regular demand only: reserved cells (NF overlay + closed)
+    # are neither demand nor a gap, so they drop out of both numerator and
+    # denominator.
+    total_slots = 0
     filled = 0
     for row in records:
+        day = row.get("Date")
         for label in labels:
+            if _key(day, label) in reserved:
+                continue
+            total_slots += 1
             if row.get(label) not in (None, "Unfilled"):
                 filled += 1
     coverage = filled / total_slots if total_slots else 1.0
@@ -462,6 +498,9 @@ def assignment_rationale(
         if row.get("Date") == day:
             person = row.get(label)
             break
+
+    if person == "Closed":
+        return [f"'{label}' is closed (stood down) on {day}: outside points and fairness."]
 
     if person in (None, "Unfilled"):
         nf_note = " night-float" if shift.night_float else ""

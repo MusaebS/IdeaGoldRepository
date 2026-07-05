@@ -17,8 +17,10 @@ from model.data_models import (
     NightFloatAssignment,
     NightFloatCoverage,
     Perk,
+    ShiftClosure,
     ShiftTemplate,
     normalized_blackouts,
+    normalized_closures,
     normalized_nf_assignments,
     normalized_reductions,
 )
@@ -469,6 +471,65 @@ def perks_editor(
         )
         if removed is not None:
             perks.pop(removed)
+
+
+def closures_editor(
+    shift_labels: list,
+    default_start: date | None = None,
+    default_end: date | None = None,
+) -> None:
+    """Shift closures — a shift is stood down (not staffed) on a set of dates."""
+    st.markdown("**Shift closures — stand a shift down on specific dates**")
+    st.caption(
+        "For a resident shortage or a dropped holiday shift: the closed dates "
+        "show as \"Closed\", are never counted as unfilled, and stay out of "
+        "points and fairness entirely. Leave the weekday filter empty to close "
+        "every day in the range, or pick weekdays (e.g. Sat/Sun) to close only "
+        "those."
+    )
+    if not shift_labels:
+        st.caption("Add shift templates first.")
+        return
+    c = st.columns([3, 2, 2, 1])
+    with c[0]:
+        label = st.selectbox("Shift", shift_labels, key="close_label")
+    with c[1]:
+        start = st.date_input("Start", default_start or date.today(), key="close_start")
+    with c[2]:
+        end = st.date_input(
+            "End", default_end or default_start or date.today(), key="close_end"
+        )
+    with c[3]:
+        clicked = _add_button("close_add")
+    weekday_names = st.multiselect(
+        "Only these weekdays (empty = every day in range)",
+        WEEKDAY_LABELS,
+        key="close_weekdays",
+    )
+    if clicked:
+        weekdays = tuple(WEEKDAY_LABELS.index(name) for name in weekday_names)
+        st.session_state[Keys.CLOSURES].append(
+            ShiftClosure(label, start, end, weekdays)
+        )
+    rows = list(normalized_closures(st.session_state[Keys.CLOSURES]))
+    if rows:
+        st.table(pd.DataFrame([
+            {
+                "Shift": c.label,
+                "Start": c.start,
+                "End": c.end,
+                "Weekdays": ", ".join(WEEKDAY_LABELS[w] for w in c.weekdays) or "all",
+            }
+            for c in rows
+        ]))
+        removed = _remove_control(
+            list(range(len(rows))),
+            "Remove closure",
+            "close_rm",
+            format_func=lambda i: f"{rows[i].label}: {rows[i].start} → {rows[i].end}",
+        )
+        if removed is not None:
+            st.session_state[Keys.CLOSURES].pop(removed)
 
 
 def exemptions_editor(people: list, shift_labels: list) -> None:

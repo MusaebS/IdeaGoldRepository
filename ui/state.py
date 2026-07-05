@@ -40,6 +40,7 @@ class Keys:
     NF_COVERAGE = "nf_coverage"          # {label: NightFloatCoverage}
     NF_ASSIGNMENTS = "nf_assignments"    # [NightFloatAssignment]
     NF_REST_DAYS = "nf_rest_days"
+    CLOSURES = "closures"                # [ShiftClosure] stood-down shift cells
     LEDGER_NO_REFUND = "ledger_no_refund"
     LEDGER_NO_CATCHUP = "ledger_no_catchup"
     LEDGER_ROWS = "ledger_rows"          # editable grid rows (None = no ledger)
@@ -97,6 +98,7 @@ def _defaults() -> dict:
         Keys.NF_COVERAGE: {},
         Keys.NF_ASSIGNMENTS: [],
         Keys.NF_REST_DAYS: 1,
+        Keys.CLOSURES: [],
         Keys.LEDGER_NO_REFUND: True,
         Keys.LEDGER_NO_CATCHUP: True,
         Keys.LEDGER_ROWS: None,

@@ -14,13 +14,15 @@ from .data_models import (
     blackout_person_windows,
     is_regular_night_call,
     normalized_blackouts,
+    normalized_closures,
     normalized_leaves,
     normalized_nf_assignments,
     normalized_nf_coverage,
     normalized_perks,
     normalized_reductions,
 )
-from .night_float import nf_cells_from_attr, resolve_night_float
+from .closures import reserved_cell_keys
+from .night_float import resolve_night_float
 from .optimiser import respects_min_gap
 from .points import classify_slot
 from .reductions import reduction_caps
@@ -731,6 +733,23 @@ def validate_input(data: InputData) -> List[str]:
                     "coverer can only cover their own role's shifts."
                 )
 
+    for c in normalized_closures(data.closures):
+        if c.label not in shift_labels:
+            issues.append(
+                f"Shift closure names '{c.label}', which is not a configured shift."
+            )
+        if c.end < c.start:
+            issues.append(
+                f"Shift closure for '{c.label}' ends ({c.end}) before it starts "
+                f"({c.start})."
+            )
+        for wd in c.weekdays:
+            if not 0 <= wd <= 6:
+                issues.append(
+                    f"Shift closure for '{c.label}' has an invalid weekday {wd} "
+                    "(expected 0=Mon .. 6=Sun)."
+                )
+
     return issues
 
 
@@ -751,20 +770,20 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
         rotator_windows.setdefault(name, []).append((start, end))
     blackout_windows = blackout_person_windows(data.blackouts, data.named_groups)
     night_before = blackout_night_before_dates(data.blackouts, data.named_groups)
-    # Night-float-covered cells are the overlay, not regular assignments — the
-    # regular rules below don't apply to them.
-    nf_cell_keys = set(nf_cells_from_attr(df))
+    # Reserved cells (night-float overlay + closed) are not regular assignments —
+    # the regular rules below don't apply to them.
+    reserved = reserved_cell_keys(df)
 
     for row in df.to_dict("records"):
         day = row.get("Date")
         day_key = day.isoformat() if hasattr(day, "isoformat") else day
         assigned_today: List[str] = []
         for shift in data.shifts:
+            if (day_key, shift.label) in reserved:
+                continue  # NF overlay or closed cell — skip regular-rule checks
             person = row.get(shift.label)
             if person in (None, "Unfilled"):
                 continue
-            if (day_key, shift.label) in nf_cell_keys:
-                continue  # NF overlay cell — skip regular-rule checks
             assigned_today.append(person)
 
             if shift.role == "Junior" and person not in juniors:

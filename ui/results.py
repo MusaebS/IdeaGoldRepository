@@ -288,6 +288,7 @@ def _shift_cell_options(data, shift, df=None) -> list:
     appear in this column's overlay cells are added so their (non-editable)
     value stays a valid dropdown option.
     """
+    from model.closures import closed_cells_from_attr
     from model.night_float import nf_cells_from_attr
 
     pool = data.juniors if shift.role == "Junior" else data.seniors
@@ -296,6 +297,9 @@ def _shift_cell_options(data, shift, df=None) -> list:
     for (_day, lbl), name in nf_cells_from_attr(df).items():
         if lbl == shift.label and name not in options:
             options.append(name)
+    # Keep "Closed" a valid option so a stood-down cell's value survives editing.
+    if any(lbl == shift.label for (_iso, lbl) in closed_cells_from_attr(df)):
+        options.append("Closed")
     return options + ["Unfilled"]
 
 
