@@ -66,7 +66,7 @@ __all__ = [
     "rows_to_ledger",
 ]
 
-DIMENSIONS = ("total", "weekend", "night_float")
+DIMENSIONS = ("total", "weekend")
 
 
 @dataclass(frozen=True)
@@ -91,17 +91,14 @@ def block_adjustments(prior, data: InputData) -> Dict[str, Dict[str, float]]:
     (what the resident's share should have been vs. what it was reduced to),
     so they depend only on the configuration and the prior ledger.
 
-    Returns ``{person: {"penalty": e, "excused_total": c, "excused_weekend": c,
-    "excused_night_float": c}}`` — all zero when nothing applies.
+    Returns ``{person: {"penalty": e, "excused_total": c, "excused_weekend": c}}``
+    — all zero when nothing applies.
     """
+    from .night_float import resolve_night_float  # local: avoids a module cycle
+
     participants = list(data.juniors) + list(data.seniors)
     out: Dict[str, Dict[str, float]] = {
-        p: {
-            "penalty": 0.0,
-            "excused_total": 0.0,
-            "excused_weekend": 0.0,
-            "excused_night_float": 0.0,
-        }
+        p: {"penalty": 0.0, "excused_total": 0.0, "excused_weekend": 0.0}
         for p in participants
     }
     n = len(participants)
@@ -113,13 +110,11 @@ def block_adjustments(prior, data: InputData) -> Dict[str, Dict[str, float]]:
         if p in out and extra > 0:
             out[p]["penalty"] = float(extra)
 
-    slots = list(slot_points(data))
+    # Regular demand only — night-float-covered cells are outside the point pool.
+    nf_cells, _gaps, _leaves = resolve_night_float(data)
+    slots = [s for s in slot_points(data) if (s.day, s.shift.label) not in nf_cells]
     p_tot = sum(s.points for s in slots)
     p_wk = sum(s.points for s in slots if s.weekend)
-    p_nf: Dict[str, float] = {}
-    for s in slots:
-        if s.night_float:
-            p_nf[s.shift.role] = p_nf.get(s.shift.role, 0.0) + s.points
 
     weights = availability_weights(data)
     weight_sum = sum(weights.get(p, 0.0) for p in participants)
@@ -141,19 +136,6 @@ def block_adjustments(prior, data: InputData) -> Dict[str, Dict[str, float]]:
             gap = 1.0 / n - weights.get(p, 0.0) / weight_sum
             out[p]["excused_total"] = f * c_tot * gap
             out[p]["excused_weekend"] = c_wk * gap
-
-    for role, pool in (("Junior", data.nf_juniors), ("Senior", data.nf_seniors)):
-        pool = [p for p in pool if p in out]
-        pool_weight = sum(weights.get(p, 0.0) for p in pool)
-        if not pool or pool_weight <= 0:
-            continue
-        c_nf = p_nf.get(role, 0.0) + sum(
-            float((prior.get(p) or {}).get("night_float", 0.0)) for p in pool
-        )
-        for p in pool:
-            out[p]["excused_night_float"] = c_nf * (
-                1.0 / len(pool) - weights.get(p, 0.0) / pool_weight
-            )
     return out
 
 
@@ -188,9 +170,11 @@ def update_ledger(
         entry = updated.setdefault(person, {dim: 0.0 for dim in DIMENSIONS})
         entry["total"] += info.get("total", 0.0)
         entry["weekend"] += info.get("weekend", 0.0)
-        entry["night_float"] += info.get("night_float", 0.0)
-        # Informational per-shift-type history (raw earned values; the policy
-        # adjustments below only touch the carryover dimensions).
+        # Informational history: per-shift-type points/counts and night-float
+        # duty days (the latter is outside the carryover dimensions).
+        nf_days = info.get("night_float", 0.0)
+        if nf_days:
+            entry["nf_days"] = entry.get("nf_days", 0) + int(nf_days)
         for label, pts in (info.get("labels") or {}).items():
             labels_entry = entry.setdefault("labels", {})
             labels_entry[label] = labels_entry.get(label, 0.0) + pts
@@ -206,11 +190,7 @@ def update_ledger(
             entry["total"] -= adj["penalty"]
             audit["penalty_not_carried"] = round(adj["penalty"], 4)
         if policy.no_catchup_excused:
-            credits = {
-                "total": adj["excused_total"],
-                "weekend": adj["excused_weekend"],
-                "night_float": adj["excused_night_float"],
-            }
+            credits = {"total": adj["excused_total"], "weekend": adj["excused_weekend"]}
             if any(abs(c) > 1e-9 for c in credits.values()):
                 for dim, credit in credits.items():
                     entry[dim] += credit
@@ -235,6 +215,8 @@ def ledger_from_json(text: str) -> Dict[str, Dict[str, Any]]:
     raw = json.loads(text)
     out: Dict[str, Dict[str, Any]] = {}
     for person, vals in raw.items():
+        # Only the carryover dimensions are loaded; a legacy "night_float"
+        # points key is intentionally ignored (NF is no longer balanced).
         entry: Dict[str, Any] = {dim: float(vals.get(dim, 0.0)) for dim in DIMENSIONS}
         labels = vals.get("labels")
         if isinstance(labels, dict):
@@ -242,12 +224,14 @@ def ledger_from_json(text: str) -> Dict[str, Dict[str, Any]]:
         counts = vals.get("label_counts")
         if isinstance(counts, dict):
             entry["label_counts"] = {str(k): int(v) for k, v in counts.items()}
+        if vals.get("nf_days"):
+            entry["nf_days"] = int(vals["nf_days"])
         out[str(person)] = entry
     return out
 
 
 # Grid column <-> ledger dimension mapping for the in-app ledger editor.
-ROW_FIELDS = (("Total", "total"), ("Weekend", "weekend"), ("Night float", "night_float"))
+ROW_FIELDS = (("Total", "total"), ("Weekend", "weekend"))
 
 
 def ledger_to_rows(ledger) -> list:
@@ -307,5 +291,7 @@ def rows_to_ledger(rows, base=None):
         for key in ("labels", "label_counts"):
             if extra.get(key):
                 entry[key] = dict(extra[key])
+        if extra.get("nf_days"):
+            entry["nf_days"] = int(extra["nf_days"])
         out[name] = entry
     return out, problems

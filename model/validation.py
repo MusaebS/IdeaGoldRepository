@@ -12,13 +12,15 @@ from .data_models import (
     InputData,
     blackout_night_before_dates,
     blackout_person_windows,
-    is_night_call,
+    is_regular_night_call,
     normalized_blackouts,
     normalized_leaves,
+    normalized_nf_assignments,
+    normalized_nf_coverage,
     normalized_perks,
     normalized_reductions,
 )
-from .nf_blocks import respects_nf_blocks
+from .night_float import resolve_night_float
 from .optimiser import respects_min_gap
 from .points import classify_slot
 from .reductions import reduction_caps
@@ -40,16 +42,6 @@ def config_warnings(data: InputData) -> List[str]:
       (a resident works at most one shift per day, so the surplus is unfillable).
     """
     warnings: List[str] = []
-
-    for shift in data.shifts:
-        if shift.night_float:
-            pool = data.nf_juniors if shift.role == "Junior" else data.nf_seniors
-            if not pool:
-                warnings.append(
-                    f"Night-float shift '{shift.label}' ({shift.role}) has no "
-                    "eligible residents; its nights will be unfilled or, with "
-                    "multi-night blocks, the schedule may be infeasible."
-                )
 
     role_people = {"Junior": len(data.juniors), "Senior": len(data.seniors)}
     role_shifts: dict = {}
@@ -86,7 +78,41 @@ def config_warnings(data: InputData) -> List[str]:
     warnings.extend(_reduction_warnings(data))
     warnings.extend(_preference_warnings(data))
     warnings.extend(_avoid_pair_warnings(data))
+    warnings.extend(_night_float_warnings(data))
     return warnings
+
+
+def _night_float_warnings(data: InputData) -> List[str]:
+    """Advisories for the night-float overlay configuration."""
+    out: List[str] = []
+    covered_labels = {c.label for c in normalized_nf_coverage(data.nf_coverage)}
+    for shift in data.shifts:
+        if shift.night_float and shift.label not in covered_labels:
+            out.append(
+                f"Shift '{shift.label}' is night-float-eligible but has no coverage "
+                "pattern; it will be scheduled entirely as a regular shift."
+            )
+
+    if not data.nf_coverage and not data.nf_assignments:
+        return out
+
+    # Covered dates with no assigned coverer fall back to regular scheduling.
+    _cells, gap_slots, _leaves = resolve_night_float(data)
+    if gap_slots:
+        shown = ", ".join(f"{d} '{lbl}'" for d, lbl in sorted(gap_slots)[:5])
+        more = f" (+{len(gap_slots) - 5} more)" if len(gap_slots) > 5 else ""
+        out.append(
+            f"Night-float-covered slots have no assigned coverer and fall back to "
+            f"regular scheduling: {shown}{more}."
+        )
+
+    for a in normalized_nf_assignments(data.nf_assignments, default_rest=data.nf_rest_days):
+        if a.end < data.start_date or a.start > data.end_date:
+            out.append(
+                f"Night-float assignment for '{a.name}' ({a.start}–{a.end}) is "
+                f"outside the schedule dates ({data.start_date}–{data.end_date})."
+            )
+    return out
 
 
 def _avoid_pair_warnings(data: InputData) -> List[str]:
@@ -657,6 +683,44 @@ def validate_input(data: InputData) -> List[str]:
         if first == second:
             issues.append(f"Avoid pair lists '{first}' with themselves.")
 
+    nf_labels = {s.label for s in data.shifts if s.night_float}
+    for cov in normalized_nf_coverage(data.nf_coverage):
+        if cov.label not in shift_labels:
+            issues.append(f"Night-float coverage references unknown shift '{cov.label}'.")
+        elif cov.label not in nf_labels:
+            issues.append(
+                f"Night-float coverage set for '{cov.label}', which is not marked "
+                "night-float-eligible."
+            )
+        for wd in cov.weekdays:
+            if not 0 <= wd <= 6:
+                issues.append(
+                    f"Night-float coverage for '{cov.label}' has an invalid weekday "
+                    f"{wd} (expected 0=Mon .. 6=Sun)."
+                )
+    nf_pool = set(data.nf_juniors) | set(data.nf_seniors)
+    for a in normalized_nf_assignments(data.nf_assignments, default_rest=data.nf_rest_days):
+        if a.name not in roster:
+            issues.append(f"Night-float assignment references unknown resident '{a.name}'.")
+        elif a.name not in nf_pool:
+            issues.append(
+                f"'{a.name}' has a night-float assignment but is not marked "
+                "night-float-eligible."
+            )
+        if a.end < a.start:
+            issues.append(
+                f"Night-float assignment for '{a.name}' ends ({a.end}) before it "
+                f"starts ({a.start})."
+            )
+        if a.rest_days < 0:
+            issues.append(f"Night-float rest days for '{a.name}' cannot be negative.")
+        for label in a.labels:
+            if label not in nf_labels:
+                issues.append(
+                    f"Night-float assignment for '{a.name}' names '{label}', which "
+                    "is not a night-float-eligible shift."
+                )
+
     return issues
 
 
@@ -671,35 +735,32 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
     issues: List[str] = []
     juniors = set(data.juniors)
     seniors = set(data.seniors)
-    nf_juniors = set(data.nf_juniors)
-    nf_seniors = set(data.nf_seniors)
 
     rotator_windows: dict = {}
     for name, start, end in data.rotators:
         rotator_windows.setdefault(name, []).append((start, end))
     blackout_windows = blackout_person_windows(data.blackouts, data.named_groups)
     night_before = blackout_night_before_dates(data.blackouts, data.named_groups)
+    # Night-float-covered cells are the overlay, not regular assignments — the
+    # regular rules below don't apply to them.
+    nf_cell_keys = set((getattr(df, "attrs", {}) or {}).get("nf_cells", {}) or {})
 
     for row in df.to_dict("records"):
         day = row.get("Date")
+        day_key = day.isoformat() if hasattr(day, "isoformat") else day
         assigned_today: List[str] = []
         for shift in data.shifts:
             person = row.get(shift.label)
             if person in (None, "Unfilled"):
                 continue
+            if (day_key, shift.label) in nf_cell_keys:
+                continue  # NF overlay cell — skip regular-rule checks
             assigned_today.append(person)
 
             if shift.role == "Junior" and person not in juniors:
                 issues.append(f"{day}: {person} on '{shift.label}' is not a Junior")
             if shift.role == "Senior" and person not in seniors:
                 issues.append(f"{day}: {person} on '{shift.label}' is not a Senior")
-
-            if shift.night_float:
-                pool = nf_juniors if shift.role == "Junior" else nf_seniors
-                if person not in pool:
-                    issues.append(
-                        f"{day}: {person} on night-float '{shift.label}' is not NF-eligible"
-                    )
 
             if shift.label in (data.exempt_shifts or {}).get(person, ()):
                 issues.append(
@@ -712,20 +773,18 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
                         f"{day}: {person} on '{shift.label}' is on leave ({ls} to {le})"
                     )
 
-            # Blackouts never touch night float (a separate rotation).
-            if not shift.night_float:
-                for bs, be, _comp in blackout_windows.get(person, ()):
-                    if bs <= day <= be:
-                        issues.append(
-                            f"{day}: {person} on '{shift.label}' is in a group "
-                            f"blackout ({bs} to {be})"
-                        )
-                if is_night_call(shift) and day in night_before.get(person, ()):
+            for bs, be, _comp in blackout_windows.get(person, ()):
+                if bs <= day <= be:
                     issues.append(
-                        f"{day}: {person} on night call '{shift.label}' the day "
-                        "before their group blackout (would be post-call on an "
-                        "off day)"
+                        f"{day}: {person} on '{shift.label}' is in a group "
+                        f"blackout ({bs} to {be})"
                     )
+            if is_regular_night_call(day, shift, data) and day in night_before.get(person, ()):
+                issues.append(
+                    f"{day}: {person} on night call '{shift.label}' the day "
+                    "before their group blackout (would be post-call on an "
+                    "off day)"
+                )
 
             windows = rotator_windows.get(person)
             if windows and not any(ws <= day <= we for ws, we in windows):
@@ -766,8 +825,4 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
 
     if not respects_min_gap(df, data.min_gap, data.shifts):
         issues.append(f"Minimum gap of {data.min_gap} day(s) is violated")
-    if not respects_nf_blocks(df, data.nf_block_length, data.shifts):
-        issues.append(
-            f"Night-float assignments are not all blocks of length {data.nf_block_length}"
-        )
     return issues

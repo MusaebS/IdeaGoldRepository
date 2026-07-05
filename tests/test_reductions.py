@@ -103,12 +103,12 @@ def test_resolve_targets_work_less_now_shifts_totals():
     assert resolved.target_total_map["B"] == pytest.approx(3.0)
 
 
-def test_resolve_targets_work_less_now_shifts_night_float():
+def test_resolve_targets_reduction_on_uncovered_nf_label():
+    # "N" is night-float-eligible but has no coverage, so it is an ordinary
+    # regular shift; a f=0 reduction on it lowers A's total share, B absorbs it.
     reduction = LoadReduction(None, ("A",), ("N",), 0.0, date(2023, 1, 2), date(2023, 1, 7))
     resolved = resolve_targets(_nf_data(reductions=[reduction]))
-    # A loses their 6 NF points (and total share); B absorbs them.
-    assert resolved.target_night_float["A"] == pytest.approx(0.0)
-    assert resolved.target_night_float["B"] == pytest.approx(12.0)
+    assert resolved.target_night_float is None  # NF is no longer a balanced dimension
     assert resolved.target_total_map["A"] == pytest.approx(3.0)
     assert resolved.target_total_map["B"] == pytest.approx(15.0)
 

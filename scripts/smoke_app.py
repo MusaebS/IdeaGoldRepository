@@ -203,16 +203,23 @@ def _run_checks() -> list[str]:
         page.close()
 
         # --- infeasible -> recovery path ---
-        page = browser.new_page(viewport={"width": 1400, "height": 1000})
+        # Load a valid roster, then impose an impossible mandatory penalty (no
+        # resident can earn 999 points in a block) so the solve is genuinely
+        # infeasible and the relax-and-retry recovery appears. (Night float is
+        # a coverage overlay now, so an NF shift no longer causes infeasibility.)
+        page = browser.new_page(viewport={"width": 1400, "height": 1600})
         page.goto(URL, wait_until="load", timeout=60000)
         page.wait_for_selector("text=Idea Gold Scheduler", timeout=60000)
-        page.locator('[data-testid="stTextArea"] textarea').first.fill("A")
-        page.locator('[data-testid="stTextInput"] input').first.fill("NF")
-        page.get_by_text("Night float", exact=True).click()
-        page.locator('button:has-text("Add shift")').click()
+        page.get_by_text("Test mode (preload example data)").click()
+        page.wait_for_timeout(2500)
+        page.get_by_role("tab", name="Advanced").click()
+        page.wait_for_timeout(1000)
+        extra = page.locator('[data-testid="stNumberInput"]').filter(has_text="Extra points")
+        extra.locator("input").fill("999")
+        extra.locator('xpath=following::button[normalize-space()="Add"][1]').click()
         page.wait_for_timeout(1500)
         page.locator('button:has-text("Generate schedule")').click()
-        page.wait_for_timeout(6000)
+        page.wait_for_timeout(8000)
         check(page.get_by_role("button", name="Retry with min_gap 0").count() > 0,
               "infeasible config offers a relax-and-retry button")
         page.close()

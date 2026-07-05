@@ -16,13 +16,14 @@ by the ledger under the stub-only CI job).
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Dict
 
 from .data_models import (
     InputData,
     blackout_person_windows,
     normalized_leaves,
+    normalized_nf_assignments,
     normalized_perks,
     normalized_rotators,
 )
@@ -71,6 +72,15 @@ def availability_weights(data: InputData) -> Dict[str, float]:
         for start, end, compensated in windows:
             if not compensated:
                 uncomp_windows.setdefault(name, []).append((start, end))
+    # A night-float assignment (+ its rest days) reduces the regular share like
+    # uncompensated leave: the floater does less regular work and — with the
+    # ledger's no-catch-up policy — is never made to make it up (NF is outside
+    # the regular point/fairness system).
+    for a in normalized_nf_assignments(data.nf_assignments, default_rest=data.nf_rest_days):
+        rest = max(0, int(a.rest_days))
+        uncomp_windows.setdefault(a.name, []).append(
+            (a.start, a.end + timedelta(days=rest))
+        )
 
     days = block_days(data)
 

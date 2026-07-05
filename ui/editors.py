@@ -14,9 +14,12 @@ import streamlit as st
 from model.data_models import (
     Blackout,
     LoadReduction,
+    NightFloatAssignment,
+    NightFloatCoverage,
     Perk,
     ShiftTemplate,
     normalized_blackouts,
+    normalized_nf_assignments,
     normalized_reductions,
 )
 from ui.patterns import FILL_MODES, expand_pattern, parse_fill_names
@@ -697,6 +700,113 @@ def reductions_editor(
             st.session_state[Keys.REDUCTIONS].pop(removed)
 
 
+def night_float_editor(
+    people: list,
+    nf_shift_labels: list,
+    default_start: date | None = None,
+    default_end: date | None = None,
+) -> None:
+    """Night-float overlay: coverage pattern, coverer periods, rest, points toggle."""
+    st.markdown("**Night float — a separate coverage layer, outside regular fairness**")
+    st.caption(
+        "Mark shifts night-float-eligible in the shift editor. Here you choose "
+        "which dates the overlay actually covers (the rest stay regular shifts) "
+        "and who covers them, for which period. A floater is off regular shifts "
+        "during their block plus rest days, works less regular load (no future "
+        "catch-up), and their NF duty is tracked separately."
+    )
+    if not nf_shift_labels:
+        st.caption("Mark at least one shift 'Night-float eligible' first.")
+        return
+
+    st.markdown("**Coverage — which weekdays the overlay covers each NF shift**")
+    coverage = st.session_state[Keys.NF_COVERAGE]
+    for label in nf_shift_labels:
+        current = coverage.get(label)
+        default_days = (
+            [WEEKDAY_LABELS[w] for w in current.weekdays]
+            if isinstance(current, NightFloatCoverage)
+            else []
+        )
+        chosen = st.multiselect(
+            f"'{label}' covered on", WEEKDAY_LABELS, default=default_days,
+            key=f"nfcov_{label}",
+            help="Weekends are covered only if you select them here; unselected "
+            "days are filled by regular shifters.",
+        )
+        if chosen:
+            coverage[label] = NightFloatCoverage(
+                label, tuple(WEEKDAY_LABELS.index(d) for d in chosen)
+            )
+        else:
+            coverage.pop(label, None)
+
+    st.divider()
+    rc = st.columns(2)
+    with rc[0]:
+        st.session_state[Keys.NF_REST_DAYS] = st.number_input(
+            "Default rest days after an NF block", 0, 7,
+            int(st.session_state[Keys.NF_REST_DAYS]), 1,
+            help="A leave-like buffer so nobody goes straight from nights to a "
+            "regular shift.",
+        )
+    with rc[1]:
+        st.markdown("&nbsp;")
+        st.session_state[Keys.NF_COUNT_POINTS] = st.checkbox(
+            "Count NF as regular points",
+            value=bool(st.session_state[Keys.NF_COUNT_POINTS]),
+            help="Off (default): NF is outside the regular point/fairness system. "
+            "On: NF work also counts toward regular totals.",
+        )
+
+    st.markdown("**Night-float assignments — who covers the overlay, when**")
+    nf_pool = [p for p in people if p in set(st.session_state[Keys.NF_JUNIORS])
+               | set(st.session_state[Keys.NF_SENIORS])]
+    if not nf_pool:
+        st.caption("Mark residents 'Night-float eligible' in the roster first.")
+        return
+    c = st.columns([3, 2, 2, 3, 1, 1])
+    with c[0]:
+        who = st.selectbox("Resident", nf_pool, key="nfasg_who")
+    with c[1]:
+        start = st.date_input("Start", default_start or date.today(), key="nfasg_start")
+    with c[2]:
+        end = st.date_input("End", default_end or default_start or date.today(), key="nfasg_end")
+    with c[3]:
+        labels = st.multiselect("Covers (empty = all NF)", nf_shift_labels, key="nfasg_labels")
+    with c[4]:
+        rest = st.number_input("Rest", 0, 7, int(st.session_state[Keys.NF_REST_DAYS]), 1,
+                               key="nfasg_rest")
+    with c[5]:
+        if _add_button("nfasg_add"):
+            st.session_state[Keys.NF_ASSIGNMENTS].append(
+                NightFloatAssignment(who, start, end, tuple(labels), int(rest))
+            )
+    entries = list(normalized_nf_assignments(
+        st.session_state[Keys.NF_ASSIGNMENTS],
+        default_rest=st.session_state[Keys.NF_REST_DAYS],
+    ))
+    if entries:
+        st.table(pd.DataFrame([
+            {
+                "Resident": a.name,
+                "Start": a.start,
+                "End": a.end,
+                "Covers": ", ".join(a.labels) or "all NF",
+                "Rest": a.rest_days,
+            }
+            for a in entries
+        ]))
+        removed = _remove_control(
+            list(range(len(entries))),
+            "Remove NF assignment",
+            "nfasg_rm",
+            format_func=lambda i: f"{entries[i].name}: {entries[i].start} → {entries[i].end}",
+        )
+        if removed is not None:
+            st.session_state[Keys.NF_ASSIGNMENTS].pop(removed)
+
+
 def shift_template_editor() -> None:
     """Editor for the shift templates (label, role, NF, Thu-weekend, points)."""
     st.subheader("Shift templates")
@@ -704,7 +814,12 @@ def shift_template_editor() -> None:
     role = st.selectbox("Role", ["Junior", "Senior"])
     sc = st.columns(3)
     with sc[0]:
-        nf = st.checkbox("Night float")
+        nf = st.checkbox(
+            "Night-float eligible (overlay)",
+            help="On dates you mark covered under Night float, this shift is "
+            "handled by the NF coverage overlay (outside regular points); on "
+            "uncovered dates it is an ordinary regular shift.",
+        )
     with sc[1]:
         thu_wk = st.checkbox("Thu counts as weekend (this shift only)")
     with sc[2]:

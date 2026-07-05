@@ -25,6 +25,8 @@ from model.data_models import (  # noqa: E402
     Blackout,
     InputData,
     LoadReduction,
+    NightFloatAssignment,
+    NightFloatCoverage,
     ShiftTemplate,
     is_night_call,
 )
@@ -306,6 +308,39 @@ def features_factors():
            notes=[("half-load target met", halved)])
 
 
+def overlay_night_float():
+    # Night float as a coverage overlay: two coverers split a 28-day NF rotation
+    # (every night covered). Those cells are removed from regular demand and
+    # carry no regular points; the coverers are off regular work during their
+    # block, and the regular D load stays fair among everyone on the remainder.
+    juniors = [f"J{i}" for i in range(6)]
+    data = mk(
+        [sh("D"), sh("NF", 2.0, nf=True)],
+        juniors, days=28, min_gap=1,
+        nf_juniors=["J0", "J1"],
+        nf_coverage={"NF": NightFloatCoverage("NF", weekdays=(0, 1, 2, 3, 4, 5, 6))},
+        nf_assignments=[
+            NightFloatAssignment("J0", MON, MON + timedelta(days=13), (), 1),
+            NightFloatAssignment("J1", MON + timedelta(days=14), MON + timedelta(days=27), (), 1),
+        ],
+    )
+    df = solve(data)
+    metrics = measure(df, data)
+    rows = {row["Date"]: row for row in df.to_dict("records")}
+    # Every night is an overlay cell (no coverage gaps) and none of them add
+    # regular points — the D shift is the only regular demand (28 points).
+    all_covered = len(df.attrs.get("nf_cells", {})) == 28
+    regular_only = abs(sum(metrics["points"][p]["total"] for p in juniors) - 28.0) < 1e-6
+    # Coverers are blocked from regular work during their NF block.
+    j0_off = all(rows[MON + timedelta(days=i)]["D"] != "J0" for i in range(14))
+    j1_off = all(rows[MON + timedelta(days=i)]["D"] != "J1" for i in range(14, 28))
+    report("NF overlay 6x28 (2 coverers)", metrics,
+           {"total_dev": 2.0, "unfilled": 0},
+           notes=[("NF fully covered by overlay", all_covered),
+                  ("NF excluded from regular points", regular_only),
+                  ("coverers off regular during NF", j0_off and j1_off)])
+
+
 def multi_block_ledger():
     juniors = ["A", "B", "C"]
     ledger: dict = {}
@@ -379,7 +414,8 @@ def main() -> int:
         holiday_plain, holiday_weekend_flag, label_mix_equal_points,
         label_mix_unequal_points, features_leave_rotator, features_blackout,
         features_reduction, features_avoid_pair, features_preferences_neutral,
-        features_caps_penalty, features_factors, multi_block_ledger,
+        features_caps_penalty, features_factors, overlay_night_float,
+        multi_block_ledger,
         extreme_more_shifts_than_people, extreme_heavy_shift, extreme_min_gap,
     ):
         scenario()

@@ -183,11 +183,108 @@ def blackout_night_before_dates(blackouts, named_groups):
     return out
 
 
+class NightFloatCoverage(NamedTuple):
+    """Which dates a night-float-eligible shift is actually covered by NF.
+
+    A shift with ``night_float`` set is *eligible* for the night-float overlay;
+    this pattern says which of its dates the overlay really covers (the rest
+    stay ordinary regular shifts). ``weekdays`` (Mon=0..Sun=6) is the recurring
+    pattern; ``include_dates`` add one-off dates; ``exclude_dates`` remove
+    specific dates even if their weekday matches. No pattern ⇒ never NF-covered
+    (the shift is scheduled entirely as a regular shift).
+    """
+
+    label: str
+    weekdays: Tuple[int, ...] = ()
+    include_dates: Tuple[date, ...] = ()
+    exclude_dates: Tuple[date, ...] = ()
+
+
+def normalized_nf_coverage(coverage):
+    """Yield ``NightFloatCoverage`` for each entry (typed or dict/tuple)."""
+    items = coverage.items() if isinstance(coverage, dict) else (coverage or [])
+    for entry in items:
+        if isinstance(entry, tuple) and len(entry) == 2 and not isinstance(entry[1], (int, date)):
+            label, spec = entry  # (label, NightFloatCoverage|tuple|dict)
+            if isinstance(spec, NightFloatCoverage):
+                yield spec._replace(label=str(label))
+                continue
+            if isinstance(spec, dict):
+                yield NightFloatCoverage(
+                    str(label),
+                    tuple(int(w) for w in spec.get("weekdays", ())),
+                    tuple(spec.get("include_dates", ())),
+                    tuple(spec.get("exclude_dates", ())),
+                )
+                continue
+            yield NightFloatCoverage(str(label), *spec)
+            continue
+        yield entry if isinstance(entry, NightFloatCoverage) else NightFloatCoverage(*entry)
+
+
+class NightFloatAssignment(NamedTuple):
+    """A resident covering the night-float overlay for a period.
+
+    During ``[start, end]`` the resident covers the NF-eligible shifts in
+    ``labels`` (empty = all NF shifts) on the dates those shifts are NF-covered.
+    They are removed from the regular scheduler for the window plus
+    ``rest_days`` recovery days afterwards (a leave-like buffer so nobody goes
+    straight from nights to a regular shift). Fed to the regular scheduler as an
+    *uncompensated* leave, so their regular target drops for the period and the
+    ledger never makes them catch it up.
+    """
+
+    name: str
+    start: date
+    end: date
+    labels: Tuple[str, ...] = ()
+    rest_days: int = 1
+
+
+def normalized_nf_assignments(assignments, default_rest: int = 1):
+    """Yield ``NightFloatAssignment`` for each entry (typed or 3/4/5-tuple)."""
+    for entry in assignments or []:
+        if isinstance(entry, NightFloatAssignment):
+            yield entry
+            continue
+        name, start, end = entry[0], entry[1], entry[2]
+        labels = tuple(entry[3] or ()) if len(entry) > 3 else ()
+        rest = int(entry[4]) if len(entry) > 4 else default_rest
+        yield NightFloatAssignment(name, start, end, labels, rest)
+
+
+def nf_covered(day: date, shift, data) -> bool:
+    """True if ``shift`` on ``day`` is covered by the night-float overlay."""
+    if not shift.night_float:
+        return False
+    cov = None
+    for entry in normalized_nf_coverage(data.nf_coverage):
+        if entry.label == shift.label:
+            cov = entry
+            break
+    if cov is None:
+        return False  # eligible but no coverage configured → scheduled as regular
+    if day in cov.exclude_dates:
+        return False
+    return day in cov.include_dates or day.weekday() in cov.weekdays
+
+
+def is_regular_night_call(day: date, shift, data) -> bool:
+    """A night on-call worked by *regular* residents on ``day``.
+
+    A "Thu counts as weekend" shift is a night on-call; on dates the night-float
+    overlay covers it there is no regular assignment, so it is only a regular
+    night call on its *uncovered* dates. Used for the blackout "night before"
+    rule (protect regular residents from being post-call).
+    """
+    return bool(shift.thu_weekend) and not nf_covered(day, shift, data)
+
+
 @dataclass
 class ShiftTemplate:
     label: str
     role: str  # 'Junior' or 'Senior'
-    night_float: bool
+    night_float: bool  # night-float-ELIGIBLE (covered by the NF overlay on covered dates)
     thu_weekend: bool
     points: float = 1.0
 
@@ -266,6 +363,16 @@ class InputData:
     # to Unfilled) and leaves fairness targets untouched. The UI gates the
     # editor behind an access code because using this needs sign-off.
     avoid_pairs: Sequence[Tuple[str, str]] | None = None
+    # Night-float overlay: which dates each NF-eligible shift is actually
+    # covered (nf_coverage), and who covers the overlay when (nf_assignments).
+    # Covered slots are removed from regular demand; the coverers are blocked
+    # in the regular scheduler (like uncompensated leave) for the period plus
+    # a rest buffer. NF is deliberately outside the regular point/fairness
+    # system — count_nf_points optionally counts NF work as regular points.
+    nf_coverage: Dict[str, NightFloatCoverage] | None = None
+    nf_assignments: Sequence[NightFloatAssignment | Tuple] | None = None
+    count_nf_points: bool = False
+    nf_rest_days: int = 1
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None
     target_weekend: Dict[str, float] | None = None

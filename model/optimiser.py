@@ -1,5 +1,4 @@
 from dataclasses import replace
-from datetime import timedelta
 import os
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
@@ -135,11 +134,11 @@ from .data_models import (
     InputData,
     blackout_night_before_dates,
     blackout_person_windows,
-    is_night_call,
+    is_regular_night_call,
     normalized_leaves,
     normalized_rotators,
 )
-from .nf_blocks import respects_nf_blocks
+from .night_float import nf_leave_windows, resolve_night_float
 from .points import POINT_SCALE, SlotPoints, block_days, classify_slot, scaled, slot_points
 from .reductions import eligible_for_shift, reduction_caps
 from .utils import weekend_holiday_dates
@@ -181,7 +180,7 @@ def objective_weights(
 
 
 class SchedulerSolver:
-    def __init__(self, data: InputData):
+    def __init__(self, data: InputData, nf_cells: Dict[Tuple, str] | None = None):
         self.data = data
         self.model = cp_model.CpModel()
         self.SCALE = POINT_SCALE
@@ -189,23 +188,32 @@ class SchedulerSolver:
         self.days = block_days(data)
         self.shifts = data.shifts
         self.labels = sorted({s.label for s in data.shifts})
-        # Every (day, shift) slot classified once — value, weekend, night-float —
-        # so the solver and fairness reporting agree by construction.
+        # Every (day, shift) slot classified once so the solver and fairness
+        # reporting agree by construction.
         weekend_dates = weekend_holiday_dates(data)
         self.slots: Dict[Tuple[int, int], SlotPoints] = {
             (d_idx, s_idx): classify_slot(day, sh, data, weekend_dates)
             for d_idx, day in enumerate(self.days)
             for s_idx, sh in enumerate(self.shifts)
         }
+        # Night-float-covered cells are handled by the overlay: they are
+        # removed from the regular scheduler's demand, points and constraints,
+        # and written straight into the output. Map (date,label) → (d_idx,s_idx).
+        self.nf_cells = nf_cells or {}
+        day_index = {day: i for i, day in enumerate(self.days)}
+        label_index = {sh.label: i for i, sh in enumerate(self.shifts)}
+        self.nf_slots: set = {
+            (day_index[d], label_index[lbl])
+            for (d, lbl) in self.nf_cells
+            if d in day_index and lbl in label_index
+        }
         self.vars: Dict[Tuple[int, int, int], CpVar] = {}
         self.label_pts: Dict[Tuple[int, str], CpVar] = {}
         self.total_pts: Dict[int, CpVar] = {}
         self.weekend_pts: Dict[int, CpVar] = {}
-        self.nf_pts: Dict[int, CpVar] = {}
         self.dev_label: Dict[Tuple[int, str], CpVar] = {}
         self.dev_total: Dict[int, CpVar] = {}
         self.dev_weekend: Dict[int, CpVar] = {}
-        self.dev_night_float: Dict[int, CpVar] = {}
         self.max_dev: CpVar | None = None
         self.build_variables()
         self.compute_points()
@@ -218,11 +226,9 @@ class SchedulerSolver:
             self.model.label_pts = self.label_pts
             self.model.total_pts = self.total_pts
             self.model.weekend_pts = self.weekend_pts
-            self.model.nf_pts = self.nf_pts
             self.model.dev_label = self.dev_label
             self.model.dev_total = self.dev_total
             self.model.dev_weekend = self.dev_weekend
-            self.model.dev_night_float = self.dev_night_float
             self.model.max_dev = self.max_dev
         except AttributeError:
             # Real ortools model does not allow setting new attributes
@@ -233,6 +239,10 @@ class SchedulerSolver:
         self.add_extra_point_constraints()
         self.add_reduction_constraints()
         self.build_objective()
+
+    def _is_regular(self, d_idx: int, s_idx: int) -> bool:
+        """A slot handled by the regular scheduler (not covered by NF overlay)."""
+        return (d_idx, s_idx) not in self.nf_slots
 
     def build_variables(self) -> None:
         for p_idx in range(len(self.people)):
@@ -249,18 +259,18 @@ class SchedulerSolver:
     def compute_points(self) -> None:
         max_val = self._max_points()
         for p_idx, _ in enumerate(self.people[:-1]):
-            # One pass over the classified slots accumulates the per-label,
-            # weekend and night-float expressions together.
+            # One pass over the *regular* slots (NF-covered cells are handled by
+            # the overlay and carry no regular points) accumulates the per-label
+            # and weekend expressions together.
             label_parts: Dict[str, list] = {label: [] for label in self.labels}
             wk_parts: List[CpVar] = []
-            nf_parts: List[CpVar] = []
             for (d_idx, s_idx), slot in self.slots.items():
+                if not self._is_regular(d_idx, s_idx):
+                    continue
                 term = scaled(slot.points) * self.vars[(p_idx, d_idx, s_idx)]
                 label_parts[slot.shift.label].append(term)
                 if slot.weekend:
                     wk_parts.append(term)
-                if slot.night_float:
-                    nf_parts.append(term)
 
             for label in self.labels:
                 parts = label_parts[label]
@@ -276,10 +286,6 @@ class SchedulerSolver:
             wvar = self.model.NewIntVar(0, max_val, f"weekendpts_{p_idx}")
             self.model.Add(wvar == (sum(wk_parts) if wk_parts else 0))
             self.weekend_pts[p_idx] = wvar
-
-            nfvar = self.model.NewIntVar(0, max_val, f"nfpts_{p_idx}")
-            self.model.Add(nfvar == (sum(nf_parts) if nf_parts else 0))
-            self.nf_pts[p_idx] = nfvar
 
     def add_deviation_constraints(self) -> None:
         max_val = self._max_points()
@@ -314,15 +320,8 @@ class SchedulerSolver:
                 self.model.Add(var >= target - self.weekend_pts[p_idx])
                 self.dev_weekend[p_idx] = var
 
-        if self.data.target_night_float:
-            for p_idx, person in enumerate(self.people[:-1]):
-                if person not in self.data.target_night_float:
-                    continue
-                target = scaled(self.data.target_night_float[person])
-                var = self.model.NewIntVar(0, max_val, f"dev_nf_{p_idx}")
-                self.model.Add(var >= self.nf_pts[p_idx] - target)
-                self.model.Add(var >= target - self.nf_pts[p_idx])
-                self.dev_night_float[p_idx] = var
+        # Night float is a separate coverage overlay, not a balanced regular
+        # dimension — there is no night-float deviation term any more.
 
         if self.data.target_label:
             for p_idx, person in enumerate(self.people[:-1]):
@@ -338,17 +337,17 @@ class SchedulerSolver:
                     self.dev_label[(p_idx, label)] = var
 
     def add_cap_constraints(self) -> None:
-        """Hard per-resident ceilings on total and night-float points.
+        """Hard per-resident ceiling on total regular points.
 
         Capped residents simply work less; the slack falls to ``Unfilled`` (so a
         cap never makes the model infeasible). Caps override fairness — a capped
-        resident's deviation from their fair share is accepted.
+        resident's deviation from their fair share is accepted. (``max_nights``
+        capped night-float points, which are no longer part of the regular
+        scheduler; it is retained for config compatibility but has no effect.)
         """
         for p_idx, person in enumerate(self.people[:-1]):
             if self.data.max_total and person in self.data.max_total:
                 self.model.Add(self.total_pts[p_idx] <= scaled(self.data.max_total[person]))
-            if self.data.max_nights and person in self.data.max_nights:
-                self.model.Add(self.nf_pts[p_idx] <= scaled(self.data.max_nights[person]))
 
     def add_extra_point_constraints(self) -> None:
         """Hard floor enforcing mandatory extra points on punished residents.
@@ -404,8 +403,6 @@ class SchedulerSolver:
         self._add_slot_coverage_and_eligibility()
         self._add_one_shift_per_day()
         self._add_min_gap_windows()
-        self._add_nf_block_constraints()
-        self._add_nf_rest_constraints()
         self._add_avoid_pair_constraints()
 
     def _add_avoid_pair_constraints(self) -> None:
@@ -448,6 +445,9 @@ class SchedulerSolver:
         leave_windows: Dict[str, list] = {}
         for res, start, end, _comp in normalized_leaves(self.data.leaves):
             leave_windows.setdefault(res, []).append((start, end))
+        # A night floater is off regular shifts during their NF block + rest.
+        for res, start, end, _comp in nf_leave_windows(self.data):
+            leave_windows.setdefault(res, []).append((start, end))
 
         blocked: Dict[int, set] = {}
         for p_idx, person in enumerate(self.people[:-1]):  # exclude Unfilled
@@ -464,14 +464,14 @@ class SchedulerSolver:
         return blocked
 
     def _blocked_slot_indices(self) -> Dict[int, set]:
-        """Person index -> (day, shift) index pairs blocked by group blackouts.
+        """Person index -> regular (day, shift) index pairs blocked by blackouts.
 
-        Blackouts are shift-type-aware, unlike leaves: the window blocks every
-        non-night-float shift (night float is a separate rotation, never
-        touched), and the night-before date blocks only the night on-calls
-        (``is_night_call``: "Thu counts as weekend", non-NF) so the member is
-        not post-call on their first off day. The compensated flag only
-        affects the fairness share (model.weights), never the blocking.
+        The window blocks every regular slot it covers; the night-before date
+        blocks only the *regular* night on-calls (``is_regular_night_call``:
+        "Thu counts as weekend" on a date the NF overlay does not cover) so the
+        member is not post-call on their first off day. NF-covered cells are
+        never regular slots, so blackouts never touch them. The compensated
+        flag only affects the fairness share (model.weights), never blocking.
         """
         windows = blackout_person_windows(self.data.blackouts, self.data.named_groups)
         night_dates = blackout_night_before_dates(
@@ -485,26 +485,31 @@ class SchedulerSolver:
             person_nights = night_dates.get(person, ())
             slots = set()
             for (d_idx, s_idx), slot in self.slots.items():
-                if slot.shift.night_float:
+                if not self._is_regular(d_idx, s_idx):
                     continue
                 if any(s <= slot.day <= e for s, e, _comp in person_windows):
                     slots.add((d_idx, s_idx))
-                elif slot.day in person_nights and is_night_call(slot.shift):
+                elif slot.day in person_nights and is_regular_night_call(
+                    slot.day, slot.shift, self.data
+                ):
                     slots.add((d_idx, s_idx))
             if slots:
                 blocked[p_idx] = slots
         return blocked
 
     def _eligible_person_indices(self) -> Dict[int, set]:
-        """Shift index -> person indices allowed on that shift (role + NF + exemptions)."""
+        """Shift index -> person indices allowed on that shift (role + exemptions).
+
+        NF eligibility pools no longer gate regular shifts: a night-float-
+        eligible shift on an *uncovered* date is an ordinary regular shift open
+        to every role-appropriate resident. The NF pools only govern who may be
+        assigned NF overlay windows (checked in validation).
+        """
         juniors, seniors = set(self.data.juniors), set(self.data.seniors)
-        nf_juniors, nf_seniors = set(self.data.nf_juniors), set(self.data.nf_seniors)
         exempt = self.data.exempt_shifts or {}
         eligible: Dict[int, set] = {}
         for s_idx, shift in enumerate(self.shifts):
             pool = juniors if shift.role == "Junior" else seniors
-            if shift.night_float:
-                pool = pool & (nf_juniors if shift.role == "Junior" else nf_seniors)
             eligible[s_idx] = {
                 p_idx
                 for p_idx, person in enumerate(self.people[:-1])
@@ -518,7 +523,14 @@ class SchedulerSolver:
         eligible = self._eligible_person_indices()
         for d_idx in range(len(self.days)):
             for s_idx in range(len(self.shifts)):
-                # exactly one assignment per slot
+                if not self._is_regular(d_idx, s_idx):
+                    # NF-covered cell: handled by the overlay, not the regular
+                    # scheduler. Pin every regular person off it (the coverer is
+                    # written into the output post-solve).
+                    for p_idx in range(len(self.people) - 1):
+                        self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
+                    continue
+                # exactly one assignment per regular slot
                 self.model.Add(
                     sum(self.vars[(p_idx, d_idx, s_idx)]
                         for p_idx in range(len(self.people))) == 1
@@ -532,7 +544,7 @@ class SchedulerSolver:
                         self.model.Add(self.vars[(p_idx, d_idx, s_idx)] == 0)
 
     def _add_one_shift_per_day(self) -> None:
-        # At most one shift per resident per day (night-float or regular).
+        # At most one regular shift per resident per day.
         for p_idx in range(len(self.people) - 1):  # exclude Unfilled
             for d_idx in range(len(self.days)):
                 self.model.Add(
@@ -545,14 +557,13 @@ class SchedulerSolver:
 
     def _add_min_gap_windows(self) -> None:
         # Regular-shift spacing: in any window of (gap + 1) consecutive days a
-        # resident works at most one non-night-float shift. Night-float shifts
-        # are excluded *here* because nights within a block are intentionally
-        # consecutive; rest *around* NF blocks is enforced separately below so a
-        # block is still spaced from adjacent regular shifts and other blocks.
-        # O(residents x days).
+        # resident works at most one regular shift. NF-covered cells are removed
+        # from the regular model (their vars are pinned to 0), so they never
+        # count here; a night-float-eligible shift on an *uncovered* date is an
+        # ordinary regular shift and is spaced like any other. Post-NF rest is
+        # handled by the overlay's rest-leave, not here. O(residents × days).
         gap = self.data.min_gap
-        non_nf_idxs = [i for i, sh in enumerate(self.shifts) if not sh.night_float]
-        if gap > 0 and non_nf_idxs:
+        if gap > 0 and self.shifts:
             for p_idx in range(len(self.people) - 1):  # exclude Unfilled
                 for d_idx in range(len(self.days)):
                     window = range(d_idx, min(d_idx + gap + 1, len(self.days)))
@@ -560,71 +571,11 @@ class SchedulerSolver:
                         sum(
                             self.vars[(p_idx, dd, s_idx)]
                             for dd in window
-                            for s_idx in non_nf_idxs
+                            for s_idx in range(len(self.shifts))
+                            if self._is_regular(dd, s_idx)
                         )
                         <= 1
                     )
-
-    def _add_nf_block_constraints(self) -> None:
-        # night float blocks must have exact length
-        block_len = self.data.nf_block_length
-        if block_len > 1:
-            nf_shift_idxs = [i for i, s in enumerate(self.shifts) if s.night_float]
-            for s_idx in nf_shift_idxs:
-                for block_start in range(0, len(self.days), block_len):
-                    block_idxs = list(range(block_start, min(block_start + block_len, len(self.days))))
-                    # A trailing partial block is still covered by a single
-                    # resident for the remaining days instead of forcing the
-                    # nights unfilled (which previously dropped coverage at the
-                    # end of the horizon); the post-solve validator allows this
-                    # short final run.
-                    for p_idx in range(len(self.people)):
-                        first_var = self.vars[(p_idx, block_idxs[0], s_idx)]
-                        for d_idx in block_idxs[1:]:
-                            self.model.Add(first_var == self.vars[(p_idx, d_idx, s_idx)])
-                for boundary in range(block_len, len(self.days), block_len):
-                    if boundary >= len(self.days):
-                        break
-                    prev_day = boundary - 1
-                    next_day = boundary
-                    for p_idx in range(len(self.people)):
-                        self.model.Add(
-                            self.vars[(p_idx, prev_day, s_idx)] + self.vars[(p_idx, next_day, s_idx)] <= 1
-                        )
-
-    def _add_nf_rest_constraints(self) -> None:
-        # Rest around night-float blocks. A resident who works the first/last
-        # night of a block gets ``gap`` idle days before/after that block versus
-        # *any* shift (NF or regular), matching the spec's "min_gap between any
-        # two shifts" intent. Nights stay consecutive within a block (enforced in
-        # _add_nf_block_constraints); this only spaces a block from adjacent
-        # regular shifts and other blocks. Block boundaries are deterministic
-        # from the day-0-aligned partition, so this also covers block_len == 1
-        # (each NF night is its own block).
-        gap = self.data.min_gap
-        nf_shift_idxs = [i for i, s in enumerate(self.shifts) if s.night_float]
-        n_days = len(self.days)
-        block_span = max(1, self.data.nf_block_length)
-        if gap > 0 and nf_shift_idxs:
-            for s_idx in nf_shift_idxs:
-                for bs in range(0, n_days, block_span):
-                    be = min(bs + block_span, n_days) - 1  # block-end day index
-                    for p_idx in range(len(self.people) - 1):  # exclude Unfilled
-                        start_var = self.vars[(p_idx, bs, s_idx)]
-                        end_var = self.vars[(p_idx, be, s_idx)]
-                        for k in range(1, gap + 1):
-                            after = be + k
-                            if after < n_days:
-                                for ss in range(len(self.shifts)):
-                                    self.model.Add(
-                                        end_var + self.vars[(p_idx, after, ss)] <= 1
-                                    )
-                            before = bs - k
-                            if before >= 0:
-                                for ss in range(len(self.shifts)):
-                                    self.model.Add(
-                                        start_var + self.vars[(p_idx, before, ss)] <= 1
-                                    )
 
     def _preference_rewards(self) -> Dict[Tuple[int, int, int], int]:
         """(person, day, shift) -> reward in {1, 2} for preference matches.
@@ -645,6 +596,8 @@ class SchedulerSolver:
             if not labels and not wants:
                 continue
             for (d_idx, s_idx), slot in self.slots.items():
+                if not self._is_regular(d_idx, s_idx):
+                    continue  # NF-covered cells aren't regular assignments
                 reward = 0
                 if slot.shift.label in labels:
                     reward += 1
@@ -661,6 +614,7 @@ class SchedulerSolver:
             self.vars[(len(self.people) - 1, d_idx, s_idx)]
             for d_idx in range(len(self.days))
             for s_idx in range(len(self.shifts))
+            if self._is_regular(d_idx, s_idx)
         ]
 
         terms = []
@@ -681,8 +635,6 @@ class SchedulerSolver:
             terms.append(W_TOTAL * sum(self.dev_total.values()))
         if self.dev_weekend:
             terms.append(W_WEEKEND * sum(self.dev_weekend.values()))
-        if self.dev_night_float:
-            terms.append(W_NIGHTS * sum(self.dev_night_float.values()))
         if self.dev_label:
             terms.append(W_LABEL * sum(self.dev_label.values()))
         terms.append(W_UNFILLED * sum(unfilled_vars))
@@ -751,6 +703,11 @@ class SchedulerSolver:
         for d_idx, day in enumerate(self.days):
             row = {"Date": day, "Day": day.strftime("%A")}
             for s_idx, shift in enumerate(self.shifts):
+                if (day, shift.label) in self.nf_cells:
+                    # Night-float overlay cell: the coverer, decided outside the
+                    # regular scheduler, is written straight in.
+                    row[shift.label] = self.nf_cells[(day, shift.label)]
+                    continue
                 assigned = None
                 for p_idx, person in enumerate(self.people):
                     var = self.vars[(p_idx, d_idx, s_idx)]
@@ -763,6 +720,12 @@ class SchedulerSolver:
                 row[shift.label] = assigned
             rows.append(row)
         df = pd.DataFrame(rows)
+        try:
+            df.attrs["nf_cells"] = {
+                (d.isoformat(), lbl): name for (d, lbl), name in self.nf_cells.items()
+            }
+        except (AttributeError, TypeError):  # pragma: no cover - stub frames
+            pass
         # Only a real solver response carries a meaningful status / wall time;
         # the stub fallback above sets variable values by hand.
         status_name = None
@@ -967,14 +930,19 @@ def _auto_label_targets(
     return targets
 
 
-def resolve_targets(data: InputData, ledger: Ledger | None = None) -> InputData:
+def resolve_targets(
+    data: InputData, ledger: Ledger | None = None, nf_cells: Mapping | None = None
+) -> InputData:
     """Return a copy of ``data`` with all fairness targets resolved.
 
     Targets the caller left unset are auto-computed (equal shares weighted by
     availability); a ``ledger`` of prior-block points switches the totals to
     cumulative carryover balancing; ``extra_points`` penalties are folded into
-    the total map. The caller's ``InputData`` is never mutated.
+    the total map. ``nf_cells`` (from the night-float overlay) are excluded
+    from the regular point pools so NF work never counts toward regular
+    targets. The caller's ``InputData`` is never mutated.
     """
+    nf_cells = nf_cells or {}
     participants = data.juniors + data.seniors
     target_total = data.target_total
     target_total_map = data.target_total_map
@@ -983,16 +951,15 @@ def resolve_targets(data: InputData, ledger: Ledger | None = None) -> InputData:
     target_label = data.target_label
 
     if participants:
+        # Regular demand only: night-float-covered cells carry no regular points.
         total_points = 0.0
         weekend_points = 0.0
-        nf_points_by_role: Dict[str, float] = {"Junior": 0.0, "Senior": 0.0}
         for slot in slot_points(data):
+            if (slot.day, slot.shift.label) in nf_cells:
+                continue
             total_points += slot.points
             if slot.weekend:
                 weekend_points += slot.points
-            if slot.night_float:
-                role = slot.shift.role
-                nf_points_by_role[role] = nf_points_by_role.get(role, 0.0) + slot.points
 
         availability = _availability_weights(data)
         weight_sum = sum(availability.values())
@@ -1011,17 +978,8 @@ def resolve_targets(data: InputData, ledger: Ledger | None = None) -> InputData:
             else:
                 target_weekend = {p: 0.0 for p in participants}
 
-        if target_night_float is None:
-            # Night-float load is balanced per role among the eligible pool only
-            # (non-eligible residents never work nights), availability-weighted so
-            # rotators carry a proportionally smaller share.
-            target_night_float = {}
-            for role, pool in (("Junior", data.nf_juniors), ("Senior", data.nf_seniors)):
-                role_points = nf_points_by_role.get(role, 0.0)
-                pool_weight = sum(availability.get(p, 0) for p in pool)
-                if pool_weight > 0:
-                    for p in pool:
-                        target_night_float[p] = role_points * availability[p] / pool_weight
+        # Night float is a separate coverage overlay, no longer a balanced
+        # regular target (target_night_float stays whatever the caller set).
 
         if ledger:
             # Carryover fairness: targets balance cumulative load (prior + this
@@ -1034,14 +992,6 @@ def resolve_targets(data: InputData, ledger: Ledger | None = None) -> InputData:
             target_weekend = _carryover_targets(
                 prior_wk, weekend_points, participants, availability, weight_sum, weekend_points
             )
-            target_night_float = {}
-            for role, pool in (("Junior", data.nf_juniors), ("Senior", data.nf_seniors)):
-                role_points = nf_points_by_role.get(role, 0.0)
-                pool_weight = sum(availability.get(p, 0) for p in pool)
-                prior_nf = {p: ledger.get(p, {}).get("night_float", 0.0) for p in pool}
-                target_night_float.update(
-                    _carryover_targets(prior_nf, role_points, pool, availability, pool_weight, role_points)
-                )
 
         if data.extra_points and target_total_map:
             target_total_map = _apply_extra_points(
@@ -1088,14 +1038,21 @@ def build_schedule(data: InputData, env: str | None = None, ledger: Ledger | Non
 
     day_count = (data.end_date - data.start_date).days + 1
     participants = data.juniors + data.seniors
+    # Night-float overlay: resolve covered cells (removed from regular demand)
+    # and coverage gaps (fall back to regular). The coverers' NF+rest windows
+    # reduce availability and block regular shifts directly (weights /
+    # _blocked_day_indices read data.nf_assignments), so no leaves are appended
+    # here — this keeps the ledger consistent when it re-derives adjustments
+    # from the same config.
+    nf_cells, _gap_slots, _nf_leaves = resolve_night_float(data)
     # The resolved targets are exposed on ``df.attrs`` below.
-    solve_data = resolve_targets(data, ledger)
+    solve_data = resolve_targets(data, ledger, nf_cells=nf_cells)
     target_total = solve_data.target_total
     target_total_map = solve_data.target_total_map
     target_weekend = solve_data.target_weekend
     target_night_float = solve_data.target_night_float
     using_stub = not ORTOOLS_AVAILABLE
-    solver = SchedulerSolver(solve_data)
+    solver = SchedulerSolver(solve_data, nf_cells=nf_cells)
     env = (env or os.environ.get("ENV", "prod")).lower()
     limit = compute_time_limit(env, len(participants) or 1, day_count, len(data.shifts) or 1)
     df = solver.solve(time_limit_sec=limit)
@@ -1113,28 +1070,21 @@ def build_schedule(data: InputData, env: str | None = None, ledger: Ledger | Non
         return df
     if not respects_min_gap(df, data.min_gap, data.shifts):
         raise RuntimeError("Schedule violates min_gap constraint")
-    if not respects_nf_blocks(df, data.nf_block_length, data.shifts):
-        raise RuntimeError("Schedule violates nf_block_length constraint")
     return df
 
 
 def respects_min_gap(df: pd.DataFrame, gap: int, shifts=None) -> bool:
     """Return True if the schedule respects ``gap`` days of rest between shifts.
 
-    Two rules, mirroring the solver:
-
-    * Regular (non-night-float) shifts for a resident must be more than ``gap``
-      days apart.
-    * A night-float block (a maximal run of consecutive NF days for a resident)
-      must have at least ``gap`` idle days before it starts and after it ends,
-      versus *any* shift. Nights within a block stay consecutive.
-
-    When ``shifts`` is omitted, every column is treated as a regular shift
-    (backwards-compatible behaviour).
+    A resident's regular shifts must be more than ``gap`` days apart.
+    Night-float-covered cells (the overlay, marked in ``df.attrs["nf_cells"]``)
+    are not regular assignments and are skipped — the coverer's rest is handled
+    by the overlay's rest-leave, not min_gap. ``shifts`` is accepted for
+    backwards compatibility and no longer affects the check.
     """
     if gap <= 0:
         return True
-    nf_labels = {s.label for s in shifts if s.night_float} if shifts else set()
+    nf_cells = getattr(df, "attrs", {}).get("nf_cells", {}) if hasattr(df, "attrs") else {}
     records = df.to_dict("records")
     if hasattr(df, "columns"):
         # Every column except the date/day labels holds resident names. Do not
@@ -1148,48 +1098,24 @@ def respects_min_gap(df: pd.DataFrame, gap: int, shifts=None) -> bool:
         shift_cols = [k for k in first.keys() if k not in {"Date", "Day"}]
 
     regular_days: Dict[str, list] = {}
-    nf_days: Dict[str, set] = {}
-    all_days: Dict[str, set] = {}
     for row in records:
         day = row.get("Date")
         if day is None:
             continue
+        day_key = day.isoformat() if hasattr(day, "isoformat") else day
         for label in shift_cols:
+            if (day_key, label) in nf_cells:
+                continue  # night-float overlay cell, not a regular assignment
             person = row.get(label)
             if person in (None, "Unfilled") or not isinstance(person, str):
                 continue
-            all_days.setdefault(person, set()).add(day)
-            if label in nf_labels:
-                nf_days.setdefault(person, set()).add(day)
-            else:
-                regular_days.setdefault(person, []).append(day)
+            regular_days.setdefault(person, []).append(day)
 
-    # Rule 1: regular-to-regular spacing.
     for days in regular_days.values():
         days.sort()
         for d1, d2 in zip(days, days[1:]):
             if (d2 - d1).days <= gap:
                 return False
-
-    # Rule 2: rest around each night-float block.
-    for person, days_set in nf_days.items():
-        days = sorted(days_set)
-        worked = all_days.get(person, set())
-        run_start = run_prev = days[0]
-        runs = []
-        for d in days[1:]:
-            if (d - run_prev).days == 1:
-                run_prev = d
-            else:
-                runs.append((run_start, run_prev))
-                run_start = run_prev = d
-        runs.append((run_start, run_prev))
-        for start, end in runs:
-            for k in range(1, gap + 1):
-                if (end + timedelta(days=k)) in worked:
-                    return False
-                if (start - timedelta(days=k)) in worked:
-                    return False
     return True
 
 

@@ -124,17 +124,20 @@ def test_solver_blocks_window_and_night_call_before():
 
 def test_blackout_never_touches_night_float():
     pytest.importorskip("ortools")
+    from model.data_models import NightFloatAssignment, NightFloatCoverage
     from model.optimiser import build_schedule
 
     shifts = [
         ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False, points=2.0),
     ]
-    # A is the only resident and is blacked out for the whole block; night
-    # float is a separate rotation, so A still covers every NF night.
+    # NF is covered every day by A via the overlay; A is also blacked out for
+    # the block. Blackouts only touch regular slots, so A still covers NF.
     data = _data(
         shifts=shifts,
         juniors=["A"],
         nf_juniors=["A"],
+        nf_coverage={"NF": NightFloatCoverage("NF", weekdays=(0, 1, 2, 3, 4, 5, 6))},
+        nf_assignments=[NightFloatAssignment("A", date(2023, 1, 2), date(2023, 1, 7), (), 0)],
         blackouts=[Blackout(None, ("A",), date(2023, 1, 2), date(2023, 1, 7))],
     )
     df = build_schedule(data, env="test")
@@ -228,21 +231,34 @@ def test_blackout_warnings():
 
 
 def test_validate_schedule_flags_blackout_and_night_before():
+    from model.data_models import NightFloatAssignment, NightFloatCoverage
+
     shifts = [
         ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
         ShiftTemplate(label="N", role="Junior", night_float=False, thu_weekend=True, points=2.0),
         ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False, points=2.0),
     ]
+    # "NF" is covered by the overlay (B on the 4th, A on the 5th), so those
+    # cells are not regular assignments and the blackout must not touch them.
     data = _data(
         shifts=shifts,
         nf_juniors=["A", "B"],
-        nf_block_length=1,
+        nf_coverage={"NF": NightFloatCoverage("NF", weekdays=(0, 1, 2, 3, 4, 5, 6))},
+        nf_assignments=[
+            NightFloatAssignment("B", date(2023, 1, 4), date(2023, 1, 4), (), 0),
+            NightFloatAssignment("A", date(2023, 1, 5), date(2023, 1, 5), (), 0),
+        ],
         blackouts=[Blackout(None, ("A",), date(2023, 1, 5), date(2023, 1, 5))],
     )
     df = pd.DataFrame([
         {"Date": date(2023, 1, 4), "D": "A", "N": "A", "NF": "B"},
         {"Date": date(2023, 1, 5), "D": "A", "N": "B", "NF": "A"},
     ])
+    # The overlay marks NF-covered cells so validation skips them as regular.
+    df.attrs["nf_cells"] = {
+        (date(2023, 1, 4).isoformat(), "NF"): "B",
+        (date(2023, 1, 5).isoformat(), "NF"): "A",
+    }
     issues = validate_schedule(df, data)
     # Window: the day shift on Jan 5 is flagged; NF the same day is NOT.
     assert any("group blackout" in i and "'D'" in i for i in issues)

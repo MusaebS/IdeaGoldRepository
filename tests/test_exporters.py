@@ -51,8 +51,8 @@ def test_build_fairness_frame():
     assert by_name["Alice"]["Role"] == "Junior"
     assert by_name["Bob"]["Role"] == "Senior"
     assert by_name["Alice"]["Total"] == 2.0      # D 1.0 x 2 days
-    assert by_name["Bob"]["Total"] == 4.0        # N 2.0 x 2 days
-    assert by_name["Bob"]["Night Float"] == 4.0
+    assert by_name["Bob"]["Total"] == 4.0        # N 2.0 x 2 days (NF-eligible but uncovered = regular)
+    assert by_name["Bob"]["NF duty (days)"] == 0  # no NF coverage configured
     assert "D" in frame.columns and "N" in frame.columns
 
 
@@ -96,7 +96,6 @@ def test_fairness_frame_with_df_adds_counts_targets_and_notes():
     df, data = _sample()
     df.attrs["target_total_map"] = {"Alice": 3.0, "Bob": 3.0}
     df.attrs["target_weekend"] = {"Alice": 3.0, "Bob": 3.0}
-    df.attrs["target_night_float"] = {"Bob": 4.0}
     data.exempt_shifts = {"Alice": ["N"]}
     points = calculate_points(df, data)
     frame = build_fairness_frame(points, data, df)
@@ -106,7 +105,7 @@ def test_fairness_frame_with_df_adds_counts_targets_and_notes():
     assert by_name["Alice"]["Total target"] == 3.0
     assert by_name["Alice"]["Total dev"] == -1.0
     assert by_name["Alice"]["Weekend target"] == 3.0
-    assert by_name["Bob"]["NF target"] == 4.0 and by_name["Bob"]["NF dev"] == 0.0
+    assert "NF target" not in by_name["Bob"]  # NF is no longer a balanced dimension
     assert "[exempt: N]" in by_name["Alice"]["Notes"]
 
 

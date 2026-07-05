@@ -281,15 +281,21 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
         st.text(log_text)
 
 
-def _shift_cell_options(data, shift) -> list:
-    """Residents allowed in a shift column's dropdown (role + NF + exemptions)."""
+def _shift_cell_options(data, shift, df=None) -> list:
+    """Residents allowed in a shift column's dropdown (role + exemptions).
+
+    NF eligibility no longer gates regular shifts. Night-float coverers that
+    appear in this column's overlay cells are added so their (non-editable)
+    value stays a valid dropdown option.
+    """
     pool = data.juniors if shift.role == "Junior" else data.seniors
-    if shift.night_float:
-        eligible = set(data.nf_juniors if shift.role == "Junior" else data.nf_seniors)
-        pool = [p for p in pool if p in eligible]
     exempt = data.exempt_shifts or {}
-    pool = [p for p in pool if shift.label not in exempt.get(p, ())]
-    return list(pool) + ["Unfilled"]
+    options = [p for p in pool if shift.label not in exempt.get(p, ())]
+    nf_cells = (getattr(df, "attrs", {}) or {}).get("nf_cells", {}) if df is not None else {}
+    for (_day, lbl), name in nf_cells.items():
+        if lbl == shift.label and name not in options:
+            options.append(name)
+    return options + ["Unfilled"]
 
 
 def _render_manual_edit(df, result_data) -> None:
@@ -303,7 +309,7 @@ def _render_manual_edit(df, result_data) -> None:
         # the source; constraint issues (min-gap etc.) are still surfaced below.
         column_config = {
             sh.label: st.column_config.SelectboxColumn(
-                sh.label, options=_shift_cell_options(result_data, sh), required=False
+                sh.label, options=_shift_cell_options(result_data, sh, df), required=False
             )
             for sh in result_data.shifts
             if sh.label in df.columns
@@ -439,10 +445,19 @@ def render_results() -> None:
                 mime="text/csv",
             )
             chart_df = fair_frame[
-                ["Resident", "Total", "Weekend", "Night Float"]
+                ["Resident", "Total", "Weekend"]
             ].set_index("Resident")
-            st.caption("Workload by resident (points)")
+            st.caption("Regular workload by resident (points)")
             st.bar_chart(chart_df, stack=False)
+            nf_duty = {
+                name: int(info.get("night_float", 0)) for name, info in points.items()
+                if info.get("night_float", 0)
+            }
+            if nf_duty:
+                st.caption(
+                    "Night-float duty (days, outside regular fairness): "
+                    + " · ".join(f"{p} {d}" for p, d in sorted(nf_duty.items()))
+                )
 
     with st.expander("Per-call detail (audit)", expanded=False):
         st.caption(

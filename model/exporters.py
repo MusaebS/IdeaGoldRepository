@@ -57,7 +57,6 @@ def build_fairness_frame(
     target_total = _resolved_target(df, "target_total", data.target_total) if df is not None else None
     target_total_map = _resolved_target(df, "target_total_map", data.target_total_map) if df is not None else None
     target_weekend = _resolved_target(df, "target_weekend", data.target_weekend) if df is not None else None
-    target_nf = _resolved_target(df, "target_night_float", data.target_night_float) if df is not None else None
     counts = calculate_label_counts(df, data) if df is not None else None
     pref_stats = preference_satisfaction(df, data) if df is not None else {}
 
@@ -75,7 +74,8 @@ def build_fairness_frame(
             "Role": role,
             "Total": info.get("total", 0.0),
             "Weekend": info.get("weekend", 0.0),
-            "Night Float": info.get("night_float", 0.0),
+            # NF duty is a day count (coverage overlay), outside regular fairness.
+            "NF duty (days)": int(info.get("night_float", 0.0)),
         }
         total_tgt = (target_total_map or {}).get(name, target_total)
         if total_tgt is not None:
@@ -84,9 +84,6 @@ def build_fairness_frame(
         if target_weekend and name in target_weekend:
             row["Weekend target"] = round(target_weekend[name], 1)
             row["Weekend dev"] = round(info.get("weekend", 0.0) - target_weekend[name], 1)
-        if target_nf and name in target_nf:
-            row["NF target"] = round(target_nf[name], 1)
-            row["NF dev"] = round(info.get("night_float", 0.0) - target_nf[name], 1)
         for label in labels:
             row[label] = info.get("labels", {}).get(label, 0.0)
             if counts is not None:
@@ -96,9 +93,8 @@ def build_fairness_frame(
             current = {
                 "total": info.get("total", 0.0),
                 "weekend": info.get("weekend", 0.0),
-                "night_float": info.get("night_float", 0.0),
             }
-            for col, dim in (("total", "total"), ("weekend", "weekend"), ("NF", "night_float")):
+            for col, dim in (("total", "total"), ("weekend", "weekend")):
                 before = float(prior_entry.get(dim, 0.0))
                 row[f"Prior {col}"] = round(before, 1)
                 row[f"Cumulative {col}"] = round(before + current[dim], 1)
