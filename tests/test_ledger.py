@@ -183,6 +183,87 @@ def test_credits_sum_to_zero_per_dimension():
         assert sum(v[dim] for v in adj.values()) == pytest.approx(0.0)
 
 
+def test_excused_credit_is_per_block_not_cumulative():
+    """A recurring excusal must not scale the credit by the running total.
+
+    The credit compensates *this block's* excused shortfall only, so a resident
+    who is excused every block gets the same credit no matter how large the
+    prior ledger has grown. (Scaling it by the cumulative pool made the recorded
+    ledger diverge — the resident doing the least work ended up recorded with
+    the most.)
+    """
+    from dataclasses import replace
+    from model.data_models import Perk
+    from model.ledger import block_adjustments
+
+    data = replace(_data(), perks=[Perk("B", 0.5)])
+    fresh = block_adjustments(None, data)
+    # A large accumulated history for the same recurring excusal must not
+    # inflate this block's credit.
+    huge_prior = {"A": {"total": 500.0, "weekend": 0.0},
+                  "B": {"total": 500.0, "weekend": 0.0}}
+    with_prior = block_adjustments(huge_prior, data)
+    assert with_prior["B"]["excused_total"] == pytest.approx(fresh["B"]["excused_total"])
+    assert with_prior["A"]["excused_total"] == pytest.approx(fresh["A"]["excused_total"])
+    assert fresh["B"]["excused_total"] == pytest.approx(1.0)  # 6 * (1/2 - 3/6)... bounded
+
+
+def test_recurring_excusal_ledger_stays_bounded_and_correct_direction():
+    """A resident on a standing half-load factor must not be recorded as the
+    heaviest worker: their cumulative total stays the lowest and the spread does
+    not blow up block over block (the pre-fix credit diverged the other way)."""
+    pytest.importorskip("ortools")
+    from datetime import timedelta
+    from dataclasses import replace
+    from model.optimiser import build_schedule
+
+    juniors = ["A", "B", "C", "D"]
+    ledger: dict = {}
+    ranges = []
+    for b in range(5):
+        start = date(2023, 1, 1) + timedelta(days=14 * b)
+        data = replace(
+            _data(),
+            start_date=start,
+            end_date=start + timedelta(days=13),
+            juniors=juniors,
+            group_factors={"half": 0.5},
+            resident_groups={"A": "half"},  # A permanently carries half load
+        )
+        df = build_schedule(data, env="test", ledger=ledger or None)
+        ledger = update_ledger(ledger, df, data)
+        totals = [ledger[p]["total"] for p in juniors]
+        ranges.append(max(totals) - min(totals))
+    # The half-load resident accumulates the *least*, never the most — the
+    # pre-fix cumulative credit inverted this, recording the under-worked
+    # resident as the heaviest. The spread also stays bounded (linear in the
+    # honest per-block gap) rather than blowing up block over block.
+    assert ledger["A"]["total"] == min(ledger[p]["total"] for p in juniors)
+    assert ledger["A"]["total"] < max(ledger[p]["total"] for p in juniors)
+    assert ranges[-1] <= 10  # per-block fix ~8; the cumulative runaway exceeds this
+
+
+def test_nf_duty_days_carried_forward_across_blocks():
+    """The informational NF-duty count accumulates instead of resetting."""
+    from dataclasses import replace
+
+    data = replace(
+        _data(),
+        shifts=[ShiftTemplate(label="NF", role="Junior", night_float=True,
+                              thu_weekend=False, points=2.0)],
+    )
+    # Two night-float overlay cells covered by A (column matches the shift label).
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 1), "NF": "A"},
+        {"Date": date(2023, 1, 2), "NF": "A"},
+    ])
+    df.attrs["nf_cells"] = {"2023-01-01": {"NF": "A"}, "2023-01-02": {"NF": "A"}}
+    prior = {"A": {"total": 0.0, "weekend": 0.0, "nf_days": 3}}
+    updated = update_ledger(prior, df, data)
+    assert updated["A"]["nf_days"] == 5  # 3 prior + 2 this block
+    assert updated["A"]["total"] == 0.0  # NF cells never add regular points
+
+
 def test_invariant_excused_shortfall_not_repaid_next_block():
     """The flagship guarantee: after a perk/group reduction, the saved ledger
 

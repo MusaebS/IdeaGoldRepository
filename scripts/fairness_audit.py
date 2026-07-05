@@ -366,6 +366,40 @@ def multi_block_ledger():
         FAILURES.append(("3-block ledger", [f"cumulative ranges {ranges}"]))
 
 
+def recurring_nf_ledger():
+    # Recurring excusal: two coverers split the night-float overlay every block.
+    # NF coverage records the coverer as an uncompensated absence, so the ledger
+    # must *not* let that recurring excusal diverge — the coverers (least regular
+    # work) must never end up recorded above the residents doing full loads.
+    juniors = [f"J{i}" for i in range(6)]
+    ledger: dict = {}
+    ranges = []
+    for block in range(4):
+        start = MON + timedelta(days=28 * block)
+        coverer = "J0" if block % 2 == 0 else "J1"
+        data = mk(
+            [sh("D"), sh("NF", 2.0, nf=True)], juniors, days=28, start=start, min_gap=1,
+            nf_juniors=["J0", "J1"],
+            nf_coverage={"NF": NightFloatCoverage("NF", weekdays=(0, 1, 2, 3, 4, 5, 6))},
+            nf_assignments=[NightFloatAssignment(coverer, start, start + timedelta(days=27), (), 1)],
+        )
+        df = build_schedule(data, env="dev", ledger=ledger or None)
+        ledger = update_ledger(ledger, df, data)
+        ranges.append(_spread(ledger[p]["total"] for p in juniors))
+    # The whole roster stays within a couple of points block over block. The
+    # pre-fix cumulative credit diverged here to a ~50-point spread (coverers
+    # recorded roughly double the residents doing full loads); a bounded range
+    # is the guard against that runaway returning.
+    bounded = all(r <= 3.0 for r in ranges)
+    print(
+        ("PASS" if bounded else "FAIL")
+        + f"  {'4-block recurring NF ledger':<38} cumulative ranges "
+        + " -> ".join(f"{r:.1f}" for r in ranges)
+    )
+    if not bounded:
+        FAILURES.append(("recurring NF ledger", [f"cumulative ranges {ranges}"]))
+
+
 def extreme_more_shifts_than_people():
     data = mk([sh("D"), sh("E"), sh("F")], ["A", "B"], days=10)
     report("2 people, 3 shifts/day (1 unfilled/day)", measure(solve(data), data),
@@ -415,7 +449,7 @@ def main() -> int:
         label_mix_unequal_points, features_leave_rotator, features_blackout,
         features_reduction, features_avoid_pair, features_preferences_neutral,
         features_caps_penalty, features_factors, overlay_night_float,
-        multi_block_ledger,
+        multi_block_ledger, recurring_nf_ledger,
         extreme_more_shifts_than_people, extreme_heavy_shift, extreme_min_gap,
     ):
         scenario()

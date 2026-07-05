@@ -88,11 +88,24 @@ def block_adjustments(prior, data: InputData) -> Dict[str, Dict[str, float]]:
     """Per-resident ledger adjustments for this block's configuration.
 
     Pure and schedule-free: the credits/debits are *target-side* quantities
-    (what the resident's share should have been vs. what it was reduced to),
-    so they depend only on the configuration and the prior ledger.
+    (what the resident's share should have been vs. what it was reduced to for
+    *this* block), so they depend only on the configuration. ``prior`` is
+    accepted for API stability but no longer used (see below).
 
     Returns ``{person: {"penalty": e, "excused_total": c, "excused_weekend": c}}``
     — all zero when nothing applies.
+
+    Credit is measured on **this block only**, not the cumulative pool. An
+    earlier version scaled the excused credit by the whole running total
+    (``block + Σ prior``); because that grows every block while the credit is
+    re-applied each block, a *recurring* excusal (a standing group factor or
+    perk, or repeatedly covering night float — which the overlay records as an
+    uncompensated absence) made the recorded ledger diverge without bound, so
+    the resident doing the *least* work ended up recorded with the *most*. A
+    per-block credit stays bounded and honest: the excused resident's record
+    tracks their genuinely lighter load instead of running away from it. For a
+    first block (``prior`` empty) the two are identical, so the one-time
+    excusal guarantee — and every exact-number test — is unchanged.
     """
     from .night_float import resolve_night_float  # local: avoids a module cycle
 
@@ -104,7 +117,6 @@ def block_adjustments(prior, data: InputData) -> Dict[str, Dict[str, float]]:
     n = len(participants)
     if n == 0:
         return out
-    prior = prior or {}
 
     for p, extra in (data.extra_points or {}).items():
         if p in out and extra > 0:
@@ -125,17 +137,13 @@ def block_adjustments(prior, data: InputData) -> Dict[str, Dict[str, float]]:
     extra_sum = sum(v["penalty"] for v in out.values())
     f = (p_tot - extra_sum) / p_tot if p_tot > 0 and 0 < extra_sum < p_tot else 1.0
 
-    def _cumulative(dim: str, pool) -> float:
-        block = {"total": p_tot, "weekend": p_wk}.get(dim, 0.0)
-        return block + sum(float((prior.get(p) or {}).get(dim, 0.0)) for p in pool)
-
     if weight_sum > 0:
-        c_tot = _cumulative("total", participants)
-        c_wk = _cumulative("weekend", participants)
         for p in participants:
+            # gap = this block's fair-share shortfall the excusal caused:
+            # an equal 1/n share minus the availability-weighted share.
             gap = 1.0 / n - weights.get(p, 0.0) / weight_sum
-            out[p]["excused_total"] = f * c_tot * gap
-            out[p]["excused_weekend"] = c_wk * gap
+            out[p]["excused_total"] = f * p_tot * gap
+            out[p]["excused_weekend"] = p_wk * gap
     return out
 
 
@@ -160,6 +168,10 @@ def update_ledger(
             entry["labels"] = {str(k): float(v) for k, v in vals["labels"].items()}
         if vals.get("label_counts"):
             entry["label_counts"] = {str(k): int(v) for k, v in vals["label_counts"].items()}
+        # Carry the informational night-float duty count forward; without this
+        # the cumulative NF-duty history was silently reset to the last block.
+        if vals.get("nf_days"):
+            entry["nf_days"] = int(vals["nf_days"])
         updated[person] = entry
     adjustments = (
         block_adjustments(prior, data)
