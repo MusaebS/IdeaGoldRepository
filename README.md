@@ -7,9 +7,9 @@ If `ortools` is missing, the stub solver marks all shifts as **Unfilled** and th
 The time limit for solving depends on the environment and problem size. Set the `ENV` variable to
 `dev`, `test`, or `prod` (default) for base limits of 10s, 1s or 60s; the code scales these based on the number of participants, days, and shift templates to keep small runs quick.
 Enable the **Test mode** checkbox in the app to load example shifts and participant names automatically.
-The solver supports fractional fairness targets via `InputData.target_total`, `target_label`, `target_weekend`, and `target_night_float`. It minimises the largest deviation from these targets before minimising smaller gaps and unfilled shifts. This keeps point totals balanced whenever possible.
+The solver supports fractional fairness targets via `InputData.target_total`, `target_label`, and `target_weekend`. It minimises the largest deviation from these targets before minimising smaller gaps and unfilled shifts. This keeps point totals balanced whenever possible.
 
-Night-float load is balanced as a first-class fairness dimension: the burdensome night shifts are spread evenly across the eligible pool (per role, availability-weighted for rotators) rather than only being balanced indirectly through total points. The fairness log and summary report each resident's night-float points, deviation, and min/max range.
+**Night float is a separate coverage overlay, not a balanced dimension.** It runs *before* the regular scheduler: the dates it covers are assigned to their night-float coverer and removed from regular demand, and each coverer is treated like an *uncompensated* leave for their block (blocked from regular shifts, reduced regular target, no future catch-up). See [Night float](#night-float-a-coverage-overlay) below. Night-float work carries no regular points by default, so it does not enter the total/weekend/per-label balance; the fairness log reports each coverer's night-float **duty days** as an informational figure outside the balance.
 
 If `target_total` or `target_weekend` are not provided, `build_schedule` calculates
 them automatically. It divides the total points and weekend points for the block
@@ -36,11 +36,11 @@ schedule = build_schedule(data)
 The results page includes a **Download Fairness Log** button. It is built to be a verification artifact so mistakes can't slip through:
 
 - a **health line** (slots filled / unfilled) and a **points checksum** (assigned + unfilled = available, flagged if they don't reconcile);
-- each resident's role, night-float / total / weekend points shown **with their target and deviation**, residents **sorted worst-deviation-first**, and anyone more than a point off their total target flagged `[OVER]` / `[UNDER]`;
+- each resident's role, total / weekend points shown **with their target and deviation** (plus their night-float **duty days** as an informational figure outside the balance), residents **sorted worst-deviation-first**, and anyone more than a point off their total target flagged `[OVER]` / `[UNDER]`;
 - a **Constraint violations** section (it runs `validate_schedule`, so a hand-edited roster's problems surface here too);
 - an explicit list of **unfilled slots**.
 
-A Fairness summary and a per-resident bar chart show the min/max/range in the UI, and the Excel/PDF "Fairness" sheet carries the same `Total dev` / `NF dev` columns from the same solver-resolved targets — so the on-screen view, the log, and the exports all agree. The schedule and fairness summary can also be exported as **CSV**, **Excel** (`.xlsx`, schedule + fairness sheets) and **PDF**.
+A Fairness summary and a per-resident bar chart show the min/max/range in the UI, and the Excel/PDF "Fairness" sheet carries the same `Total dev` column (plus an informational `NF duty (days)`) from the same solver-resolved targets — so the on-screen view, the log, and the exports all agree. The schedule and fairness summary can also be exported as **CSV**, **Excel** (`.xlsx`, schedule + fairness sheets) and **PDF**.
 
 ## Customising the results (cosmetic)
 
@@ -116,15 +116,55 @@ mistakes (a window outside the schedule dates, a rotator with no active days, a
 resident on leave for the whole block, or a leave outside that resident's rotator
 window) — so you catch them before solving rather than after.
 
-## Rest spacing and night-float blocks
+## Night float (a coverage overlay)
 
-`min_gap` keeps a resident's regular (non-night-float) shifts more than `min_gap`
-days apart. Night-float nights stay consecutive *within* a block, and a block also
-gets `min_gap` idle days before it starts and after it ends versus any other shift,
-so a resident is never scheduled straight off a night-float block. If the constraints
-can't be met, the app distinguishes a genuinely infeasible configuration (with
-diagnostic hints) from a solver timeout, and offers to retry with a relaxed `min_gap`
-or shorter night-float block.
+Night float is a dedicated coverage rotation — a stretch of nights one resident
+owns — not an on-call point balanced against everyone else. It is modelled as an
+**overlay that runs before the regular scheduler**, so it never distorts the
+regular point balance:
+
+1. **Eligibility.** Tick **Night-float eligible (overlay)** on a shift in the
+   shift editor (`ShiftTemplate.night_float`). This only makes the shift
+   *eligible* — a plain regular shift until you say which of its dates the
+   overlay actually covers.
+2. **Coverage pattern** (`nf_coverage`, ② *Night float*). Per eligible shift,
+   choose the weekdays (and one-off include/exclude dates) the overlay covers.
+   Uncovered dates stay ordinary regular shifts with their usual points,
+   weekend logic, eligibility and fairness. No pattern ⇒ the shift is scheduled
+   entirely as a regular shift.
+3. **Coverers** (`nf_assignments`, ② *Night float*). Assign an explicit period
+   to each covering resident (reusing the date-range editor) plus a configurable
+   **1–2 rest days** after the block. There is no auto-assignment.
+
+For each covered date with a coverer, the overlay:
+
+- assigns the coverer straight into the schedule and **removes that cell from
+  regular demand** — it carries no regular points and no fairness weight (unless
+  you flip **Count NF as regular points**, `count_nf_points`, off by default);
+- feeds the coverer's period **+ rest days to the regular scheduler as an
+  *uncompensated* leave** — so they are blocked from regular shifts during (and
+  just after) their block, their regular target drops for the absence, and the
+  ledger's no-catch-up policy never makes them repay the missed regular work.
+
+A covered date with **no** assigned coverer **falls back to regular scheduling**
+(a pre-solve advisory flags it). Because coverage is date-aware, the blackout
+"night before" rule also protects regular residents on an NF-eligible night's
+*uncovered* dates (`is_regular_night_call`). Overlay cells are marked in
+`df.attrs["nf_cells"]`, so fairness, validation, exports, and the manual-edit
+dropdowns all treat them as coverage, not regular assignments. Each coverer's
+**night-float duty days** are tracked separately (fairness log, table, exports,
+and the ledger's `nf_days`) as an informational cross-block record — outside the
+regular balance. The overlay lives in `model/night_float.py`
+(`resolve_night_float` → cells / coverage-gaps / rest leaves).
+
+## Rest spacing
+
+`min_gap` keeps a resident's regular shifts more than `min_gap` days apart.
+Night-float coverage is not a regular shift, so it is spaced by the overlay's own
+rest days (see [Night float](#night-float-a-coverage-overlay)) rather than by
+`min_gap`. If the constraints can't be met, the app distinguishes a genuinely
+infeasible configuration (with diagnostic hints) from a solver timeout, and offers
+to retry with a relaxed `min_gap`.
 
 ## Reproducibility
 
@@ -147,8 +187,8 @@ not penalised for the absence. Toggle it per leave in the app's Leaves editor.
 ## Carryover fairness (cumulative across blocks)
 
 Fairness can span multiple blocks. After generating a schedule, download the
-**fairness ledger** (each resident's accumulated total / weekend / night-float
-points); upload it before the next block and the optimiser balances *cumulative*
+**fairness ledger** (each resident's accumulated total / weekend points, plus an
+informational night-float duty-day count); upload it before the next block and the optimiser balances *cumulative*
 load — whoever carried extra last time gets lighter targets now. `build_schedule`
 takes an optional `ledger` argument; `model/ledger.py` handles save/load
 (`ledger_to_json` / `ledger_from_json`) and accumulation (`update_ledger`). A large
@@ -179,7 +219,7 @@ Load doesn't have to be equal:
 
 - **Seniority groups** (`group_factors` + `resident_groups`): define groups like
   R1/R2/R3/R4 with a load percentage — every R2 at 90% fairly carries ~10% fewer
-  points than an R1, across total, weekend, and night-float targets.
+  points than an R1, across the total and weekend targets.
 - **Perks** (`perks`): an individual load percentage for one resident, bounded to
   a date window or applied forever. Perks stack multiplicatively with the group
   factor, and only affect days inside the window.
@@ -232,8 +272,8 @@ of fair share** (0% = none of those shifts in the window) + a period. It is
 enforced as a hard cap that can never make the schedule infeasible.
 Per entry, choose what happens to the rest of their load *this* block:
 
-- **Work less now, repay later** (default): their total (and night-float)
-  targets drop by the reduced amount, others absorb it, and the whole
+- **Work less now, repay later** (default): their total target drops by the
+  reduced amount, others absorb it, and the whole
   shortfall is carried in the fairness ledger as debt — the next block's
   carryover targets make them repay it.
 - **Keep full share**: targets are untouched, so the solver compensates them
@@ -242,15 +282,14 @@ Per entry, choose what happens to the rest of their load *this* block:
 Either way — and unlike perks or group factors — the reduction is **never
 excused**: the ledger's no-catch-up policy issues no credit for it, so the
 deficit is always repaid through carryover. Caveat: repayment is tracked on
-the total / weekend / night-float dimensions, so a reduced label that is
-neither night-float nor weekend repays via total points (per-label carryover
-targets are future work).
+the total / weekend dimensions, so a reduced label that is not weekend repays
+via total points (per-label carryover targets are future work).
 
 ## Fairness table, per-call audit & ledger editor
 
 Beyond the text log, the results page shows a **fairness table**: per resident,
-call *counts* and points per shift type, total/weekend/night-float with targets
-and deviations, **prior + cumulative** columns when a carryover ledger is
+call *counts* and points per shift type, total/weekend with targets and
+deviations (plus an informational `NF duty (days)`), **prior + cumulative** columns when a carryover ledger is
 loaded (including cumulative per-shift-type call counts), a `Pref match`
 column, and a Notes column with the same annotations as the log — downloadable
 as CSV, and mirrored in the Excel/PDF Fairness sheet. A **Per-call detail
@@ -307,11 +346,13 @@ as a count even while locked. Both residents' log lines carry an
 
 ## Per-resident caps
 
-`InputData.max_total` and `InputData.max_nights` (maps of resident → points) put a
-hard ceiling on how much total / night-float load a resident can carry, configurable
+`InputData.max_total` (map of resident → points) puts a
+hard ceiling on how much total load a resident can carry, configurable
 in the app's "Per-resident caps" panel. A capped resident simply works less and the
 slack falls to `Unfilled`, so a cap never makes the schedule infeasible; the cap
-overrides fairness for that resident.
+overrides fairness for that resident. (`max_nights` is retained for config
+compatibility but has no effect now that night float is a coverage overlay
+outside the regular point system.)
 
 ## Extra points (mandatory penalties)
 
@@ -352,7 +393,7 @@ Two guarantees underpin the "is the result actually fair?" question:
   is genuinely impossible (caps, blackouts, eligibility, too few residents).
 - **Per-shift-type balance.** Equal *total* points is not enough if one
   resident works all the heavy nights and another only day shifts. On top of
-  total / weekend / night-float balance, each shift type's points are split
+  total / weekend balance, each shift type's points are split
   fairly among the residents eligible for it (the spec's per-label share), so
   the *mix* is even too — auto-enabled for departments up to
   `LABEL_TARGET_MAX_CELLS` (residents × days × shifts); very large rosters
@@ -399,6 +440,20 @@ CI runs ruff, mypy, and pytest on Python 3.11/3.12 — plus a stub-only job with
 no pandas/OR-Tools installed to guard the graceful-degradation path.
 
 ## Changelog
+- Night float reworked into a **separate coverage overlay** instead of a shift
+  type inside the regular scheduler. Shifts are marked *night-float-eligible*
+  with a per-shift coverage pattern (`nf_coverage`) and explicit coverer periods
+  (`nf_assignments`, +configurable rest days); covered cells are removed from
+  regular demand and carry no regular points (unless `count_nf_points`), while
+  each coverer's period is fed to the regular solve as an uncompensated leave
+  (no future catch-up). Covered dates without a coverer fall back to regular
+  scheduling. **Breaking:** night float is no longer a balanced fairness
+  dimension — `target_night_float`/`dev_night_float`, the NF-block/rest solver
+  constraints, and `max_nights` enforcement are gone (old configs/ledgers load
+  unchanged; NF fields become no-ops), and the ledger's `night_float` points
+  dimension is replaced by an informational `nf_days` duty-day count. New
+  `model/night_float.py` overlay resolver; `is_regular_night_call` makes the
+  blackout "night before" rule date-aware.
 - Fairness audit + two outcome fixes: the solver no longer leaves a fillable
   slot unfilled to shrink point deviation (coverage now dominates the fairness
   objective), and per-shift-type balance is enforced via auto per-label targets
