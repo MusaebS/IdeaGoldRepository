@@ -288,11 +288,12 @@ def _shift_cell_options(data, shift, df=None) -> list:
     appear in this column's overlay cells are added so their (non-editable)
     value stays a valid dropdown option.
     """
+    from model.night_float import nf_cells_from_attr
+
     pool = data.juniors if shift.role == "Junior" else data.seniors
     exempt = data.exempt_shifts or {}
     options = [p for p in pool if shift.label not in exempt.get(p, ())]
-    nf_cells = (getattr(df, "attrs", {}) or {}).get("nf_cells", {}) if df is not None else {}
-    for (_day, lbl), name in nf_cells.items():
+    for (_day, lbl), name in nf_cells_from_attr(df).items():
         if lbl == shift.label and name not in options:
             options.append(name)
     return options + ["Unfilled"]

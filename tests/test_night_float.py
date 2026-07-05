@@ -5,7 +5,7 @@ assigned to their NF coverer and removed from regular demand; uncovered dates
 stay ordinary regular shifts; a covered date with no coverer falls back to
 regular; and each NF assignment blocks its coverer from regular work (plus rest
 days) exactly like an *uncompensated* leave — reduced regular target, no future
-catch-up. NF carries no regular points unless ``count_nf_points`` is set.
+catch-up. NF never carries regular points.
 """
 import sys, os
 from datetime import date
@@ -32,7 +32,13 @@ from model.data_models import (
 )
 from model.fairness import calculate_label_counts, calculate_points
 from model.ledger import update_ledger
-from model.night_float import nf_duty_days, nf_leave_windows, resolve_night_float
+from model.night_float import (
+    nf_cells_from_attr,
+    nf_cells_to_attr,
+    nf_duty_days,
+    nf_leave_windows,
+    resolve_night_float,
+)
 from model.validation import config_warnings, validate_input, validate_schedule
 from model.weights import availability_weights
 
@@ -105,6 +111,30 @@ def test_is_regular_night_call_is_date_aware():
 
 # --- overlay resolver --------------------------------------------------------
 
+def test_coverer_only_covers_own_role():
+    # A junior with a blanket assignment (empty labels) covers only the junior
+    # NF shift — never the senior one. The senior NF shift, left uncovered, is a
+    # coverage gap that falls back to regular scheduling.
+    data = _data(
+        shifts=[
+            _nf_shift(label="JrNF", role="Junior"),
+            _nf_shift(label="SrNF", role="Senior"),
+        ],
+        juniors=["A"], seniors=["S"], nf_juniors=["A"], nf_seniors=["S"],
+        nf_coverage={
+            "JrNF": NightFloatCoverage("JrNF", weekdays=tuple(range(7))),
+            "SrNF": NightFloatCoverage("SrNF", weekdays=tuple(range(7))),
+        },
+        # A covers the whole block (empty labels = all of A's own-role NF shifts).
+        nf_assignments=[NightFloatAssignment("A", date(2023, 1, 2), date(2023, 1, 5), (), 0)],
+    )
+    nf_cells, gap_slots, _ = resolve_night_float(data)
+    assert set(nf_cells.values()) == {"A"}
+    assert all(lbl == "JrNF" for _d, lbl in nf_cells)   # never the senior shift
+    assert all(lbl == "SrNF" for _d, lbl in gap_slots)  # senior NF is a gap (no senior coverer)
+    assert gap_slots  # the senior shift really is uncovered
+
+
 def test_resolve_night_float_covered_gap_and_leaves():
     data = _data(
         end_date=date(2023, 1, 5),
@@ -121,6 +151,22 @@ def test_resolve_night_float_covered_gap_and_leaves():
     # The assignment becomes one uncompensated leave over its window (+0 rest).
     assert leaves == [Leave("A", date(2023, 1, 2), date(2023, 1, 3), False)]
     assert nf_duty_days(nf_cells) == {"A": 2}
+
+
+def test_nf_cells_attr_round_trip_is_serializable():
+    # df.attrs is serialized by pandas/Streamlit, which rejects tuple keys, so
+    # the overlay stores {date-iso: {label: name}} and reads it back to tuples.
+    cells = {(date(2023, 1, 2), "NF"): "A", (date(2023, 1, 3), "NF"): "B"}
+    attr = nf_cells_to_attr(cells)
+    assert attr == {"2023-01-02": {"NF": "A"}, "2023-01-03": {"NF": "B"}}
+    assert all(isinstance(k, str) for k in attr)  # JSON/Arrow-serializable keys
+
+    class _Frame:
+        attrs = {"nf_cells": attr}
+
+    assert nf_cells_from_attr(_Frame()) == {
+        ("2023-01-02", "NF"): "A", ("2023-01-03", "NF"): "B",
+    }
 
 
 def test_nf_leave_windows_add_rest_and_are_uncompensated():
@@ -159,10 +205,10 @@ def test_calculate_points_excludes_nf_cells_and_counts_duty_days():
         (date(2023, 1, 2), {"D": "B", "NF": "A"}),
         (date(2023, 1, 3), {"D": "B", "NF": "A"}),
     ])
-    df.attrs["nf_cells"] = {
-        (date(2023, 1, 2).isoformat(), "NF"): "A",
-        (date(2023, 1, 3).isoformat(), "NF"): "A",
-    }
+    df.attrs["nf_cells"] = nf_cells_to_attr({
+        (date(2023, 1, 2), "NF"): "A",
+        (date(2023, 1, 3), "NF"): "A",
+    })
     pts = calculate_points(df, data)
     # A's NF work carries no regular points; it is recorded as duty days.
     assert pts["A"]["total"] == 0.0
@@ -172,27 +218,6 @@ def test_calculate_points_excludes_nf_cells_and_counts_duty_days():
     counts = calculate_label_counts(df, data)
     assert counts["A"].get("NF", 0) == 0
     assert counts["B"]["D"] == 2
-
-
-def test_count_nf_points_folds_nf_into_regular_totals():
-    data = _data(
-        shifts=[_reg_shift(), _nf_shift()],
-        nf_coverage={"NF": _all_week()},
-        count_nf_points=True,
-    )
-    df = _covered_df([
-        (date(2023, 1, 2), {"D": "B", "NF": "A"}),
-        (date(2023, 1, 3), {"D": "B", "NF": "A"}),
-    ])
-    df.attrs["nf_cells"] = {
-        (date(2023, 1, 2).isoformat(), "NF"): "A",
-        (date(2023, 1, 3).isoformat(), "NF"): "A",
-    }
-    pts = calculate_points(df, data)
-    # With the toggle on, NF points count in the regular totals.
-    assert pts["A"]["total"] == 4.0           # two NF calls @ 2.0
-    assert pts["A"]["night_float"] == 2       # duty days still tracked
-    assert calculate_label_counts(df, data)["A"]["NF"] == 2
 
 
 # --- ledger: NF window is excused, never caught up ---------------------------
@@ -209,7 +234,7 @@ def test_nf_assignment_shortfall_is_excused_not_repaid():
     )
     days = [date(2023, 1, 2 + i) for i in range(4)]
     df = _covered_df([(d, {"D": "B", "NF": "A"}) for d in days])
-    df.attrs["nf_cells"] = {(d.isoformat(), "NF"): "A" for d in days}
+    df.attrs["nf_cells"] = nf_cells_to_attr({(d, "NF"): "A" for d in days})
 
     ledger = update_ledger({}, df, data)
     # Regular pool is the D shift only (4 points); B earns them all, A earns
@@ -246,6 +271,16 @@ def test_validate_input_night_float_rules():
     assert any("'B' has a night-float assignment but is not marked" in i for i in issues)
     assert any("ends (2023-01-02) before it starts" in i for i in issues)
     assert any("rest days for 'B' cannot be negative" in i for i in issues)
+
+    # A coverer cannot be assigned a night-float shift of a different role.
+    issues = validate_input(_data(
+        shifts=[_nf_shift(label="JrNF", role="Junior"),
+                _nf_shift(label="SrNF", role="Senior")],
+        juniors=["A"], seniors=["S"], nf_juniors=["A"], nf_seniors=["S"],
+        nf_coverage={"SrNF": NightFloatCoverage("SrNF", weekdays=(0,))},
+        nf_assignments=[NightFloatAssignment("A", date(2023, 1, 2), date(2023, 1, 3), ("SrNF",), 0)],
+    ))
+    assert any("'A' (Junior) names 'SrNF', a Senior night-float shift" in i for i in issues)
 
     # A well-formed overlay validates clean.
     ok = _data(
@@ -324,7 +359,7 @@ def test_uncovered_dates_are_regular_shifts():
         nf_assignments=[NightFloatAssignment("A", date(2023, 1, 7), date(2023, 1, 8), (), 0)],
     )
     df = build_schedule(data, env="test")
-    nf_cells = df.attrs["nf_cells"]
+    nf_cells = nf_cells_from_attr(df)
     assert set(nf_cells) == {
         (date(2023, 1, 7).isoformat(), "NF"),
         (date(2023, 1, 8).isoformat(), "NF"),
@@ -356,7 +391,7 @@ def test_covered_gap_falls_back_to_regular():
         nf_assignments=[NightFloatAssignment("A", date(2023, 1, 2), date(2023, 1, 3), (), 0)],
     )
     df = build_schedule(data, env="test")
-    nf_cells = df.attrs["nf_cells"]
+    nf_cells = nf_cells_from_attr(df)
     assert set(nf_cells) == {
         (date(2023, 1, 2).isoformat(), "NF"),
         (date(2023, 1, 3).isoformat(), "NF"),

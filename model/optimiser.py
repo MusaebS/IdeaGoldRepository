@@ -138,7 +138,12 @@ from .data_models import (
     normalized_leaves,
     normalized_rotators,
 )
-from .night_float import nf_leave_windows, resolve_night_float
+from .night_float import (
+    nf_cells_from_attr,
+    nf_cells_to_attr,
+    nf_leave_windows,
+    resolve_night_float,
+)
 from .points import POINT_SCALE, SlotPoints, block_days, classify_slot, scaled, slot_points
 from .reductions import eligible_for_shift, reduction_caps
 from .utils import weekend_holiday_dates
@@ -721,9 +726,9 @@ class SchedulerSolver:
             rows.append(row)
         df = pd.DataFrame(rows)
         try:
-            df.attrs["nf_cells"] = {
-                (d.isoformat(), lbl): name for (d, lbl), name in self.nf_cells.items()
-            }
+            # Stored as {date-iso: {label: name}} so pandas/Streamlit can
+            # serialize df.attrs (tuple keys are rejected by Arrow).
+            df.attrs["nf_cells"] = nf_cells_to_attr(self.nf_cells)
         except (AttributeError, TypeError):  # pragma: no cover - stub frames
             pass
         # Only a real solver response carries a meaningful status / wall time;
@@ -1084,7 +1089,7 @@ def respects_min_gap(df: pd.DataFrame, gap: int, shifts=None) -> bool:
     """
     if gap <= 0:
         return True
-    nf_cells = getattr(df, "attrs", {}).get("nf_cells", {}) if hasattr(df, "attrs") else {}
+    nf_cells = nf_cells_from_attr(df)
     records = df.to_dict("records")
     if hasattr(df, "columns"):
         # Every column except the date/day labels holds resident names. Do not

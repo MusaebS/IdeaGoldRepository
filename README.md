@@ -139,8 +139,7 @@ regular point balance:
 For each covered date with a coverer, the overlay:
 
 - assigns the coverer straight into the schedule and **removes that cell from
-  regular demand** — it carries no regular points and no fairness weight (unless
-  you flip **Count NF as regular points**, `count_nf_points`, off by default);
+  regular demand** — it carries no regular points and no fairness weight;
 - feeds the coverer's period **+ rest days to the regular scheduler as an
   *uncompensated* leave** — so they are blocked from regular shifts during (and
   just after) their block, their regular target drops for the absence, and the
@@ -444,7 +443,7 @@ no pandas/OR-Tools installed to guard the graceful-degradation path.
   type inside the regular scheduler. Shifts are marked *night-float-eligible*
   with a per-shift coverage pattern (`nf_coverage`) and explicit coverer periods
   (`nf_assignments`, +configurable rest days); covered cells are removed from
-  regular demand and carry no regular points (unless `count_nf_points`), while
+  regular demand and carry no regular points, while
   each coverer's period is fed to the regular solve as an uncompensated leave
   (no future catch-up). Covered dates without a coverer fall back to regular
   scheduling. **Breaking:** night float is no longer a balanced fairness
@@ -453,7 +452,13 @@ no pandas/OR-Tools installed to guard the graceful-degradation path.
   unchanged; NF fields become no-ops), and the ledger's `night_float` points
   dimension is replaced by an informational `nf_days` duty-day count. New
   `model/night_float.py` overlay resolver; `is_regular_night_call` makes the
-  blackout "night before" rule date-aware.
+  blackout "night before" rule date-aware. A coverer only ever covers their own
+  role's NF shifts (a junior is never written onto a senior night-float shift);
+  the overlay cells ride on `df.attrs` as a serializable `{date-iso: {label:
+  name}}` map (no more tuple-key serialization warnings); night-float
+  eligibility is one roster picker (role taken from the roster); and the option
+  to count NF in the regular point system was removed. Obsolete UI for the
+  retired NF-block-length / max-nights concepts is gone.
 - Fairness audit + two outcome fixes: the solver no longer leaves a fillable
   slot unfilled to shrink point deviation (coverage now dominates the fairness
   objective), and per-shift-type balance is enforced via auto per-label targets

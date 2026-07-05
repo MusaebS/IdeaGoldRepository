@@ -17,7 +17,7 @@ from model.ledger import ledger_from_json, ledger_to_json, ledger_to_rows, rows_
 from ui.state import Keys
 
 _EDITOR_KEY = "ledgrid_editor"
-_COLUMNS = ["Resident", "Total", "Weekend", "Night float"]
+_COLUMNS = ["Resident", "Total", "Weekend"]
 
 
 def render_ledger_panel(roster: list) -> dict | None:
@@ -70,7 +70,6 @@ def render_ledger_panel(roster: list) -> dict | None:
             "Resident": st.column_config.TextColumn("Resident", required=True),
             "Total": st.column_config.NumberColumn("Total", format="%.1f"),
             "Weekend": st.column_config.NumberColumn("Weekend", format="%.1f"),
-            "Night float": st.column_config.NumberColumn("Night float", format="%.1f"),
         },
     )
     edited_rows = edited.to_dict("records")

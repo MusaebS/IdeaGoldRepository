@@ -20,7 +20,7 @@ from .data_models import (
     normalized_perks,
     normalized_reductions,
 )
-from .night_float import resolve_night_float
+from .night_float import nf_cells_from_attr, resolve_night_float
 from .optimiser import respects_min_gap
 from .points import classify_slot
 from .reductions import reduction_caps
@@ -699,7 +699,11 @@ def validate_input(data: InputData) -> List[str]:
                     f"{wd} (expected 0=Mon .. 6=Sun)."
                 )
     nf_pool = set(data.nf_juniors) | set(data.nf_seniors)
+    nf_label_role = {s.label: s.role for s in data.shifts if s.night_float}
     for a in normalized_nf_assignments(data.nf_assignments, default_rest=data.nf_rest_days):
+        coverer_role = (
+            "Junior" if a.name in juniors else "Senior" if a.name in seniors else None
+        )
         if a.name not in roster:
             issues.append(f"Night-float assignment references unknown resident '{a.name}'.")
         elif a.name not in nf_pool:
@@ -719,6 +723,12 @@ def validate_input(data: InputData) -> List[str]:
                 issues.append(
                     f"Night-float assignment for '{a.name}' names '{label}', which "
                     "is not a night-float-eligible shift."
+                )
+            elif coverer_role is not None and nf_label_role.get(label) != coverer_role:
+                issues.append(
+                    f"Night-float assignment for '{a.name}' ({coverer_role}) names "
+                    f"'{label}', a {nf_label_role[label]} night-float shift; a "
+                    "coverer can only cover their own role's shifts."
                 )
 
     return issues
@@ -743,7 +753,7 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
     night_before = blackout_night_before_dates(data.blackouts, data.named_groups)
     # Night-float-covered cells are the overlay, not regular assignments — the
     # regular rules below don't apply to them.
-    nf_cell_keys = set((getattr(df, "attrs", {}) or {}).get("nf_cells", {}) or {})
+    nf_cell_keys = set(nf_cells_from_attr(df))
 
     for row in df.to_dict("records"):
         day = row.get("Date")

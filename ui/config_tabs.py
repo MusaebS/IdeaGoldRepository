@@ -77,11 +77,6 @@ def _active_config_maps() -> dict:
         for p, v in st.session_state[Keys.CAPS].items()
         if p in active_people and v.get("total")
     }
-    max_nights = {
-        p: v["nights"]
-        for p, v in st.session_state[Keys.CAPS].items()
-        if p in active_people and v.get("nights")
-    }
     extra_points = {
         p: v
         for p, v in st.session_state[Keys.EXTRA_POINTS].items()
@@ -172,7 +167,6 @@ def _active_config_maps() -> dict:
         nf_assignments.append(a._replace(labels=keep_labels))
     return {
         "max_total": max_total or None,
-        "max_nights": max_nights or None,
         "extra_points": extra_points or None,
         "weekday_points": weekday_points or None,
         "holidays": holidays or None,
@@ -188,7 +182,6 @@ def _active_config_maps() -> dict:
         "avoid_pairs": avoid_pairs or None,
         "nf_coverage": nf_coverage or None,
         "nf_assignments": nf_assignments or None,
-        "count_nf_points": bool(st.session_state[Keys.NF_COUNT_POINTS]),
         "nf_rest_days": int(st.session_state[Keys.NF_REST_DAYS]),
     }
 
@@ -322,18 +315,14 @@ def render_config_tabs() -> tuple:
         with rc[0]:
             min_gap = st.slider("Minimum gap (rest days between shifts)", 0, 7, 1)
         with rc[1]:
-            nf_block_len = st.number_input("Night-float block length", 1, 7, 5)
-        oc = st.columns(2)
-        with oc[0]:
             seed = st.number_input(
                 "Random seed", 0, 1_000_000, 0, 1,
                 help="Same seed reproduces the same schedule when the solver finishes.",
             )
-        with oc[1]:
-            weekend_labels = st.multiselect(
-                "Weekend days", WEEKDAY_LABELS, default=["Sat", "Sun"],
-                help="Days that count as weekend for fairness (a shift's 'Thu' flag also adds Thursday).",
-            )
+        weekend_labels = st.multiselect(
+            "Weekend days", WEEKDAY_LABELS, default=["Sat", "Sun"],
+            help="Days that count as weekend for fairness (a shift's 'Thu' flag also adds Thursday).",
+        )
         weekend_days = [WEEKDAY_LABELS.index(name) for name in weekend_labels]
 
         st.divider()
@@ -364,7 +353,7 @@ def render_config_tabs() -> tuple:
         st.subheader("Night float")
         night_float_editor(
             people,
-            [s.label for s in st.session_state[Keys.SHIFTS] if s.night_float],
+            {s.label: s.role for s in st.session_state[Keys.SHIFTS] if s.night_float},
             default_start=start_date, default_end=end_date,
         )
         st.divider()
@@ -412,7 +401,6 @@ def render_config_tabs() -> tuple:
         leaves=st.session_state[Keys.LEAVES],
         rotators=st.session_state[Keys.ROTATORS],
         min_gap=min_gap,
-        nf_block_length=nf_block_len,
         seed=int(seed),
         weekend_days=weekend_days,
         **_active_config_maps(),
@@ -531,24 +519,14 @@ def render_generate_and_solve(session_config, uploaded_config, carryover_ledger)
             df = build_schedule(data, env=env, ledger=carryover_ledger)
     except RuntimeError as exc:
         st.error(str(exc))
-        st.caption("No feasible schedule — relax a constraint and try again:")
-        rcols = st.columns(2)
-        if data.min_gap > 0 and rcols[0].button(
-            f"Retry with min_gap {data.min_gap - 1}"
-        ):
-            st.session_state[Keys.RETRY_CONFIG] = (
-                replace(data, min_gap=data.min_gap - 1),
-                f"Relaxed minimum gap to {data.min_gap - 1} to find a feasible schedule.",
-            )
-            st.rerun()
-        if data.nf_block_length > 1 and rcols[1].button(
-            f"Retry with NF block length {data.nf_block_length - 1}"
-        ):
-            st.session_state[Keys.RETRY_CONFIG] = (
-                replace(data, nf_block_length=data.nf_block_length - 1),
-                f"Relaxed NF block length to {data.nf_block_length - 1} to find a feasible schedule.",
-            )
-            st.rerun()
+        if data.min_gap > 0:
+            st.caption("No feasible schedule — relax a constraint and try again:")
+            if st.button(f"Retry with min_gap {data.min_gap - 1}"):
+                st.session_state[Keys.RETRY_CONFIG] = (
+                    replace(data, min_gap=data.min_gap - 1),
+                    f"Relaxed minimum gap to {data.min_gap - 1} to find a feasible schedule.",
+                )
+                st.rerun()
     except Exception as exc:
         st.error(str(exc))
 

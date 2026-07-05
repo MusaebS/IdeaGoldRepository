@@ -368,10 +368,9 @@ class InputData:
     # Covered slots are removed from regular demand; the coverers are blocked
     # in the regular scheduler (like uncompensated leave) for the period plus
     # a rest buffer. NF is deliberately outside the regular point/fairness
-    # system — count_nf_points optionally counts NF work as regular points.
+    # system and never counts toward regular points.
     nf_coverage: Dict[str, NightFloatCoverage] | None = None
     nf_assignments: Sequence[NightFloatAssignment | Tuple] | None = None
-    count_nf_points: bool = False
     nf_rest_days: int = 1
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None

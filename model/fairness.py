@@ -37,8 +37,7 @@ class ResidentPoints(TypedDict):
     ``total`` / ``weekend`` / ``labels`` are *regular* points. Night-float work
     is a separate coverage overlay outside the regular point system, so
     ``night_float`` here is an informational **duty-day count** (how many NF
-    cells the resident covered), not points — unless ``count_nf_points`` is set,
-    in which case NF cells also add their points to the regular totals.
+    cells the resident covered), never regular points.
     """
 
     total: float
@@ -53,18 +52,18 @@ def _empty_points() -> ResidentPoints:
 
 def _nf_cell_keys(df) -> set:
     """(date-iso, label) cells covered by the night-float overlay, from attrs."""
-    attrs = getattr(df, "attrs", {}) or {}
-    return set(attrs.get("nf_cells", {}) or {})
+    from .night_float import nf_cells_from_attr
+
+    return set(nf_cells_from_attr(df))
 
 
 def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, ResidentPoints]:
-    """Per-resident regular points (NF-covered cells excluded unless configured)."""
+    """Per-resident regular points; night-float-covered cells are excluded."""
     summary: Dict[str, ResidentPoints] = {
         name: _empty_points() for name in data.juniors + data.seniors
     }
     weekend_dates = weekend_holiday_dates(data)
     nf_cells = _nf_cell_keys(df)
-    count_nf = bool(getattr(data, "count_nf_points", False))
     for row in df.to_dict("records"):
         day = row.get("Date")
         day_key = day.isoformat() if hasattr(day, "isoformat") else day
@@ -74,11 +73,10 @@ def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, ResidentPoi
                 continue
             info = summary.setdefault(person, _empty_points())
             if (day_key, sh.label) in nf_cells:
-                # Night-float overlay cell: count the duty day; only add points
-                # when NF is explicitly counted in the regular system.
+                # Night-float overlay cell: outside the regular point system;
+                # record the duty day and move on (no regular points).
                 info["night_float"] += 1
-                if not count_nf:
-                    continue
+                continue
             # Shared classification (model.points) — the same source the solver
             # optimises against, so reporting can never drift from it.
             slot = classify_slot(day, sh, data, weekend_dates)
@@ -92,14 +90,13 @@ def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, ResidentPoi
 def calculate_label_counts(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, int]]:
     """Number of *regular* calls per shift label per resident (counts, not points).
 
-    Night-float-covered cells are excluded (they are the coverage overlay, not
-    regular calls) unless ``count_nf_points`` folds NF into the regular system.
+    Night-float-covered cells are excluded — they are the coverage overlay, not
+    regular calls.
     """
     counts: Dict[str, Dict[str, int]] = {
         name: {} for name in data.juniors + data.seniors
     }
     nf_cells = _nf_cell_keys(df)
-    count_nf = bool(getattr(data, "count_nf_points", False))
     for row in df.to_dict("records"):
         day = row.get("Date")
         day_key = day.isoformat() if hasattr(day, "isoformat") else day
@@ -107,7 +104,7 @@ def calculate_label_counts(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[
             person = row.get(sh.label)
             if person in (None, "Unfilled"):
                 continue
-            if (day_key, sh.label) in nf_cells and not count_nf:
+            if (day_key, sh.label) in nf_cells:
                 continue
             per = counts.setdefault(person, {})
             per[sh.label] = per.get(sh.label, 0) + 1
@@ -304,11 +301,8 @@ def format_fairness_log(
     shift_by_label = {s.label: s for s in data.shifts}
     labels = list(shift_by_label)
     nf_cells = _nf_cell_keys(df)
-    count_nf = bool(getattr(data, "count_nf_points", False))
 
     def _is_nf_cell(day, label) -> bool:
-        if count_nf:
-            return False  # NF counted in the regular system this run
         key = day.isoformat() if hasattr(day, "isoformat") else day
         return (key, label) in nf_cells
 
