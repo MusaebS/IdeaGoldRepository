@@ -32,11 +32,18 @@ __all__ = [
 
 
 class ResidentPoints(TypedDict):
-    """Per-resident point summary produced by :func:`calculate_points`."""
+    """Per-resident summary produced by :func:`calculate_points`.
+
+    ``total`` / ``weekend`` / ``labels`` are *regular* points. Night-float work
+    is a separate coverage overlay outside the regular point system, so
+    ``night_float`` here is an informational **duty-day count** (how many NF
+    cells the resident covered), not points — unless ``count_nf_points`` is set,
+    in which case NF cells also add their points to the regular totals.
+    """
 
     total: float
     weekend: float
-    night_float: float
+    night_float: float  # NF duty *days* (informational), not regular points
     labels: Dict[str, float]
 
 
@@ -44,40 +51,63 @@ def _empty_points() -> ResidentPoints:
     return {"total": 0.0, "weekend": 0.0, "labels": {}, "night_float": 0.0}
 
 
+def _nf_cell_keys(df) -> set:
+    """(date-iso, label) cells covered by the night-float overlay, from attrs."""
+    attrs = getattr(df, "attrs", {}) or {}
+    return set(attrs.get("nf_cells", {}) or {})
+
+
 def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, ResidentPoints]:
-    """Return mapping of resident to total and weekend points per label."""
+    """Per-resident regular points (NF-covered cells excluded unless configured)."""
     summary: Dict[str, ResidentPoints] = {
         name: _empty_points() for name in data.juniors + data.seniors
     }
     weekend_dates = weekend_holiday_dates(data)
+    nf_cells = _nf_cell_keys(df)
+    count_nf = bool(getattr(data, "count_nf_points", False))
     for row in df.to_dict("records"):
         day = row.get("Date")
+        day_key = day.isoformat() if hasattr(day, "isoformat") else day
         for sh in data.shifts:
             person = row.get(sh.label)
             if person in (None, "Unfilled"):
                 continue
+            info = summary.setdefault(person, _empty_points())
+            if (day_key, sh.label) in nf_cells:
+                # Night-float overlay cell: count the duty day; only add points
+                # when NF is explicitly counted in the regular system.
+                info["night_float"] += 1
+                if not count_nf:
+                    continue
             # Shared classification (model.points) — the same source the solver
             # optimises against, so reporting can never drift from it.
             slot = classify_slot(day, sh, data, weekend_dates)
-            info = summary.setdefault(person, _empty_points())
             info["total"] += slot.points
             info["labels"][sh.label] = info["labels"].get(sh.label, 0.0) + slot.points
-            if slot.night_float:
-                info["night_float"] += slot.points
             if slot.weekend:
                 info["weekend"] += slot.points
     return summary
 
 
 def calculate_label_counts(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[str, int]]:
-    """Number of calls per shift label per resident (counts, not points)."""
+    """Number of *regular* calls per shift label per resident (counts, not points).
+
+    Night-float-covered cells are excluded (they are the coverage overlay, not
+    regular calls) unless ``count_nf_points`` folds NF into the regular system.
+    """
     counts: Dict[str, Dict[str, int]] = {
         name: {} for name in data.juniors + data.seniors
     }
+    nf_cells = _nf_cell_keys(df)
+    count_nf = bool(getattr(data, "count_nf_points", False))
     for row in df.to_dict("records"):
+        day = row.get("Date")
+        day_key = day.isoformat() if hasattr(day, "isoformat") else day
         for sh in data.shifts:
             person = row.get(sh.label)
             if person in (None, "Unfilled"):
+                continue
+            if (day_key, sh.label) in nf_cells and not count_nf:
                 continue
             per = counts.setdefault(person, {})
             per[sh.label] = per.get(sh.label, 0) + 1
@@ -138,12 +168,11 @@ def fairness_range_lines(points: Dict[str, ResidentPoints]) -> List[str]:
             f"Weekend points min {wk_min:.1f}, max {wk_max:.1f}, range {wk_max - wk_min:.1f}"
         )
 
-    nf_totals = [v.get("night_float", 0.0) for v in points.values()]
-    if any(nf_totals):  # only report when night-float shifts are in play
-        nf_min = min(nf_totals)
-        nf_max = max(nf_totals)
+    nf_days = [v.get("night_float", 0.0) for v in points.values()]
+    if any(nf_days):  # NF duty days (informational — outside regular fairness)
         lines.append(
-            f"Night-float points min {nf_min:.1f}, max {nf_max:.1f}, range {nf_max - nf_min:.1f}"
+            f"Night-float duty days min {min(nf_days):.0f}, max {max(nf_days):.0f} "
+            "(outside regular fairness)"
         )
 
     return lines
@@ -270,28 +299,41 @@ def format_fairness_log(
     target_total = _resolved_target(df, "target_total", data.target_total)
     target_total_map = _resolved_target(df, "target_total_map", data.target_total_map)
     target_weekend = _resolved_target(df, "target_weekend", data.target_weekend)
-    target_nf = _resolved_target(df, "target_night_float", data.target_night_float)
 
     records = df.to_dict("records")
     shift_by_label = {s.label: s for s in data.shifts}
     labels = list(shift_by_label)
+    nf_cells = _nf_cell_keys(df)
+    count_nf = bool(getattr(data, "count_nf_points", False))
+
+    def _is_nf_cell(day, label) -> bool:
+        if count_nf:
+            return False  # NF counted in the regular system this run
+        key = day.isoformat() if hasattr(day, "isoformat") else day
+        return (key, label) in nf_cells
+
     unfilled = [
         (row.get("Date"), label)
         for row in records
         for label in labels
         if row.get(label) in (None, "Unfilled")
     ]
-    total_slots = len(records) * len(labels)
+    nf_covered = sum(
+        1 for row in records for label in labels if _is_nf_cell(row.get("Date"), label)
+    )
+    total_slots = len(records) * len(labels) - nf_covered  # regular demand only
     filled = total_slots - len(unfilled)
 
-    # Checksum: assigned + unfilled points must equal the points available. Uses
-    # effective (weekday/holiday-adjusted) points so it still reconciles.
+    # Checksum over *regular* demand: assigned + unfilled = available (NF-covered
+    # cells are the overlay, outside the regular point system).
     assigned_pts = sum(info["total"] for info in pts.values())
     unfilled_pts = sum(
         effective_points(day, shift_by_label[label], data) for day, label in unfilled
     )
     available_pts = sum(
-        effective_points(row.get("Date"), sh, data) for row in records for sh in data.shifts
+        effective_points(row.get("Date"), sh, data)
+        for row in records for sh in data.shifts
+        if not _is_nf_cell(row.get("Date"), sh.label)
     )
 
     def _person_total_target(person):
@@ -313,11 +355,9 @@ def format_fairness_log(
     for person in sorted(pts, key=lambda p: (-abs(_total_dev(p) or 0.0), p)):
         info = pts[person]
         role = "Senior" if person in data.seniors else "Junior"
-        nf = info.get("night_float", 0.0)
-        line = f"{person} ({role}, NF {nf:.1f}"
-        if target_nf and person in target_nf:
-            line += f" (target {target_nf[person]:.1f}, dev {nf - target_nf[person]:+.1f})"
-        line += f"): total {info['total']:.1f}"
+        nf_days = int(info.get("night_float", 0.0))
+        nf_note = f", NF duty {nf_days}d" if nf_days else ""
+        line = f"{person} ({role}{nf_note}): total {info['total']:.1f}"
         total_flag = ""
         tgt = _person_total_target(person)
         if tgt is not None:
@@ -402,15 +442,9 @@ def schedule_quality(
 
 
 def _eligible_pool(data: InputData, shift: ShiftTemplate) -> set:
-    if shift.role == "Junior":
-        pool = set(data.juniors)
-        if shift.night_float:
-            pool &= set(data.nf_juniors)
-    else:
-        pool = set(data.seniors)
-        if shift.night_float:
-            pool &= set(data.nf_seniors)
-    return pool
+    # Regular eligibility is role-based; NF pools no longer gate regular shifts
+    # (a night-float-eligible shift on an uncovered date is an ordinary shift).
+    return set(data.juniors) if shift.role == "Junior" else set(data.seniors)
 
 
 def assignment_rationale(
@@ -441,14 +475,13 @@ def assignment_rationale(
             return [f"No resident is eligible for '{label}' ({shift.role}{nf_note})."]
         return [
             f"'{label}' is unfilled on {day}: every eligible resident was "
-            "unavailable (leave, rotator window, min-gap spacing or NF-block "
-            "rules) or assigning one would have worsened fairness."
+            "unavailable (leave, rotator window, night-float period or min-gap "
+            "spacing) or assigning one would have worsened fairness."
         ]
 
     pts = points if points is not None else calculate_points(df, data)
     role = "Senior" if person in set(data.seniors) else "Junior"
-    nf_elig = " (night-float eligible)" if shift.night_float else ""
-    lines = [f"{person} is a {role} eligible for '{label}'{nf_elig}."]
+    lines = [f"{person} is a {role} eligible for '{label}'."]
 
     totals = {p: v["total"] for p, v in pts.items()}
     if person in totals:

@@ -8,12 +8,16 @@ from .data_models import (
     Blackout,
     Leave,
     LoadReduction,
+    NightFloatAssignment,
+    NightFloatCoverage,
     Perk,
     RotatorWindow,
     ShiftTemplate,
     InputData,
     normalized_blackouts,
     normalized_leaves,
+    normalized_nf_assignments,
+    normalized_nf_coverage,
     normalized_perks,
     normalized_reductions,
     normalized_rotators,
@@ -150,6 +154,26 @@ def input_data_to_json(data: InputData, display: dict | None = None) -> str:
             if data.avoid_pairs
             else None
         ),
+        "nf_coverage": (
+            [
+                [c.label, list(c.weekdays),
+                 [d.isoformat() for d in c.include_dates],
+                 [d.isoformat() for d in c.exclude_dates]]
+                for c in normalized_nf_coverage(data.nf_coverage)
+            ]
+            if data.nf_coverage
+            else None
+        ),
+        "nf_assignments": (
+            [
+                [a.name, a.start.isoformat(), a.end.isoformat(), list(a.labels), a.rest_days]
+                for a in normalized_nf_assignments(data.nf_assignments, default_rest=data.nf_rest_days)
+            ]
+            if data.nf_assignments
+            else None
+        ),
+        "count_nf_points": data.count_nf_points or None,
+        "nf_rest_days": data.nf_rest_days,
     }
     if display:
         payload["display"] = display
@@ -336,4 +360,33 @@ def input_data_from_json(text: str) -> InputData:
             if raw.get("avoid_pairs")
             else None
         ),
+        nf_coverage=(
+            {
+                str(entry[0]): NightFloatCoverage(
+                    str(entry[0]),
+                    tuple(int(w) for w in entry[1] or ()),
+                    tuple(date.fromisoformat(d) for d in (entry[2] if len(entry) > 2 else []) or []),
+                    tuple(date.fromisoformat(d) for d in (entry[3] if len(entry) > 3 else []) or []),
+                )
+                for entry in raw["nf_coverage"]
+            }
+            if raw.get("nf_coverage")
+            else None
+        ),
+        nf_assignments=(
+            [
+                NightFloatAssignment(
+                    str(entry[0]),
+                    date.fromisoformat(entry[1]),
+                    date.fromisoformat(entry[2]),
+                    tuple(str(lbl) for lbl in (entry[3] if len(entry) > 3 else []) or []),
+                    int(entry[4]) if len(entry) > 4 else int(raw.get("nf_rest_days", 1)),
+                )
+                for entry in raw["nf_assignments"]
+            ]
+            if raw.get("nf_assignments")
+            else None
+        ),
+        count_nf_points=bool(raw.get("count_nf_points", False)),
+        nf_rest_days=int(raw.get("nf_rest_days", 1)),
     )

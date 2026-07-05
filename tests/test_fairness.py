@@ -90,8 +90,8 @@ def test_format_fairness_log():
     expected_lines = [
         "Schedule health: 4/4 slots filled (0 unfilled).",
         "Points: 6.0 assigned + 0.0 unfilled = 6.0 available",
-        "Alice (Junior, NF 0.0): total 3.0 (target 3.0, dev +0.0), weekend 3.0, D 1.0, N 2.0",
-        "Bob (Junior, NF 0.0): total 3.0 (target 3.0, dev +0.0), weekend 3.0, D 1.0, N 2.0",
+        "Alice (Junior): total 3.0 (target 3.0, dev +0.0), weekend 3.0, D 1.0, N 2.0",
+        "Bob (Junior): total 3.0 (target 3.0, dev +0.0), weekend 3.0, D 1.0, N 2.0",
         "Total points min 3.0, max 3.0, range 0.0",
         "Weekend points min 3.0, max 3.0, range 0.0",
     ]
@@ -206,45 +206,22 @@ def test_calculate_points_uses_configured_weekend():
     assert calculate_points(df, fri_sat)["A"]["weekend"] == 2.0  # Friday + Saturday
 
 
-def test_fairness_range_lines_includes_nightfloat():
+def test_fairness_range_lines_report_nightfloat_duty_days():
+    # night_float now holds an informational NF duty-day count, not points.
     from model.fairness import fairness_range_lines
     points = {
-        "A": {"total": 5.0, "weekend": 1.0, "labels": {}, "night_float": 3.0},
-        "B": {"total": 5.0, "weekend": 1.0, "labels": {}, "night_float": 1.0},
+        "A": {"total": 5.0, "weekend": 1.0, "labels": {}, "night_float": 3},
+        "B": {"total": 5.0, "weekend": 1.0, "labels": {}, "night_float": 1},
     }
     lines = fairness_range_lines(points)
-    assert any("Night-float points" in line and "range 2.0" in line for line in lines)
+    assert any("Night-float duty days" in line and "outside regular fairness" in line
+               for line in lines)
 
 
 def test_fairness_range_lines_omits_nightfloat_when_zero():
     from model.fairness import fairness_range_lines
-    points = {"A": {"total": 1.0, "weekend": 0.0, "labels": {}, "night_float": 0.0}}
-    assert not any("Night-float points" in line for line in fairness_range_lines(points))
-
-
-def test_fairness_log_shows_nightfloat_deviation():
-    shifts = [ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False, points=1.0)]
-    data = InputData(
-        start_date=date(2023, 1, 1),
-        end_date=date(2023, 1, 2),
-        shifts=shifts,
-        juniors=["A", "B"],
-        seniors=[],
-        nf_juniors=["A", "B"],
-        nf_seniors=[],
-        leaves=[],
-        rotators=[],
-        min_gap=0,
-        nf_block_length=1,
-        target_night_float={"A": 1.0, "B": 1.0},
-    )
-    df = pd.DataFrame([
-        {"Date": date(2023, 1, 1), "NF": "A"},
-        {"Date": date(2023, 1, 2), "NF": "B"},
-    ])
-    log = format_fairness_log(df, data)
-    assert any("NF 1.0 (target 1.0, dev +0.0)" in line for line in log.splitlines())
-    assert "Night-float points" in log
+    points = {"A": {"total": 1.0, "weekend": 0.0, "labels": {}, "night_float": 0}}
+    assert not any("Night-float" in line for line in fairness_range_lines(points))
 
 
 def test_fairness_log_lists_unfilled_slots_and_health():

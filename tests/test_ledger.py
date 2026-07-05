@@ -45,14 +45,20 @@ def test_update_ledger_accumulates():
 
 
 def test_ledger_round_trip():
-    ledger = {"A": {"total": 7.0, "weekend": 2.0, "night_float": 3.0}}
+    ledger = {"A": {"total": 7.0, "weekend": 2.0}}
     restored = ledger_from_json(ledger_to_json(ledger))
     assert restored == ledger
 
 
 def test_ledger_from_json_fills_missing_dimensions():
     restored = ledger_from_json('{"A": {"total": 4}}')
-    assert restored == {"A": {"total": 4.0, "weekend": 0.0, "night_float": 0.0}}
+    assert restored == {"A": {"total": 4.0, "weekend": 0.0}}
+
+
+def test_ledger_from_json_ignores_legacy_night_float():
+    # Night float is no longer a balanced dimension; an old file's key is dropped.
+    restored = ledger_from_json('{"A": {"total": 4, "weekend": 1, "night_float": 9}}')
+    assert restored == {"A": {"total": 4.0, "weekend": 1.0}}
 
 
 def test_empty_ledger():
@@ -113,7 +119,7 @@ def test_policy_off_is_bit_identical_with_excusals():
     data = replace(_data(), leaves=[("B", date(2023, 1, 1), date(2023, 1, 3), False)])
     df = _df((date(2023, 1, 4), "A"), (date(2023, 1, 5), "B"))
     off = update_ledger(None, df, data, policy=LedgerPolicy(False, False))
-    expected = {"total": 1.0, "weekend": 0.0, "night_float": 0.0,
+    expected = {"total": 1.0, "weekend": 0.0,
                 "labels": {"S": 1.0}, "label_counts": {"S": 1}}
     assert off["A"] == expected
     assert off["B"] == expected
@@ -173,7 +179,7 @@ def test_credits_sum_to_zero_per_dimension():
         extra_points={"A": 1.0},
     )
     adj = block_adjustments(None, data)
-    for dim in ("excused_total", "excused_weekend", "excused_night_float"):
+    for dim in ("excused_total", "excused_weekend"):
         assert sum(v[dim] for v in adj.values()) == pytest.approx(0.0)
 
 
@@ -237,28 +243,6 @@ def test_invariant_algebra_with_penalty_and_excusal_combined():
     assert updated["A"] == pytest.approx(updated["B"])
 
 
-def test_nf_credit_scoped_to_role_pool():
-    from dataclasses import replace
-    from model.data_models import Perk
-    from model.ledger import block_adjustments
-
-    shifts = [
-        ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False),
-        ShiftTemplate(label="NF", role="Junior", night_float=True, thu_weekend=False, points=2.0),
-    ]
-    data = replace(
-        _data(),
-        shifts=shifts,
-        juniors=["A", "B", "C"],
-        nf_juniors=["A", "B"],  # C outside the pool
-        perks=[Perk("B", 0.5)],
-    )
-    adj = block_adjustments(None, data)
-    assert adj["C"]["excused_night_float"] == 0.0
-    assert adj["B"]["excused_night_float"] > 0.0
-    assert adj["A"]["excused_night_float"] == pytest.approx(-adj["B"]["excused_night_float"])
-
-
 def test_adjustments_audit_written_and_stripped_on_load():
     from dataclasses import replace
 
@@ -299,27 +283,27 @@ def test_update_ledger_accumulates_label_history():
 
 
 def test_ledger_json_round_trips_label_history_and_legacy_loads():
-    ledger = {"A": {"total": 3.0, "weekend": 1.0, "night_float": 0.0,
+    ledger = {"A": {"total": 3.0, "weekend": 1.0,
                     "labels": {"S": 3.0}, "label_counts": {"S": 3}}}
     restored = ledger_from_json(ledger_to_json(ledger))
     assert restored == ledger
     # Legacy files without the history keys load unchanged.
     legacy = ledger_from_json('{"A": {"total": 2.0}}')
-    assert legacy == {"A": {"total": 2.0, "weekend": 0.0, "night_float": 0.0}}
+    assert legacy == {"A": {"total": 2.0, "weekend": 0.0}}
 
 
 def test_ledger_rows_round_trip_preserves_history_via_base():
     from model.ledger import ledger_to_rows, rows_to_ledger
 
     ledger = {
-        "A": {"total": 3.0, "weekend": 1.0, "night_float": 0.5,
+        "A": {"total": 3.0, "weekend": 1.0,
               "labels": {"S": 3.0}, "label_counts": {"S": 3}},
-        "B": {"total": 2.0, "weekend": 0.0, "night_float": 0.0},
+        "B": {"total": 2.0, "weekend": 0.0},
     }
     rows = ledger_to_rows(ledger)
     assert rows == [
-        {"Resident": "A", "Total": 3.0, "Weekend": 1.0, "Night float": 0.5},
-        {"Resident": "B", "Total": 2.0, "Weekend": 0.0, "Night float": 0.0},
+        {"Resident": "A", "Total": 3.0, "Weekend": 1.0},
+        {"Resident": "B", "Total": 2.0, "Weekend": 0.0},
     ]
     rebuilt, problems = rows_to_ledger(rows, base=ledger)
     assert problems == []
@@ -330,16 +314,15 @@ def test_rows_to_ledger_reports_problems_and_allows_negatives():
     from model.ledger import rows_to_ledger
 
     rows = [
-        {"Resident": " A ", "Total": "abc", "Weekend": -1.5, "Night float": None},
-        {"Resident": "A", "Total": 2.0, "Weekend": 0.0, "Night float": 0.0},
-        {"Resident": "", "Total": 5.0, "Weekend": 0.0, "Night float": 0.0},
-        {"Resident": None, "Total": 0.0, "Weekend": 0.0, "Night float": 0.0},
+        {"Resident": " A ", "Total": "abc", "Weekend": -1.5},
+        {"Resident": "A", "Total": 2.0, "Weekend": 0.0},
+        {"Resident": "", "Total": 5.0, "Weekend": 0.0},
+        {"Resident": None, "Total": 0.0, "Weekend": 0.0},
     ]
     ledger, problems = rows_to_ledger(rows)
     assert ledger["A"]["total"] == 2.0  # duplicate: the last row wins
     assert any("non-numeric" in p for p in problems)
     assert any("last one wins" in p for p in problems)
     assert any("no resident name" in p for p in problems)
-    ledger2, _ = rows_to_ledger([{"Resident": "B", "Total": 1.0, "Weekend": -2.0,
-                                  "Night float": 0.0}])
+    ledger2, _ = rows_to_ledger([{"Resident": "B", "Total": 1.0, "Weekend": -2.0}])
     assert ledger2["B"]["weekend"] == -2.0

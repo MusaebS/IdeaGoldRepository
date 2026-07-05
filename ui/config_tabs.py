@@ -22,6 +22,7 @@ from model.data_models import (
     InputData,
     normalized_blackouts,
     normalized_leaves,
+    normalized_nf_assignments,
     normalized_reductions,
 )
 from model.demo_data import sample_shifts, sample_names
@@ -38,6 +39,7 @@ from ui.editors import (
     extra_points_editor,
     holidays_editor,
     named_groups_editor,
+    night_float_editor,
     perks_editor,
     preferences_editor,
     reductions_editor,
@@ -152,6 +154,22 @@ def _active_config_maps() -> dict:
             members = tuple(m for m in r.members if m in active_people)
             if members:
                 reductions.append(r._replace(members=members, labels=labels))
+    # Night float: keep coverage for shifts still marked NF-eligible, and
+    # assignments whose coverer is still on the roster (labels filtered to live).
+    nf_labels = {s.label for s in st.session_state[Keys.SHIFTS] if s.night_float}
+    nf_coverage = {
+        lbl: cov for lbl, cov in st.session_state[Keys.NF_COVERAGE].items()
+        if lbl in nf_labels
+    }
+    nf_assignments = []
+    for a in normalized_nf_assignments(
+        st.session_state[Keys.NF_ASSIGNMENTS],
+        default_rest=st.session_state[Keys.NF_REST_DAYS],
+    ):
+        if a.name not in active_people:
+            continue
+        keep_labels = tuple(lbl for lbl in a.labels if lbl in nf_labels)
+        nf_assignments.append(a._replace(labels=keep_labels))
     return {
         "max_total": max_total or None,
         "max_nights": max_nights or None,
@@ -168,6 +186,10 @@ def _active_config_maps() -> dict:
         "preferred_shifts": preferred_shifts or None,
         "preferred_day_type": preferred_day_type or None,
         "avoid_pairs": avoid_pairs or None,
+        "nf_coverage": nf_coverage or None,
+        "nf_assignments": nf_assignments or None,
+        "count_nf_points": bool(st.session_state[Keys.NF_COUNT_POINTS]),
+        "nf_rest_days": int(st.session_state[Keys.NF_REST_DAYS]),
     }
 
 
@@ -337,6 +359,13 @@ def render_config_tabs() -> tuple:
         st.caption(
             "Rotators are normal roster members while active: groups, "
             "blackouts, reductions, and preferences all apply to them."
+        )
+        st.divider()
+        st.subheader("Night float")
+        night_float_editor(
+            people,
+            [s.label for s in st.session_state[Keys.SHIFTS] if s.night_float],
+            default_start=start_date, default_end=end_date,
         )
         st.divider()
         st.subheader("Groups & blackouts")
