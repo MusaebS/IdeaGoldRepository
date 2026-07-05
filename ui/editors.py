@@ -875,21 +875,18 @@ def roster_editor() -> None:
             )
     with cols[1]:
         st.subheader("Night-float eligible")
-        juniors = st.session_state[Keys.JUNIORS]
-        seniors = st.session_state[Keys.SENIORS]
-        all_people = juniors + seniors
-        prior = list(st.session_state[Keys.NF_JUNIORS]) + list(st.session_state[Keys.NF_SENIORS])
-        chosen = st.multiselect(
-            "Residents who can cover night float", all_people,
-            default=[n for n in prior if n in all_people],
-            help="Pick anyone from the roster — their role (junior/senior) is "
-            "taken from the lists on the left, so you don't re-enter it.",
+        # Two role-filtered pickers: each list already holds only that role, so
+        # there is nothing to remember — pick the juniors, then the seniors.
+        st.session_state[Keys.NF_JUNIORS] = st.multiselect(
+            "Juniors", st.session_state[Keys.JUNIORS],
+            default=[n for n in st.session_state[Keys.NF_JUNIORS]
+                     if n in st.session_state[Keys.JUNIORS]],
         )
-        # Split back into role pools for the model (a coverer only ever covers
-        # their own role's night-float shifts).
-        jset = set(juniors)
-        st.session_state[Keys.NF_JUNIORS] = [n for n in chosen if n in jset]
-        st.session_state[Keys.NF_SENIORS] = [n for n in chosen if n not in jset]
+        st.session_state[Keys.NF_SENIORS] = st.multiselect(
+            "Seniors", st.session_state[Keys.SENIORS],
+            default=[n for n in st.session_state[Keys.NF_SENIORS]
+                     if n in st.session_state[Keys.SENIORS]],
+        )
 
 
 def custom_columns_editor(base_df) -> None:
