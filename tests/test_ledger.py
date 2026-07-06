@@ -307,8 +307,11 @@ def test_excused_cap_does_not_diverge_across_blocks():
 
     excused_range = final_range(True)
     compensate_range = final_range(False)
-    assert excused_range <= 4.0  # bounded, near-balanced
-    # The excused cap is dramatically tighter than the diverging compensate case.
+    # Measured spreads are ~1-4 (excused) vs ~27-30 (compensate) — an order of
+    # magnitude apart, so generous bounds stay robust to which equally-optimal
+    # assignment the solver picks (and to float noise in the credit math).
+    assert excused_range <= 6.0            # bounded, near-balanced
+    assert compensate_range >= 15.0        # the compensate case genuinely diverged
     assert excused_range < compensate_range / 3
 
 
