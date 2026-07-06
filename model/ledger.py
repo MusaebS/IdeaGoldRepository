@@ -93,7 +93,12 @@ def block_adjustments(prior, data: InputData) -> Dict[str, Dict[str, float]]:
     accepted for API stability but no longer used (see below).
 
     Returns ``{person: {"penalty": e, "excused_total": c, "excused_weekend": c}}``
-    — all zero when nothing applies.
+    — all zero when nothing applies. Excusals come from two sources: availability
+    reductions (uncompensated leave, rotator windows, perks, group factors —
+    weighted below) and **excused caps** (a ``max_total`` marked "do not
+    compensate later" — credited its shortfall below fair share, debited from the
+    residents who absorb it). A plain "compensate later" cap adds nothing here,
+    so its shortfall is left for cumulative balancing to make up.
 
     Credit is measured on **this block only**, not the cumulative pool. An
     earlier version scaled the excused credit by the whole running total
@@ -107,6 +112,7 @@ def block_adjustments(prior, data: InputData) -> Dict[str, Dict[str, float]]:
     first block (``prior`` empty) the two are identical, so the one-time
     excusal guarantee — and every exact-number test — is unchanged.
     """
+    from .closures import resolve_closures  # local: avoids a module cycle
     from .night_float import resolve_night_float  # local: avoids a module cycle
 
     participants = list(data.juniors) + list(data.seniors)
@@ -122,9 +128,11 @@ def block_adjustments(prior, data: InputData) -> Dict[str, Dict[str, float]]:
         if p in out and extra > 0:
             out[p]["penalty"] = float(extra)
 
-    # Regular demand only — night-float-covered cells are outside the point pool.
+    # Regular demand only — reserved (night-float-covered or closed) cells are
+    # outside the point pool.
     nf_cells, _gaps, _leaves = resolve_night_float(data)
-    slots = [s for s in slot_points(data) if (s.day, s.shift.label) not in nf_cells]
+    reserved = set(nf_cells) | resolve_closures(data)
+    slots = [s for s in slot_points(data) if (s.day, s.shift.label) not in reserved]
     p_tot = sum(s.points for s in slots)
     p_wk = sum(s.points for s in slots if s.weekend)
 
@@ -144,6 +152,29 @@ def block_adjustments(prior, data: InputData) -> Dict[str, Dict[str, float]]:
             gap = 1.0 / n - weights.get(p, 0.0) / weight_sum
             out[p]["excused_total"] = f * p_tot * gap
             out[p]["excused_weekend"] = p_wk * gap
+
+        # Excused caps ("do not compensate later"): a resident capped below their
+        # fair share whose shortfall is *not* to be repaid is credited it here,
+        # and the residents who absorb the freed load are debited it in
+        # proportion to their weight — so the ledger records everyone at fair
+        # standing and no one catches up (the same shape as a perk). A
+        # "compensate later" cap (the default) sets no flag here, so its
+        # shortfall stays uncredited and cumulative balancing makes it up.
+        fair = {p: p_tot * weights.get(p, 0.0) / weight_sum for p in participants}
+        excused = data.max_total_excused or {}
+        caps = data.max_total or {}
+        capped = [
+            p for p in participants
+            if excused.get(p) and caps.get(p) is not None and caps[p] < fair[p]
+        ]
+        receivers = [p for p in participants if p not in capped]
+        recv_weight = sum(weights.get(p, 0.0) for p in receivers)
+        for p in capped:
+            shortfall = f * (fair[p] - caps[p])
+            out[p]["excused_total"] += shortfall
+            if recv_weight > 0:
+                for r in receivers:
+                    out[r]["excused_total"] -= shortfall * weights.get(r, 0.0) / recv_weight
     return out
 
 

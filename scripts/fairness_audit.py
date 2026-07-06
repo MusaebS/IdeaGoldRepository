@@ -27,6 +27,7 @@ from model.data_models import (  # noqa: E402
     LoadReduction,
     NightFloatAssignment,
     NightFloatCoverage,
+    ShiftClosure,
     ShiftTemplate,
     is_night_call,
 )
@@ -341,6 +342,29 @@ def overlay_night_float():
                   ("coverers off regular during NF", j0_off and j1_off)])
 
 
+def closures_scenario():
+    # A shift stood down on weekends + a shortage stretch: closed cells are not
+    # unfilled, carry no points, and the open demand stays fair.
+    juniors = [f"J{i}" for i in range(4)]
+    data = mk([sh("Ward"), sh("Clinic")], juniors, days=14, closures=[
+        ShiftClosure("Clinic", MON, MON + timedelta(days=13), (5, 6)),   # weekends
+        ShiftClosure("Clinic", MON + timedelta(days=10), MON + timedelta(days=13)),
+    ])
+    df = solve(data)
+    metrics = measure(df, data)
+    clinic = list(df["Clinic"])
+    closed = clinic.count("Closed")
+    total_pts = sum(metrics["points"][p]["total"] for p in juniors)
+    # Open demand = Ward (14) + the still-open Clinic cells (14 - closed); the
+    # closed Clinic cells add nothing to the point pool.
+    expected = 14.0 + (14 - closed)
+    report("shift closures 4x14 (Clinic down)", metrics,
+           {"total_dev": 1.0, "unfilled": 0},
+           notes=[("closed cells not unfilled", "Unfilled" not in clinic),
+                  ("some Clinic cells closed", closed > 0),
+                  ("closed cells carry no points", abs(total_pts - expected) < 1e-6)])
+
+
 def multi_block_ledger():
     juniors = ["A", "B", "C"]
     ledger: dict = {}
@@ -449,7 +473,7 @@ def main() -> int:
         label_mix_unequal_points, features_leave_rotator, features_blackout,
         features_reduction, features_avoid_pair, features_preferences_neutral,
         features_caps_penalty, features_factors, overlay_night_float,
-        multi_block_ledger, recurring_nf_ledger,
+        closures_scenario, multi_block_ledger, recurring_nf_ledger,
         extreme_more_shifts_than_people, extreme_heavy_shift, extreme_min_gap,
     ):
         scenario()

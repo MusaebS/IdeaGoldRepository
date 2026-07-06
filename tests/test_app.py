@@ -173,6 +173,48 @@ def test_edited_schedule_flows_into_fairness_log():
     assert "(target 1.0" in alice
 
 
+def test_manual_edit_closed_cell_is_stood_down_not_unfilled():
+    from model.fairness import calculate_points, format_fairness_log
+    from ui.state import normalize_edited_schedule
+
+    base, data = _result_fixture()
+    edited = base.copy()
+    edited.attrs = {}
+    edited.loc[0, "D"] = "Closed"  # manually stand the first slot down
+
+    cleaned = normalize_edited_schedule(edited, base)
+    # Recorded on attrs so every calculation excludes it (not a phantom resident).
+    assert cleaned.attrs["closed_cells"] == {"2023-01-02": ["D"]}
+    pts = calculate_points(cleaned, data)
+    assert "Closed" not in pts
+    assert pts["Alice"]["total"] == 0.0  # Alice's slot is now closed
+    assert pts["Bob"]["total"] == 1.0
+    health = format_fairness_log(cleaned, data).splitlines()[0]
+    assert "1 closed" in health
+    assert "0 unfilled" in health  # a closure is not a coverage gap
+
+
+def test_manual_edit_can_reopen_a_closed_cell():
+    from dataclasses import replace
+    from model.data_models import ShiftClosure
+    from model.fairness import calculate_points
+    from ui.state import normalize_edited_schedule
+
+    base, data = _result_fixture()
+    data = replace(data, closures=[ShiftClosure("D", date(2023, 1, 2), date(2023, 1, 2))])
+    base = base.copy()
+    base.loc[0, "D"] = "Closed"
+    base.attrs["closed_cells"] = {"2023-01-02": ["D"]}
+    # The editor reassigns Alice to the previously-closed cell.
+    edited = base.copy()
+    edited.attrs = dict(base.attrs)
+    edited.loc[0, "D"] = "Alice"
+
+    cleaned = normalize_edited_schedule(edited, base)
+    assert cleaned.attrs["closed_cells"] == {}  # re-opened
+    assert calculate_points(cleaned, data)["Alice"]["total"] == 1.0
+
+
 # --- seniority groups / perks / exemptions -----------------------------------
 
 def test_seniority_editors_store_to_session():
@@ -205,7 +247,9 @@ def test_shift_cell_options_exclude_exempt():
     shift = data.shifts[0]
     options = _shift_cell_options(data, shift)
     assert "Alice" not in options
-    assert options == ["Bob", "Unfilled"]
+    # Both non-resident markers are always offered so any cell can be set unfilled
+    # (a coverage gap) or closed (unavailable / not staffed).
+    assert options == ["Bob", "Unfilled", "Closed"]
 
 
 def test_ledger_policy_toggles_default_on():

@@ -253,6 +253,51 @@ def normalized_nf_assignments(assignments, default_rest: int = 1):
         yield NightFloatAssignment(name, start, end, labels, rest)
 
 
+class ShiftClosure(NamedTuple):
+    """A shift that is *closed* (not staffed at all) on a set of dates.
+
+    Use it when a shift simply does not run for a stretch — e.g. a resident
+    shortage where a clinic is stood down, or a shift a department drops over a
+    holiday period. The closed ``(date, label)`` cells are removed from regular
+    demand exactly like night-float-covered cells: they are never assigned, never
+    count as *unfilled* (a closure is a deliberate gap, not a coverage failure),
+    and carry no points or fairness weight. They show as ``"Closed"`` in the
+    schedule.
+
+    ``weekdays`` (Mon=0 .. Sun=6) optionally restricts the closure to matching
+    weekdays inside ``[start, end]`` (empty ⇒ every day in the range).
+    """
+
+    label: str
+    start: date
+    end: date
+    weekdays: Tuple[int, ...] = ()
+
+
+def normalized_closures(closures):
+    """Yield a :class:`ShiftClosure` for each entry (typed or 3/4-tuple)."""
+    for entry in closures or []:
+        if isinstance(entry, ShiftClosure):
+            yield entry
+            continue
+        label, start, end = entry[0], entry[1], entry[2]
+        weekdays = tuple(int(w) for w in entry[3]) if len(entry) > 3 and entry[3] else ()
+        yield ShiftClosure(str(label), start, end, weekdays)
+
+
+def shift_closed(day: date, shift, data) -> bool:
+    """True if ``shift`` on ``day`` is closed (stood down) by any closure."""
+    for c in normalized_closures(getattr(data, "closures", None)):
+        if c.label != shift.label:
+            continue
+        if not (c.start <= day <= c.end):
+            continue
+        if c.weekdays and day.weekday() not in c.weekdays:
+            continue
+        return True
+    return False
+
+
 def nf_covered(day: date, shift, data) -> bool:
     """True if ``shift`` on ``day`` is covered by the night-float overlay."""
     if not shift.night_float:
@@ -314,6 +359,13 @@ class InputData:
     # many total / night-float points; uncovered slots fall to ``Unfilled``.
     max_total: Dict[str, float] | None = None
     max_nights: Dict[str, float] | None = None
+    # Per-cap carryover policy: ``True`` = "do not compensate later" — the
+    # shortfall below the resident's fair share is *excused* in the ledger (a
+    # standing reduced capacity, credited like a perk, never caught up).
+    # ``False`` / absent = "compensate later" — the shortfall is not excused, so
+    # cumulative balancing loads the resident up in later blocks to make it up
+    # (the historical behaviour). Only meaningful with a ``max_total`` entry.
+    max_total_excused: Dict[str, bool] | None = None
     # Per-resident mandatory extra points (e.g. a penalty). A resident in the map
     # must carry this many points above their share: their total target is raised
     # by it (others' lowered to reconcile) and a hard floor enforces it.
@@ -372,6 +424,11 @@ class InputData:
     nf_coverage: Dict[str, NightFloatCoverage] | None = None
     nf_assignments: Sequence[NightFloatAssignment | Tuple] | None = None
     nf_rest_days: int = 1
+    # Shift closures (see ShiftClosure): (label, window[, weekdays]) cells that
+    # are stood down — removed from demand, shown as "Closed", never counted as
+    # unfilled and never part of points/fairness. For resident-shortage days
+    # when a shift simply does not run.
+    closures: Sequence[ShiftClosure | Tuple] | None = None
     target_label: Dict[tuple[str, str], float] | None = None
     target_total: float | None = None
     target_weekend: Dict[str, float] | None = None

@@ -104,6 +104,8 @@ def schedule_cell_colors(
         day = row.get("Date")
         for shift in data.shifts:
             value = row.get(shift.label)
+            if value == "Closed":
+                continue  # stood-down shift: no fill (reads as a plain cell)
             if value in (None, "Unfilled"):
                 colors[(i, shift.label)] = unfilled
                 continue
