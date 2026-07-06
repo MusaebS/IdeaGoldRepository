@@ -300,7 +300,7 @@ def test_excused_cap_does_not_diverge_across_blocks():
         ledger: dict = {}
         for b in range(4):
             data = _cap_data(date(2023, 1, 1) + timedelta(days=14 * b), True, excused)
-            df = build_schedule(data, env="test", ledger=ledger or None)
+            df = build_schedule(data, env="dev", ledger=ledger or None)
             ledger = update_ledger(ledger, df, data)
         totals = [ledger[p]["total"] for p in ("A", "B", "C", "D")]
         return max(totals) - min(totals)
@@ -323,7 +323,7 @@ def test_compensate_later_cap_catches_up_when_lifted():
     for b in range(4):
         # Cap A for the first two blocks only, then lift it.
         data = _cap_data(date(2023, 1, 1) + timedelta(days=14 * b), b < 2, False)
-        df = build_schedule(data, env="test", ledger=ledger or None)
+        df = build_schedule(data, env="dev", ledger=ledger or None)
         ledger = update_ledger(ledger, df, data)
     totals = [ledger[p]["total"] for p in ("A", "B", "C", "D")]
     assert max(totals) - min(totals) <= 1.0  # caught up after the cap lifted

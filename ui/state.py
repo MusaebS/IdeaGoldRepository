@@ -170,6 +170,30 @@ def _normalize_cell(value) -> str:
     return text if text else "Unfilled"
 
 
+def _recompute_closed_cells(df) -> None:
+    """Rebuild ``df.attrs['closed_cells']`` from the grid's ``"Closed"`` cells.
+
+    A manual edit may open a previously-closed slot (assign a resident) or close
+    a new one, so the closed set is derived fresh from the cells rather than
+    inherited — this is what makes a manually chosen ``"Closed"`` behave exactly
+    like a configured closure (out of demand, points, fairness; not an unfilled
+    gap) instead of a phantom resident named "Closed".
+    """
+    from model.closures import closed_cells_to_attr
+
+    dates = list(df["Date"]) if "Date" in getattr(df, "columns", []) else []
+    closed = {
+        (day, col)
+        for col in df.columns if col not in ("Date", "Day")
+        for day, value in zip(dates, df[col])
+        if value == "Closed"
+    }
+    try:
+        df.attrs["closed_cells"] = closed_cells_to_attr(closed)
+    except (AttributeError, TypeError):  # pragma: no cover - stub frames
+        pass
+
+
 def normalize_edited_schedule(edited, base):
     """Return an edited schedule frame cleaned up for use as the live result.
 
@@ -178,7 +202,9 @@ def normalize_edited_schedule(edited, base):
       round-trip turns dates into Timestamps, which would break holiday /
       weekend matching downstream.
     - Blank or cleared shift cells become ``"Unfilled"``.
-    - ``base.attrs`` (solver targets) are carried over.
+    - ``base.attrs`` (solver targets) are carried over, then ``closed_cells`` is
+      recomputed from the edited grid so a cell set to ``"Closed"`` is treated as
+      unavailable in every calculation (and clearing it re-opens the slot).
     """
     out = edited.copy()
     for col in ("Date", "Day"):
@@ -188,7 +214,9 @@ def normalize_edited_schedule(edited, base):
         if col in ("Date", "Day"):
             continue
         out[col] = [_normalize_cell(v) for v in out[col]]
-    return with_attrs(out, base)
+    out = with_attrs(out, base)
+    _recompute_closed_cells(out)
+    return out
 
 
 def apply_manual_edits(edited) -> None:

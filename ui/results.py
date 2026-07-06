@@ -282,13 +282,21 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
 
 
 def _shift_cell_options(data, shift, df=None) -> list:
-    """Residents allowed in a shift column's dropdown (role + exemptions).
+    """Dropdown values for a shift column in the manual editor.
 
-    NF eligibility no longer gates regular shifts. Night-float coverers that
-    appear in this column's overlay cells are added so their (non-editable)
-    value stays a valid dropdown option.
+    Role-eligible residents (minus exemptions), plus any night-float coverer that
+    appears in this column's overlay cells (so their value stays valid), plus the
+    two non-resident markers every cell may be set to:
+
+    * ``"Unfilled"`` — a coverage gap (someone should be here but isn't): counted
+      against coverage, its points reported as unfilled, flagged red.
+    * ``"Closed"`` — the slot is not staffed / unavailable (a resident shortage,
+      a shift that does not run that day): removed from demand entirely, never
+      counted as unfilled, and left out of points and fairness.
+
+    Both are always offered so an editor can mark any slot either way; the
+    recompute in ``normalize_edited_schedule`` makes the choice take effect.
     """
-    from model.closures import closed_cells_from_attr
     from model.night_float import nf_cells_from_attr
 
     pool = data.juniors if shift.role == "Junior" else data.seniors
@@ -297,10 +305,7 @@ def _shift_cell_options(data, shift, df=None) -> list:
     for (_day, lbl), name in nf_cells_from_attr(df).items():
         if lbl == shift.label and name not in options:
             options.append(name)
-    # Keep "Closed" a valid option so a stood-down cell's value survives editing.
-    if any(lbl == shift.label for (_iso, lbl) in closed_cells_from_attr(df)):
-        options.append("Closed")
-    return options + ["Unfilled"]
+    return options + ["Unfilled", "Closed"]
 
 
 def _render_manual_edit(df, result_data) -> None:
@@ -308,7 +313,11 @@ def _render_manual_edit(df, result_data) -> None:
         st.caption(
             "Change assignments below, review the live preview, then click "
             "**Apply edits** to make them the schedule — fairness, the log, and "
-            "every download will follow. Nothing changes until you apply."
+            "every download will follow. Nothing changes until you apply. "
+            "Set a cell to **Unfilled** for a coverage gap (counts against "
+            "coverage) or **Closed** to stand the slot down as unavailable "
+            "(removed from demand — not counted as unfilled, and outside points "
+            "and fairness)."
         )
         # Dropdown cells restricted to role/NF-eligible residents stop typos at
         # the source; constraint issues (min-gap etc.) are still surfaced below.
