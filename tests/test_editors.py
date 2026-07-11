@@ -1,5 +1,10 @@
 """Focused tests for roster parsing and optional canonical name matching."""
 
+import pytest
+
+pytest.importorskip("pandas")
+pytest.importorskip("streamlit")
+
 from ui.editors import _parse_names, _roster_overlap
 
 
