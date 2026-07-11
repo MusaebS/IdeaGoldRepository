@@ -24,7 +24,7 @@ from .data_models import (
 from .closures import reserved_cell_keys
 from .night_float import resolve_night_float
 from .optimiser import respects_min_gap
-from .points import classify_slot
+from .points import classify_slot, slot_points
 from .reductions import reduction_caps
 from .utils import weekend_holiday_dates
 
@@ -41,7 +41,10 @@ def config_warnings(data: InputData) -> List[str]:
     * a night-float shift whose eligible pool is empty (its nights cannot be
       covered, and with multi-night blocks this can make the model infeasible);
     * more shifts of a role on a single day than there are residents of that role
-      (a resident works at most one shift per day, so the surplus is unfillable).
+      (a resident works at most one shift per day, so the surplus is unfillable);
+    * block-level capacity facts (see :func:`_capacity_warnings`): min_gap
+      shift ceilings vs slot counts, the weekly-rhythm weekend lock, and
+      structural per-head workload gaps between the roles.
     """
     warnings: List[str] = []
 
@@ -74,6 +77,7 @@ def config_warnings(data: InputData) -> List[str]:
                 f"({data.start_date}–{data.end_date}) and has no effect."
             )
 
+    warnings.extend(_capacity_warnings(data))
     warnings.extend(_leave_rotator_warnings(data))
     warnings.extend(_exemption_perk_warnings(data))
     warnings.extend(_blackout_warnings(data))
@@ -82,6 +86,79 @@ def config_warnings(data: InputData) -> List[str]:
     warnings.extend(_avoid_pair_warnings(data))
     warnings.extend(_night_float_warnings(data))
     return warnings
+
+
+def _capacity_warnings(data: InputData) -> List[str]:
+    """Structural supply-vs-demand advisories for the whole block.
+
+    These are the facts behind "why is my schedule uneven": how many shifts a
+    resident can physically work under ``min_gap``, whether a role's roster can
+    cover its slots at all, whether the rest rule locks everyone onto the same
+    weekday (making weekend fairness impossible), and whether the two roles'
+    per-head workloads differ structurally (totals balance *within* each role,
+    so a cross-role gap is a roster/shift-mix fact, not solver unfairness).
+    Counts are raw demand — closures and night-float coverage reduce it, so a
+    tight verdict errs on the cautious side.
+    """
+    out: List[str] = []
+    days = (data.end_date - data.start_date).days + 1
+    if days <= 0 or not data.shifts:
+        return out
+    gap = max(0, int(data.min_gap))
+    # With a gap of g, shifts are at least g+1 days apart: at most this many
+    # fit in the block.
+    per_person_max = -(-days // (gap + 1))  # ceil
+
+    role_people = {"Junior": len(data.juniors), "Senior": len(data.seniors)}
+    role_slots = {"Junior": 0, "Senior": 0}
+    for shift in data.shifts:
+        role_slots[shift.role] = role_slots.get(shift.role, 0) + days
+    for role, slots in role_slots.items():
+        heads = role_people.get(role, 0)
+        if not slots or not heads:
+            continue  # the per-day supply warning already covers heads == 0
+        cover = heads * per_person_max
+        if cover < slots:
+            out.append(
+                f"min_gap {gap} lets each resident work at most {per_person_max} "
+                f"shift(s) in {days} days, so {heads} {role.lower()}(s) can cover at "
+                f"most {cover} of the {slots} {role} slot(s) — at least "
+                f"{slots - cover} will be unfilled. Lower min_gap or add "
+                f"{role.lower()}s."
+            )
+        elif cover < slots * 1.1:
+            out.append(
+                f"Capacity is very tight for {role.lower()}s: min_gap {gap} allows "
+                f"{cover} shift(s) across {heads} {role.lower()}(s) for {slots} "
+                f"slot(s). Expect unfilled slots or an uneven spread; lowering "
+                "min_gap gives the optimiser room to balance."
+            )
+
+    if gap >= 1 and (gap + 1) % 7 == 0 and days >= 21:
+        out.append(
+            f"min_gap {gap} forces a {gap + 1}-day rhythm: every resident repeats "
+            "the same weekday all block, so whoever starts on a Saturday works "
+            "every Saturday and weekend fairness is impossible. Use a smaller "
+            "min_gap (e.g. ≤ 3) and let the point balance spread the load."
+        )
+
+    # Per-head workload by role (points, so overrides/multipliers count).
+    role_points = {"Junior": 0.0, "Senior": 0.0}
+    for slot in slot_points(data):
+        role_points[slot.shift.role] += slot.points
+    averages = {
+        role: role_points[role] / role_people[role]
+        for role in ("Junior", "Senior")
+        if role_people.get(role) and role_points[role]
+    }
+    if len(averages) == 2 and abs(averages["Junior"] - averages["Senior"]) > 1.0:
+        out.append(
+            f"Structural workload difference between roles: juniors average "
+            f"≈{averages['Junior']:.1f} points each, seniors ≈{averages['Senior']:.1f}. "
+            "Totals are balanced within each role; to narrow the cross-role gap, "
+            "change the roster sizes or the shift mix."
+        )
+    return out
 
 
 def _night_float_warnings(data: InputData) -> List[str]:

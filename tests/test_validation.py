@@ -345,3 +345,77 @@ def test_validate_named_groups_rules():
     assert any("Group 'Team A' lists unknown resident 'Zed'" in i for i in issues)
     assert any("blank name" in i for i in issues)
     assert validate_input(_data(named_groups={"Team A": ["A", "B"]})) == []
+
+
+# --- capacity / structural warnings ------------------------------------------
+
+def test_warning_min_gap_capacity_infeasible():
+    # 28 days at min_gap 6 -> at most ceil(28/7) = 4 shifts each; 4 juniors
+    # cover at most 16 of the 28 junior slots.
+    data = _data(
+        start_date=date(2026, 1, 5),
+        end_date=date(2026, 2, 1),
+        juniors=["J1", "J2", "J3", "J4"],
+        seniors=[],
+        min_gap=6,
+    )
+    warns = config_warnings(data)
+    assert any("at most 4 shift(s) in 28 days" in w and "unfilled" in w for w in warns)
+
+
+def test_warning_min_gap_capacity_tight():
+    # 7 juniors x 4 = 28 coverable for exactly 28 slots: feasible but tight.
+    data = _data(
+        start_date=date(2026, 1, 5),
+        end_date=date(2026, 2, 1),
+        juniors=[f"J{i}" for i in range(7)],
+        seniors=[],
+        min_gap=6,
+    )
+    warns = config_warnings(data)
+    assert any("very tight" in w for w in warns)
+
+
+def test_warning_min_gap_weekly_weekend_lock():
+    data = _data(
+        start_date=date(2026, 1, 5),
+        end_date=date(2026, 2, 1),
+        juniors=[f"J{i}" for i in range(10)],
+        seniors=[],
+        min_gap=6,
+    )
+    warns = config_warnings(data)
+    assert any("weekend fairness is impossible" in w for w in warns)
+    # A smaller gap has no weekly rhythm: no lock warning.
+    relaxed = _data(
+        start_date=date(2026, 1, 5),
+        end_date=date(2026, 2, 1),
+        juniors=[f"J{i}" for i in range(10)],
+        seniors=[],
+        min_gap=3,
+    )
+    assert not any("weekend fairness" in w for w in config_warnings(relaxed))
+
+
+def test_warning_cross_role_workload_gap():
+    # Juniors: 2 shifts x 4 days / 2 heads = 4 pts each; seniors: 1 shift x
+    # 4 days / 2 heads = 2 pts each -> structural gap > 1 point.
+    data = _data(
+        shifts=[
+            ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+            ShiftTemplate(label="E", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+            ShiftTemplate(label="S", role="Senior", night_float=False, thu_weekend=False, points=1.0),
+        ],
+        juniors=["A", "B"],
+        seniors=["X", "Y"],
+    )
+    warns = config_warnings(data)
+    assert any("Structural workload difference" in w for w in warns)
+
+
+def test_no_capacity_warnings_for_comfortable_config():
+    warns = config_warnings(_data())
+    assert not any(
+        "min_gap" in w or "Structural workload" in w or "very tight" in w
+        for w in warns
+    )
