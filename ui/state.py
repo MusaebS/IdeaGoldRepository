@@ -60,6 +60,11 @@ class Keys:
     DISPLAY_RESTORED = "display_restored_sig"
     DEMO_LOADED = "demo_loaded"
     RETRY_CONFIG = "retry_config"
+    # Queued cross-tab updates, applied at the top of the NEXT run before any
+    # widget renders (Streamlit forbids writing a keyed widget's state after
+    # the widget was instantiated in the same run).
+    PENDING_CONFIG = "pending_config"    # (InputData, display dict | None) from an upload
+    PENDING_STATE = "pending_widget_state"  # {session key: value} e.g. min_gap write-back
     NORMALIZE_NAMES = "normalize_names"
     BENCHMARK_RESULT = "benchmark_result"
 
@@ -126,6 +131,8 @@ def _defaults() -> dict:
         Keys.AVAIL_PREVIEW: None,
         Keys.AVAIL_SIG: None,
         Keys.DISPLAY_RESTORED: None,
+        Keys.PENDING_CONFIG: None,
+        Keys.PENDING_STATE: None,
         Keys.NORMALIZE_NAMES: False,
         Keys.BENCHMARK_RESULT: None,
         Keys.RESULT_DF: None,

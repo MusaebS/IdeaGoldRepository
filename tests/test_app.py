@@ -105,6 +105,8 @@ def test_test_mode_generate_produces_schedule(monkeypatch):
     assert at.session_state["solver_df"] is not None
     # Metrics rendered
     assert any("Schedule quality" in m.label for m in at.metric)
+    # The user is told the schedule is ready without hunting for the tab.
+    assert any("Schedule generated" in s.value for s in at.success)
 
 
 def test_seeded_results_survive_rerun():
@@ -557,9 +559,11 @@ def test_populate_editors_from_config_round_trips_into_session():
     assert len(state["reductions"]) == 1
 
 
-def test_config_upload_populates_editors_and_generate_uses_it():
-    from model.config_io import input_data_to_json
-
+def test_pending_config_applies_before_widgets_render():
+    # The real upload flow: the History handler stashes the parsed config and
+    # reruns; apply_pending_updates() must fill the ALREADY-INSTANTIATED Setup
+    # widgets on the next run without a StreamlitAPIException. (Calling the
+    # importer mid-run used to crash exactly there.)
     data = InputData(
         start_date=date(2026, 4, 6),
         end_date=date(2026, 4, 12),
@@ -572,30 +576,34 @@ def test_config_upload_populates_editors_and_generate_uses_it():
         nf_seniors=[],
         leaves=[],
         rotators=[],
-        min_gap=0,
+        min_gap=3,
+        seed=9,
     )
-
-    class _Upload:
-        name = "config.json"
-
-        def __init__(self, payload: bytes):
-            self._payload = payload
-
-        def getvalue(self) -> bytes:
-            return self._payload
-
     at = _at()
+    at.run()  # first run instantiates every keyed Setup widget
+    at.session_state["pending_config"] = (data, None)
     at.run()
-    at.session_state["config_uploader_stub"] = _Upload(input_data_to_json(data).encode())
-    # Streamlit's AppTest can't drive a real file_uploader, so exercise the
-    # importer directly: it must land in the tab session state the same way.
-    from ui.config_tabs import populate_editors_from_config
-    populate_editors_from_config(data, state=at.session_state)
-    at.run()
+    assert not at.exception
+    assert at.session_state["pending_config"] is None  # queue drained
     assert at.session_state["shifts"] == data.shifts
     assert at.session_state["juniors"] == ["Alice", "Bob"]
-    assert at.session_state["start_date"] == date(2026, 4, 6)
+    # The keyed widgets themselves show the loaded values.
+    assert at.date_input(key="start_date").value == date(2026, 4, 6)
+    assert at.slider(key="min_gap").value == 3
+    assert at.number_input(key="seed").value == 9
+
+
+def test_pending_state_updates_min_gap_slider():
+    # The infeasible-retry path queues a min_gap write-back so the slider
+    # always shows the gap the schedule was actually built with.
+    at = _at()
+    at.run()
+    assert at.slider(key="min_gap").value == 1  # default
+    at.session_state["pending_widget_state"] = {"min_gap": 0}
+    at.run()
     assert not at.exception
+    assert at.session_state["pending_widget_state"] is None
+    assert at.slider(key="min_gap").value == 0
 
 
 def test_availability_apply_adds_compensated_leaves_with_dedupe():

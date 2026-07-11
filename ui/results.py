@@ -134,10 +134,15 @@ def _render_solver_caption(df, data) -> None:
         st.warning(warning)
     status = df.attrs.get("solver_status") if hasattr(df, "attrs") else None
     wall = df.attrs.get("wall_time_sec") if hasattr(df, "attrs") else None
+    limit = df.attrs.get("time_limit_sec") if hasattr(df, "attrs") else None
     if status:
-        detail = f"Solver status: {status} · seed {data.seed}"
+        # The applied min_gap is shown so a relax-and-retry solve can never
+        # silently differ from what the user thinks was used.
+        detail = f"Solver status: {status} · seed {data.seed} · min_gap {data.min_gap}"
         if wall is not None:
             detail += f" · {wall:.2f}s"
+        if limit:
+            detail += f" (limit {limit:.0f}s)"
         st.caption(detail)
 
 

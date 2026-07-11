@@ -584,18 +584,14 @@ def _render_history_workspace(session_config: InputData) -> dict | None:
                 except Exception as exc:
                     st.error(f"Could not read config: {exc}")
                 else:
-                    populate_editors_from_config(loaded)
                     try:
                         display = display_from_json(text)
                     except Exception:
                         display = None
-                    if display:
-                        restore_display_state(display)
-                    flash(
-                        f"Loaded config: {len(loaded.shifts)} shift(s), "
-                        f"{len(loaded.juniors) + len(loaded.seniors)} resident(s) — "
-                        "review the tabs, then Generate."
-                    )
+                    # The Setup widgets already rendered this run, so their
+                    # session keys can't be written from here — queue the
+                    # import for apply_pending_updates() on the next run.
+                    st.session_state[Keys.PENDING_CONFIG] = (loaded, display)
                     st.rerun()
     with tab_ledger:
         with card_container():
@@ -713,8 +709,42 @@ def _render_review_workspace(session_config: InputData, carryover_ledger) -> Non
     render_generate_and_solve(session_config, carryover_ledger)
 
 
+def apply_pending_updates() -> None:
+    """Apply queued cross-tab state changes before any widget renders.
+
+    Streamlit forbids writing a keyed widget's session state once that widget
+    has been instantiated in the current run, and the Setup widgets (dates,
+    min_gap, seed, weekend days) render before the History upload handler and
+    the Review retry button execute. Those handlers therefore queue their
+    changes (``Keys.PENDING_CONFIG`` / ``Keys.PENDING_STATE``) and rerun; this
+    hook drains the queue first, when writing widget state is still legal.
+    """
+    pending_state = st.session_state.get(Keys.PENDING_STATE)
+    st.session_state[Keys.PENDING_STATE] = None
+    for key, value in (pending_state or {}).items():
+        st.session_state[key] = value
+    pending = st.session_state.get(Keys.PENDING_CONFIG)
+    st.session_state[Keys.PENDING_CONFIG] = None
+    if not pending:
+        return
+    loaded, display = pending
+    try:
+        populate_editors_from_config(loaded)
+        if display:
+            restore_display_state(display)
+    except Exception as exc:
+        st.error(f"Could not apply the uploaded config: {exc}")
+    else:
+        flash(
+            f"Loaded config: {len(loaded.shifts)} shift(s), "
+            f"{len(loaded.juniors) + len(loaded.seniors)} resident(s) — "
+            "review the tabs, then Generate."
+        )
+
+
 def render_application() -> None:
     """Render the complete seven-workspace application in one stable script run."""
+    apply_pending_updates()
     tabs = st.tabs(
         [
             "① Setup",
@@ -797,9 +827,22 @@ def render_generate_and_solve(session_config, carryover_ledger) -> None:
                     replace(data, min_gap=data.min_gap - 1),
                     f"Relaxed minimum gap to {data.min_gap - 1} to find a feasible schedule.",
                 )
+                # Reflect the relaxed gap in the Setup slider (queued: the
+                # slider already rendered this run), so the UI never shows a
+                # different min_gap than the one the schedule was built with.
+                st.session_state[Keys.PENDING_STATE] = {Keys.MIN_GAP: data.min_gap - 1}
                 st.rerun()
     except Exception as exc:
         st.error(str(exc))
 
     if df is not None:
         set_result(df, data, carryover_ledger)
+        shift_cols = [c for c in df.columns if c not in ("Date", "Day")]
+        unfilled = int((df[shift_cols] == "Unfilled").sum().sum()) if shift_cols else 0
+        status = df.attrs.get("solver_status") or "done"
+        detail = "all slots filled" if unfilled == 0 else f"{unfilled} slot(s) unfilled"
+        st.toast("Schedule generated ✅")
+        st.success(
+            f"Schedule generated ({status}, {detail}) — open the **⑥ Results** tab "
+            "to review, edit, and export it."
+        )
