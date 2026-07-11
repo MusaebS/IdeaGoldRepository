@@ -24,11 +24,15 @@ Leave – compensated (quota unchanged).
 
 Rotator – uncompensated (quotas scaled by active_days / block_span).
 
-Night-float blocks
-Fixed length nf_block_length; only NF-eligible residents may cover them.
+Night-float overlay
+Per-shift coverage patterns and explicit coverer date windows; only eligible
+residents of the matching role may cover them. Covered cells leave regular demand,
+carry no regular points, and the coverer's window plus configured rest days blocks
+regular assignments as an uncompensated absence.
 
 Rest spacing
-A resident must have ≥ min_gap days between any two shifts, regardless of label.
+A resident's regular shifts must respect min_gap. Night-float coverage uses the
+overlay assignment's own post-block rest days rather than the regular gap rule.
 
 Role match
 Juniors cannot fill senior shifts and vice-versa.
@@ -63,15 +67,16 @@ dev_total[r]    ≥ |total_pts[r]    − t_total      |
 dev_weekend[r]  ≥ |weekend_pts[r]  − t_weekend[r]|
 max_dev         ≥ dev_total[r]     ∀ r
 Objective (lexicographic)
-Minimise max_dev (tightest overall-points spread).
+Minimise uncovered regular-demand slots first; coverage dominates every fairness
+tier, so a fillable slot is never sacrificed for a tidier point spread.
+
+Then minimise max_dev (tightest overall-points spread).
 
 Then minimise Σ dev_total.
 
 Then minimise Σ dev_weekend.
 
 Then minimise Σ dev_label.
-
-Finally minimise number of dummy “Unfilled” slots (should be zero).
 
 (Implementation may instead use a single weighted sum with weights W1 ≫ W2 ≫ W3 ≫ W4 to mimic the same priority.)
 
@@ -83,7 +88,7 @@ Typical solve time ≤ 60 s for 40 residents × 28 days × 10 labels on Streamli
 Layer	Choice / Notes
 Language	Python 3.11
 Optimiser	OR-Tools 9.x CP-SAT
-UI	Streamlit ≥ 1.33 (layout="wide")
+UI	Streamlit ≥ 1.58, < 2 (layout="wide")
 Data	pandas 2.x (tables, CSV)
 Deployment	Any Python host (Streamlit Cloud, on-prem); multi-file repo
 
@@ -92,7 +97,7 @@ requirements.txt
 shell
 Copy
 Edit
-streamlit>=1.33
+streamlit>=1.58,<2
 pandas>=2.0
 ortools>=9.10
 5 Recommended File Layout
@@ -110,25 +115,37 @@ idea-gold/
 Session-state keys stay unchanged (plus any solver settings you expose: time-limit, random seed).
 
 6 User Flow
-Open web app.
+The application presents one stable six-step workspace. Nested tabs keep the
+large editors navigable, while every mechanism's explanation remains beside its
+controls:
 
-Configure shift templates (with points), participants, absences, min_gap, NF block length.
+1. Setup — block settings, shift templates, and resident roster.
+2. Coverage — leaves/rotators, the night-float overlay, and shift closures.
+3. Policies — teams/restrictions, fairness controls, preferences, and points.
+4. History — portable config JSON and optional carryover fairness ledger.
+5. Review & run — block summary, validation/advisories, and Generate Schedule.
+6. Results — Overview, Schedule, Fairness, Audit, and Export workspaces.
 
-Click “Generate Schedule”.
+The Results workspaces expose solver/quality/coverage status, the customisable
+schedule and manual revalidation, per-resident fairness evidence, per-call audit
+and assignment rationale, and CSV/Excel/PDF/JSON artifacts. If the model is
+infeasible or times out, the UI distinguishes the status and offers the existing
+relax-and-retry recovery where applicable.
 
-App shows a spinner (“Optimising…”), runs the CP-SAT solver, then displays:
+Resident entry supports an optional canonical matching mode. It uses Unicode
+NFKC, whitespace collapse, and casefold only as a comparison key, keeps the first
+entered spelling for display/exports, and is off by default. Historical ledger
+records are never silently merged; reconciliation remains explicit.
 
-Schedule table (st.dataframe)
+Diagnostics is separate from the six scheduling steps. Its Performance lab runs
+bounded synthetic cases only when requested and never mutates the live config,
+ledger, or result. Large cases require an explicit confirmation.
 
-Per-label and total point summaries
-
-Weekend balance report
-
-Fairness deviations (should be ≤ 1 where feasible)
-
-CSV / JSON downloads.
-
-If the model is infeasible (e.g. constraints too tight), UI displays solver status and highlights which rule failed.
+Privacy contract: there is no application database or resident-data persistence.
+Uploads, results, and generated artifacts live in the active Streamlit session;
+the user-owned config and ledger downloads are the portable durable records.
+Automatic persistence remains an opt-in deployment extension requiring an
+external store and credentials.
 Implementation Progress (2025-07)
 - Added deviation variables for per-label, total, and weekend points
 - Objective now minimises the largest deviation before smaller gaps and unfilled shifts
@@ -156,15 +173,24 @@ Implementation Progress (2026-07)
 - Rotator shift coverage at entry (multiselect in the rotator editor feeding `exempt_shifts`); groups/blackouts/reductions confirmed to apply to rotators.
 - Avoid pairs (`avoid_pairs`): a hard same-day separation constraint per pair (never infeasible alone, fairness targets untouched), UI-gated behind an access code as deliberate friction.
 - Fairness-outcome audit (`scripts/fairness_audit.py`) with two fixes: (1) coverage now dominates the objective (`objective_weights` gives `W_UNFILLED = max_slot_points × Σ deviation weights + 1`), so a fillable slot is never dropped to reduce deviation; (2) the spec's per-label balance is auto-enforced (`_auto_label_targets` sets `target_label` for every eligible resident, feeding the existing `dev_label` tier), gated by `LABEL_TARGET_MAX_CELLS` and skipping reduction- and preference-covered residents. Verified: small/mid problems reach equal totals AND equal per-shift-type mix; multi-block ledger repays blackout/reduction debt to convergence.
-- Per-cap carryover policy (`max_total_excused`): a `max_total` cap now chooses how its shortfall below fair share is treated across blocks. "Compensate later" (default, `False`/absent — the historical behaviour) leaves the shortfall uncredited, so cumulative balancing loads the resident up in later blocks to make it up (correct for a *temporary* cap; a permanent one builds honest, ever-growing debt). "Do not compensate later" (`True`) excuses it: `ledger.block_adjustments` credits the capped resident their `fair − cap` shortfall and debits the residents who absorb it (weighted, sums to zero), so everyone is recorded at fair standing and nobody catches up — the same shape as a perk, which keeps a permanent excused cap from diverging. UI: a "Compensate later" checkbox per cap (③ Advanced → Caps). Covered by `tests/test_ledger.py`.
-- Shift closures (`model/closures.py`, `ShiftClosure` = label + window + optional weekdays): a shift stood down on a set of dates (resident shortage, dropped holiday shift). Closed `(date, label)` cells are **reserved** — removed from regular demand, never assigned, never counted as *unfilled*, and outside the point/fairness/ledger pools — and are written into the schedule as `"Closed"`. Threaded through the solver (`_is_regular`/output), `resolve_targets`/`block_adjustments`/`_auto_label_targets` (excluded from pools), fairness reporting (health line shows a closed count; points/counts/coverage skip them), validation (config checks + schedule-rule skip), `config_io` round-trip, and a UI editor (② Dates & rules → Shift closures). Old configs without `closures` load unchanged. Covered by `tests/test_closures.py` and a `closures_scenario` audit case.
+- Per-cap carryover policy (`max_total_excused`): a `max_total` cap now chooses how its shortfall below fair share is treated across blocks. "Compensate later" (default, `False`/absent — the historical behaviour) leaves the shortfall uncredited, so cumulative balancing loads the resident up in later blocks to make it up (correct for a *temporary* cap; a permanent one builds honest, ever-growing debt). "Do not compensate later" (`True`) excuses it: `ledger.block_adjustments` credits the capped resident their `fair − cap` shortfall and debits the residents who absorb it (weighted, sums to zero), so everyone is recorded at fair standing and nobody catches up — the same shape as a perk, which keeps a permanent excused cap from diverging. UI: a "Compensate later" checkbox per cap (③ Policies → Fairness controls). Covered by `tests/test_ledger.py`.
+- Shift closures (`model/closures.py`, `ShiftClosure` = label + window + optional weekdays): a shift stood down on a set of dates (resident shortage, dropped holiday shift). Closed `(date, label)` cells are **reserved** — removed from regular demand, never assigned, never counted as *unfilled*, and outside the point/fairness/ledger pools — and are written into the schedule as `"Closed"`. Threaded through the solver (`_is_regular`/output), `resolve_targets`/`block_adjustments`/`_auto_label_targets` (excluded from pools), fairness reporting (health line shows a closed count; points/counts/coverage skip them), validation (config checks + schedule-rule skip), `config_io` round-trip, and a UI editor (② Coverage → Shift closures). Old configs without `closures` load unchanged. Covered by `tests/test_closures.py` and a `closures_scenario` audit case.
 - Manual edit gained both non-resident markers per cell: **Unfilled** (a coverage gap — counted against coverage, points reported as unfilled) and **Closed** (unavailable / not staffed — removed from demand, never counted as unfilled, outside points and fairness). `ui/state.py:normalize_edited_schedule` recomputes `df.attrs["closed_cells"]` from the edited grid, so a cell set to `"Closed"` is treated exactly like a configured closure (and reassigning a resident re-opens it) instead of becoming a phantom "Closed" resident. Covered by `tests/test_app.py`.
 - Extension point for "cells the regular scheduler does not fill": `model/closures.py:reserved_cell_keys(df)` is the single union (night-float overlay ∪ closed) that every "is this a regular assignment?" check consults — point totals, the unfilled count, min-gap spacing, schedule validation. A future reserved-cell feature tags its cells on `df.attrs` and adds them to that union; the consumers pick it up with no further edits. The solver's `self.reserved_slots` plays the same role inside the model.
 - Fixed a cumulative-fairness regression the overlay rework exposed: because a night-float coverer is now recorded as a recurring *uncompensated absence*, the ledger's no-catch-up excused credit — which had been scaled by the whole running total (`block + Σ prior`) and re-applied every block — diverged for any **recurring** excusal (repeated NF coverage, a standing group factor or perk), so the resident doing the *least* work ended up recorded with the *most* and later targets were corrupted. `block_adjustments` now measures the excused credit on **this block only** (`f · p_tot · gap`), which is byte-identical for a first/one-time block (every exact-number and one-time-invariant test unchanged) but stays bounded and correct-direction under recurrence: NF coverers converge to equal cumulative standing instead of running away. Also fixed `update_ledger` dropping the informational `nf_days` duty count when carrying prior entries forward (it now accumulates). Covered by new `tests/test_ledger.py` regressions and a `recurring_nf_ledger` audit scenario.
 - Night float reworked into a **separate coverage overlay** (`model/night_float.py:resolve_night_float`) that runs before the regular scheduler. `ShiftTemplate.night_float` now means *eligible*; a per-shift `nf_coverage` pattern (weekdays + include/exclude dates) says which dates the overlay covers, and explicit `nf_assignments` (person, period, labels, rest_days) say who covers them. Covered cells are removed from regular demand and never carry regular points; each coverer's period + rest is fed to the regular solve as an uncompensated leave (`nf_leave_windows`), so weights/`_blocked_day_indices`/ledger all agree with no future catch-up. A coverer only ever covers their own role's NF shifts (empty labels = all of that role's NF shifts); overlay cells ride on `df.attrs` as a serializable `{date-iso: {label: name}}` map. Covered dates with no coverer fall back to regular (advisory). Removed the balanced NF dimension entirely: `target_night_float`/`dev_night_float`, the NF-block/rest constraints, `max_nights` enforcement, and `model/nf_blocks.py`; ledger carryover is now total/weekend only, with an informational `nf_days` duty count. `is_regular_night_call` makes the blackout "night before" rule date-aware (protects regular residents on an NF-eligible night's uncovered dates). Overlay cells are tagged in `df.attrs["nf_cells"]` so fairness/validation/exports/manual-edit treat them as coverage, not regular assignments. Covered by `tests/test_night_float.py` and an `overlay_night_float` audit scenario; old configs/ledgers load unchanged.
 
 Implementation Progress (2026-07, later)
-- **Per-label ledger carryover** (closes the outstanding gap below): the ledger's per-label history (`labels`) now feeds the next block's per-shift-type targets, so shift-type debt is repaid *in the same shift type*, not merely as total/weekend points. `_auto_label_targets` grew a `prior_labels` argument and reuses the existing clamped `_carryover_targets` formula per label (prior + block, availability-weighted, minus prior, clamped to the block's label pool); `resolve_targets`/`build_schedule` gained a `label_carryover` flag (default True) threaded from a new "Repay shift-type debt in the same shift type" checkbox in tab ④ (`Keys.LEDGER_LABEL_CARRYOVER`). It stays at the lowest `W_LABEL` tier (never overrides total/weekend), respects the existing skip rules (NF shifts, reduction-capped pairs, preference holders) and the `LABEL_TARGET_MAX_CELLS` gate (above it, history is recorded but not repaid), and needs no ledger-format change (`labels` was already accumulated/round-tripped; legacy files load as zero priors → prior behaviour). Verified by `tests/test_optimiser.py` (carryover on/off, stale/new labels ignored), an ortools solve test in `tests/test_ledger.py`, and a `multi_block_label_ledger` audit scenario (per-shift-type spread converges alongside totals).
+- **Guided Streamlit workspace:** the complete feature set is grouped into six
+  scheduling steps (Setup, Coverage, Policies, History, Review & run, Results),
+  with nested editor tabs and the existing explanatory copy preserved. Results
+  is split into Overview / Schedule / Fairness / Audit / Export, while the
+  separate Diagnostics workspace provides an on-demand bounded Performance lab.
+  Optional canonical resident-name matching compares NFKC-normalised,
+  whitespace-collapsed, casefolded keys while preserving display spelling and
+  leaving ledger reconciliation explicit. The application remains stateless:
+  configs and ledgers are user-owned files, with no server-side data store.
+- **Per-label ledger carryover** (closes the outstanding gap below): the ledger's per-label history (`labels`) now feeds the next block's per-shift-type targets, so shift-type debt is repaid *in the same shift type*, not merely as total/weekend points. `_auto_label_targets` grew a `prior_labels` argument and reuses the existing clamped `_carryover_targets` formula per label (prior + block, availability-weighted, minus prior, clamped to the block's label pool); `resolve_targets`/`build_schedule` gained a `label_carryover` flag (default True) threaded from a new "Repay shift-type debt in the same shift type" checkbox in ④ History → Fairness ledger (`Keys.LEDGER_LABEL_CARRYOVER`). It stays at the lowest `W_LABEL` tier (never overrides total/weekend), respects the existing skip rules (NF shifts, reduction-capped pairs, preference holders) and the `LABEL_TARGET_MAX_CELLS` gate (above it, history is recorded but not repaid), and needs no ledger-format change (`labels` was already accumulated/round-tripped; legacy files load as zero priors → prior behaviour). Verified by `tests/test_optimiser.py` (carryover on/off, stale/new labels ignored), an ortools solve test in `tests/test_ledger.py`, and a `multi_block_label_ledger` audit scenario (per-shift-type spread converges alongside totals).
 - **Ledger reconciliation** (`model/ledger.py`): names and shift labels are still matched exactly, but drift (a fixed misspelling, a renamed/removed/added shift, people coming and going) is now surfaced and fixable instead of silently splitting history. Pure helpers `reconcile_report` (+ `ReconcileReport`, `difflib` suggestions), `rename_person`/`rename_label` (merge histories), `drop_person`/`drop_label` back a post-upload confirmation panel in `ui/ledger_panel.py` (per-mismatch Merge / Keep as history / Remove, Apply/Dismiss, modelled on the availability import). Apply replaces `LEDGER_BASE` wholesale so the grid's base-history mechanism can't resurrect old names. Non-blocking: an ignored panel leaves the ledger usable as-is. Covered by `tests/test_ledger.py` (helpers) and `tests/test_app.py` (apply/dismiss).
 - **Config upload repopulates the editors**: uploading a config JSON now fills every tab (`populate_editors_from_config`, the inverse of the `InputData` assembly + `_active_config_maps`) for review and tweaking, instead of being consumed invisibly at Generate. The date/min_gap/seed/weekend widgets are now session-state keyed (`Keys.START_DATE`/`END_DATE`/`MIN_GAP`/`SEED`/`WEEKEND_LABELS`) so they can be set programmatically; Generate uses the (possibly edited) session config, no re-parse. Covered by `tests/test_app.py`.
 - **Feedback polish**: a `flash`/`show_flash` mechanism (`ui/state.py`) surfaces success after a rerun (toasts fired before `st.rerun()` are lost) — ledger/config upload, availability apply, reconcile apply, ledger clear/start; plus `st.toast` on the main editor adds (shift, leave/rotator, cap, extra points, blackout, perk, closure, reduction, seniority group). Fixed the stale two-vs-three-dimension docstrings in `model/ledger.py`.
@@ -172,6 +198,4 @@ Implementation Progress (2026-07, later)
 7 Outstanding / Future Work
 Half-period night-float coverers (a coverer working part of their period on NF and part on regular/leave) are supported via flexible assignment windows; sub-day interval control is future work.
 
-Performance benchmark *page* in the UI (a CLI benchmark now lives at `scripts/benchmark.py`).
-
-Done: UI seed control; load/save configuration JSON; “soften min_gap” retry when infeasible; unit tests on small synthetic blocks with a known optimum; configurable weekend definition (`weekend_days`); CLI solve-time benchmark; per-label ledger carryover targets (shift-type debt repaid in kind); post-upload ledger reconciliation for name/shift drift; config upload repopulates the editors.
+Done: UI seed control; load/save configuration JSON; “soften min_gap” retry when infeasible; unit tests on small synthetic blocks with a known optimum; configurable weekend definition (`weekend_days`); CLI solve-time benchmark and the on-demand UI Performance lab; per-label ledger carryover targets (shift-type debt repaid in kind); post-upload ledger reconciliation for name/shift drift; config upload repopulates the editors.

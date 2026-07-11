@@ -1,4 +1,4 @@
-"""Tab ④ carryover-ledger panel: upload, reconcile, edit in a grid, download.
+"""History-workspace ledger panel: upload, reconcile, edit in a grid, download.
 
 The ledger used to be an opaque upload; this panel turns it into an editable
 table so real-world schedule changes (a swap after publishing, a correction)
@@ -15,7 +15,6 @@ history, or remove — applying nothing until confirmed.
 """
 from __future__ import annotations
 
-import hashlib
 import re
 
 import pandas as pd
@@ -33,6 +32,7 @@ from model.ledger import (
     rows_to_ledger,
 )
 from ui.state import Keys, flash
+from ui.uploads import consume_upload_once
 
 _EDITOR_KEY = "ledgrid_editor"
 _COLUMNS = ["Resident", "Total", "Weekend"]
@@ -120,7 +120,7 @@ def _reconcile_section(ledger: dict, roster: list, shift_labels: list) -> None:
         )
         acols = st.columns(2)
         if acols[0].button(
-            "Apply choices", key="ledgrec_apply", type="primary", use_container_width=True
+            "Apply choices", key="ledgrec_apply", type="primary", width="stretch"
         ):
             merges = removals = 0
             for name, choice in person_choices.items():
@@ -151,7 +151,7 @@ def _reconcile_section(ledger: dict, roster: list, shift_labels: list) -> None:
             )
             st.rerun()
         if acols[1].button(
-            "Keep everything as history", key="ledgrec_dismiss", use_container_width=True
+            "Keep everything as history", key="ledgrec_dismiss", width="stretch"
         ):
             st.session_state[Keys.LEDGER_RECONCILE_DISMISSED] = sig
             _clear_reconcile_widgets()
@@ -169,33 +169,31 @@ def render_ledger_panel(roster: list, shift_labels: list | None = None) -> dict 
     uploaded = st.file_uploader(
         "Load fairness ledger (JSON)", type="json", key="ledger_upload"
     )
-    if uploaded is not None:
-        # Import once per file: the uploader returns the same file on every
-        # rerun and re-parsing it would clobber grid edits.
-        sig = hashlib.md5(uploaded.getvalue()).hexdigest()
-        if st.session_state.get(Keys.LEDGER_SIG) != sig:
-            st.session_state[Keys.LEDGER_SIG] = sig  # set first: a bad file never loops
-            try:
-                loaded = ledger_from_json(uploaded.getvalue().decode("utf-8"))
-            except Exception as exc:
-                st.error(f"Could not read ledger: {exc}")
-            else:
-                st.session_state[Keys.LEDGER_BASE] = loaded
-                st.session_state[Keys.LEDGER_ROWS] = ledger_to_rows(loaded)
-                st.session_state[Keys.LEDGER_RECONCILE_DISMISSED] = None
-                st.session_state.pop(_EDITOR_KEY, None)
-                _clear_reconcile_widgets()
-                labels = {
-                    lbl
-                    for entry in loaded.values()
-                    for key in ("labels", "label_counts")
-                    for lbl in entry.get(key) or {}
-                }
-                flash(
-                    f"Loaded ledger: {len(loaded)} resident(s), "
-                    f"{len(labels)} shift type(s) in history."
-                )
-                st.rerun()
+    # Import once per file: the uploader returns the same file on every rerun,
+    # and re-parsing it would clobber later grid edits.
+    blob = consume_upload_once(uploaded, Keys.LEDGER_SIG, state=st.session_state)
+    if blob is not None:
+        try:
+            loaded = ledger_from_json(blob.decode("utf-8"))
+        except Exception as exc:
+            st.error(f"Could not read ledger: {exc}")
+        else:
+            st.session_state[Keys.LEDGER_BASE] = loaded
+            st.session_state[Keys.LEDGER_ROWS] = ledger_to_rows(loaded)
+            st.session_state[Keys.LEDGER_RECONCILE_DISMISSED] = None
+            st.session_state.pop(_EDITOR_KEY, None)
+            _clear_reconcile_widgets()
+            labels = {
+                lbl
+                for entry in loaded.values()
+                for key in ("labels", "label_counts")
+                for lbl in entry.get(key) or {}
+            }
+            flash(
+                f"Loaded ledger: {len(loaded)} resident(s), "
+                f"{len(labels)} shift type(s) in history."
+            )
+            st.rerun()
 
     rows = st.session_state.get(Keys.LEDGER_ROWS)
     if rows is None:
@@ -220,7 +218,7 @@ def render_ledger_panel(roster: list, shift_labels: list | None = None) -> dict 
         grid,
         key=_EDITOR_KEY,
         num_rows="dynamic",
-        use_container_width=True,
+        width="stretch",
         column_config={
             "Resident": st.column_config.TextColumn("Resident", required=True),
             "Total": st.column_config.NumberColumn("Total", format="%.1f"),
@@ -243,7 +241,7 @@ def render_ledger_panel(roster: list, shift_labels: list | None = None) -> dict 
         ledger_to_json(ledger),
         file_name="fairness_ledger_edited.json",
         mime="application/json",
-        use_container_width=True,
+        width="stretch",
     )
     if bcols[1].button("Clear ledger (standalone block)", key="ledger_clear"):
         # LEDGER_SIG is kept on purpose: the file still sitting in the

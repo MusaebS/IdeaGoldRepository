@@ -62,7 +62,20 @@ def _seed_result(at: AppTest, df, data) -> None:
 def test_app_loads_without_exception():
     at = _at().run()
     assert not at.exception
-    assert at.title[0].value == "🗓️ Idea Gold Scheduler"
+    assert any("Idea Gold Scheduler" in item.value for item in at.markdown)
+    tab_labels = {tab.label for tab in at.tabs}
+    assert {
+        "① Setup",
+        "② Coverage",
+        "③ Policies",
+        "④ History",
+        "⑤ Review & run",
+        "⑥ Results",
+        "Diagnostics",
+    } <= tab_labels
+    assert at.session_state["benchmark_result"] is None
+    assert at.button(key="benchmark_run").label == "Run benchmark"
+    assert any("No schedule generated yet" in item.value for item in at.markdown)
 
 
 def test_generate_with_empty_config_shows_validation_errors():
@@ -81,7 +94,7 @@ def test_test_mode_generate_produces_schedule(monkeypatch):
     monkeypatch.setenv("ENV", "dev")
     at = _at()
     at.run()
-    at.checkbox[0].set_value(True)  # Test mode
+    at.checkbox(key="test_mode").set_value(True)
     at.run()
     generate = [b for b in at.button if "Generate schedule" in b.label]
     generate[0].click()
@@ -102,6 +115,9 @@ def test_seeded_results_survive_rerun():
     at.run()
     assert not at.exception
     assert any("Schedule quality" in m.label for m in at.metric)
+    assert {"Overview", "Schedule", "Fairness", "Audit trail", "Export"} <= {
+        tab.label for tab in at.tabs
+    }
     # A cosmetic rerun (no new solve) keeps the result in place.
     at.run()
     assert at.session_state["result_df"] is not None
@@ -258,11 +274,23 @@ def test_ledger_policy_toggles_default_on():
     boxes = {c.label: c for c in at.checkbox}
     refund = next(v for k, v in boxes.items() if "Penalties don't earn" in k)
     catchup = next(v for k, v in boxes.items() if "Excused shortfalls" in k)
-    assert refund.value is True and catchup.value is True
+    same_type = next(v for k, v in boxes.items() if "same shift type" in k)
+    assert refund.value is True and catchup.value is True and same_type.value is True
     refund.set_value(False)
     at.run()
     assert at.session_state["ledger_no_refund"] is False
     assert at.session_state["ledger_no_catchup"] is True
+
+
+def test_optional_name_matching_deduplicates_without_rewriting_display_name():
+    at = _at().run()
+    at.toggle(key="normalize_names").set_value(True)
+    juniors = next(area for area in at.text_area if area.label.startswith("Juniors"))
+    juniors.set_value(" Alice   Smith \nALICE SMITH\nBob\nBOB")
+    at.run()
+
+    assert at.session_state["juniors"] == ["Alice   Smith", "Bob"]
+    assert not at.exception
 
 
 def test_fill_column_button_populates_extra_vals():

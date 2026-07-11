@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Provably fair on-call scheduling with OR-Tools CP-SAT and a Streamlit UI"
 requires-python = ">=3.11"
 dependencies = [
-    "streamlit>=1.33,<2",
+    "streamlit>=1.58,<2",
     "pandas>=2.0,<4",
     "ortools>=9.10,<10",
     "openpyxl>=3.1,<4",

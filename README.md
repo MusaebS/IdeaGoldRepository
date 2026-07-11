@@ -7,14 +7,14 @@ If `ortools` is missing, the stub solver marks all shifts as **Unfilled** and th
 The time limit for solving depends on the environment and problem size. Set the `ENV` variable to
 `dev`, `test`, or `prod` (default) for base limits of 10s, 1s or 60s; the code scales these based on the number of participants, days, and shift templates to keep small runs quick.
 Enable the **Test mode** checkbox in the app to load example shifts and participant names automatically.
-The solver supports fractional fairness targets via `InputData.target_total`, `target_label`, and `target_weekend`. It minimises the largest deviation from these targets before minimising smaller gaps and unfilled shifts. This keeps point totals balanced whenever possible.
+The solver supports fractional fairness targets via `InputData.target_total`, `target_label`, and `target_weekend`. Fillable coverage dominates the objective; among maximum-coverage solutions it minimises the largest deviation from these targets before the smaller fairness gaps. This keeps point totals balanced without dropping a coverable slot to make the numbers look tidier.
 
 **Night float is a separate coverage overlay, not a balanced dimension.** It runs *before* the regular scheduler: the dates it covers are assigned to their night-float coverer and removed from regular demand, and each coverer is treated like an *uncompensated* leave for their block (blocked from regular shifts, reduced regular target, no future catch-up). See [Night float](#night-float-a-coverage-overlay) below. Night-float work carries no regular points by default, so it does not enter the total/weekend/per-label balance; the fairness log reports each coverer's night-float **duty days** as an informational figure outside the balance.
 
 If `target_total` or `target_weekend` are not provided, `build_schedule` calculates
 them automatically. It divides the total points and weekend points for the block
-evenly among all listed residents and assigns these values back on the `InputData`
-object before solving. For example:
+evenly among all listed residents and returns the resolved targets on the schedule
+DataFrame's `attrs`, without mutating the `InputData` object. For example:
 
 ```python
 data = InputData(
@@ -30,7 +30,7 @@ data = InputData(
     min_gap=1,
 )
 schedule = build_schedule(data)
-# data.target_total and data.target_weekend now hold the computed shares
+# schedule.attrs["target_total"] and ["target_weekend"] hold the computed shares
 ```
 
 The results page includes a **Download Fairness Log** button. It is built to be a verification artifact so mistakes can't slip through:
@@ -41,6 +41,61 @@ The results page includes a **Download Fairness Log** button. It is built to be 
 - an explicit list of **unfilled slots**.
 
 A Fairness summary and a per-resident bar chart show the min/max/range in the UI, and the Excel/PDF "Fairness" sheet carries the same `Total dev` column (plus an informational `NF duty (days)`) from the same solver-resolved targets — so the on-screen view, the log, and the exports all agree. The schedule and fairness summary can also be exported as **CSV**, **Excel** (`.xlsx`, schedule + fairness sheets) and **PDF**.
+
+## Guided workspace
+
+The Streamlit app is organised as one stable six-step journey. Every editor is
+still available on the page, but long collections of controls are grouped into
+smaller in-step tabs so it is easier to find the right mechanism without losing
+context:
+
+1. **Setup** — block dates and rest, shift templates, and the resident roster.
+2. **Coverage** — leaves and rotators, night-float coverage, and shift closures.
+3. **Policies** — team restrictions, fairness controls, preferences, and point rules.
+4. **History** — portable config files and the optional carryover fairness ledger.
+5. **Review & run** — an at-a-glance summary, blocking validation issues,
+   non-blocking advisories, and schedule generation.
+6. **Results** — the solved schedule, fairness evidence, audit detail, and exports.
+
+The explanatory captions and help text remain beside their controls; the new
+structure changes navigation and presentation, not the meaning of a rule. A
+separate **Diagnostics** workspace contains the on-demand Performance lab and
+never changes the live roster, rules, ledger, or generated schedule.
+
+### Results workspaces
+
+After a solve, Results is split into five focused views:
+
+- **Overview** — solver status, quality, coverage, and preference outcomes.
+- **Schedule** — display customisation, the schedule grid, and manual edit/revalidation.
+- **Fairness** — fairness ranges, the per-resident table, chart, and fairness CSV.
+- **Audit** — per-call detail and the assignment-rationale explorer.
+- **Export** — fairness log, schedule CSV, Excel, PDF, and updated ledger downloads.
+
+All five views come from the same result in session state, so cosmetic changes
+do not rerun the optimiser and manual edits continue to flow through validation,
+fairness reporting, and exports.
+
+### Optional canonical name matching
+
+The resident-roster editor can optionally treat names that differ only by case,
+Unicode compatibility forms, or repeated whitespace as the same person. This
+mode uses NFKC normalisation, collapses whitespace, and compares with Unicode
+`casefold`, while preserving the first-entered spelling for display and exports.
+It is off by default, so existing exact-name workflows remain unchanged. Ledger
+reconciliation remains an explicit review-and-apply step; enabling canonical
+matching never silently merges historical records.
+
+### Privacy and persistence
+
+The app has no database or server-side resident-data store. Uploaded configs,
+availability files, and ledgers are processed in the active Streamlit session;
+generated schedules and downloads are likewise held in session memory rather
+than persisted by the application. Save the config and updated fairness ledger
+locally before the session or app restarts. This no-retention model keeps hosting
+simple and makes the user-owned JSON files the portable source of history; adding
+durable automatic persistence would require an explicitly configured external
+store and credentials.
 
 ## Customising the results (cosmetic)
 
@@ -127,12 +182,12 @@ regular point balance:
    shift editor (`ShiftTemplate.night_float`). This only makes the shift
    *eligible* — a plain regular shift until you say which of its dates the
    overlay actually covers.
-2. **Coverage pattern** (`nf_coverage`, ② *Night float*). Per eligible shift,
+2. **Coverage pattern** (`nf_coverage`, ② *Coverage → Night float*). Per eligible shift,
    choose the weekdays (and one-off include/exclude dates) the overlay covers.
    Uncovered dates stay ordinary regular shifts with their usual points,
    weekend logic, eligibility and fairness. No pattern ⇒ the shift is scheduled
    entirely as a regular shift.
-3. **Coverers** (`nf_assignments`, ② *Night float*). Assign an explicit period
+3. **Coverers** (`nf_assignments`, ② *Coverage → Night float*). Assign an explicit period
    to each covering resident (reusing the date-range editor) plus a configurable
    **1–2 rest days** after the block. There is no auto-assignment.
 
@@ -200,12 +255,12 @@ later block), and load excused by uncompensated leave, rotator windows, perks, o
 group factors is credited so the resident is **not** made to catch it up later
 (e.g. after a perk expires). Adjusted entries carry a transparent `adjustments`
 audit note in the ledger JSON, and the download caption lists what was applied.
-Two checkboxes under **④ Save / carryover** restore pure cumulative balancing if
+Two checkboxes under **④ History → Fairness ledger** restore pure cumulative balancing if
 you really want deviations repaid.
 
 **Per-shift-type debt is repaid in kind (default).** The ledger also carries each
 resident's accumulated points *per shift type*. When "Repay shift-type debt in the
-same shift type" is ticked (the default, in **④ Save / carryover**), someone who
+same shift type" is ticked (the default, in **④ History → Fairness ledger**), someone who
 worked more than their share of, say, nights last block gets a lighter *night*
 target now — not just fewer points overall. This sits at the lowest fairness tier,
 so it never overrides the total or weekend balance, and on very large blocks (where
@@ -217,7 +272,7 @@ shift type at zero history.
 **Reconciling a ledger after names or shifts change.** Names and shift labels are
 matched exactly, so a fixed misspelling, a renamed shift, a retired shift, or a new
 joiner would otherwise silently orphan or restart history. After you upload a
-ledger, a **reconcile step** (under the grid in ④) lists every ledger name/shift
+ledger, a **reconcile step** (under the grid in ④ History) lists every ledger name/shift
 that doesn't match the current setup, with likely matches suggested first, and lets
 you **merge** it into the current entry (keeping its history), **keep** it as
 dormant history, or **remove** it — nothing changes until you click Apply, and you
@@ -249,11 +304,11 @@ Load doesn't have to be equal:
 
 All three are annotated on the resident's fairness-log line (`[R2 ×0.90]`,
 `[perk ×0.80 →2026-08-01]`, `[exempt: NF]`) and the targets already embed the
-factors, so deviations stay honest. Configure them under **③ Advanced**.
+factors, so deviations stay honest. Configure them under **③ Policies**.
 
 ## Groups & blackouts
 
-Define **named groups** (② *Groups & blackouts*) — plain member lists, e.g. four
+Define **named groups** (③ *Policies → Teams & restrictions*) — plain member lists, e.g. four
 teams of three, fully editable — and add **blackout periods** per group (or for
 ad-hoc names): nobody covered is on call during the window, and by default they
 are also blocked from the **night calls of the day before**, so no one is
@@ -279,14 +334,14 @@ call the day before it — is flagged by the validator and the log.
 
 When adding a **rotator** you can also pick which shift types they cover
 ("Covers only these shift types"): anything left out is added to their entry
-under **③ Advanced → Exemptions** (the normal hard-block mechanism), where it
+under **③ Policies → Teams & restrictions** (the normal hard-block mechanism), where it
 stays visible and editable.
 
 ## Shift-type load reductions (repaid later)
 
 Sometimes a group should carry **less of specific shift types** for a while —
 e.g. few or no night calls during a heavy rotation, with others covering.
-Add a **reduction** (③ Advanced): group (or names) + shift types + a **load %
+Add a **reduction** (③ Policies → Teams & restrictions): group (or names) + shift types + a **load %
 of fair share** (0% = none of those shifts in the window) + a period. It is
 enforced as a hard cap that can never make the schedule infeasible.
 Per entry, choose what happens to the rest of their load *this* block:
@@ -315,7 +370,7 @@ as CSV, and mirrored in the Excel/PDF Fairness sheet. A **Per-call detail
 (audit)** expander lists every (date, shift) slot with its holder, points, and
 weekend/night-float flags — download the CSV each month for future reference.
 
-The carryover ledger is now **editable in-app** (④ Save / carryover): upload
+The carryover ledger is now **editable in-app** (④ History → Fairness ledger): upload
 it, adjust any resident's cumulative numbers after a real-world change, add or
 remove residents, download the edited JSON without generating — and whatever
 the grid shows is what the next Generate balances against. Uploading also runs
@@ -328,7 +383,7 @@ next block's per-shift-type targets. Old ledger files load unchanged.
 ## Importing availability requests
 
 Collect monthly "I need to be free on these dates" requests with any form tool,
-export them as a sheet, and import them in one go (② under Leaves): download
+export them as a sheet, and import them in one go (② Coverage → Leaves & rotators): download
 the **template** (CSV or Excel; columns `Name`, `Start`, `End`), upload the
 responses (`.xlsx` or `.csv`), review the **preview** — every row gets an OK or
 a per-row error (unknown name, unreadable date, backwards range), so one bad
@@ -341,7 +396,7 @@ per person, an empty End for a single day, and typed date cells / ISO /
 ## Shift preferences (soft)
 
 Residents can prefer **specific shift types** (e.g. nights vs mornings) and a
-**day type** (weekends vs weekdays) — ③ Advanced. Preferences are strictly
+**day type** (weekends vs weekdays) — ③ Policies → Preferences & points. Preferences are strictly
 quality-of-life: they only choose *among equally fair schedules* and never
 change anyone's fair share, deviations, the log, or the ledger. Mechanically,
 when preferences exist every fairness weight in the objective is multiplied by
@@ -359,7 +414,7 @@ never on call on the same day (any shift types). It is a hard constraint that
 never makes the schedule infeasible (uncoverable slots fall to *Unfilled*, and
 an advisory warns when the pair are the only two of a role) and it does not
 change anyone's fairness target. Because separating people usually needs
-approval from higher authority, the editor (③ Advanced → *Avoid pairs
+approval from higher authority, the editor (③ Policies → Preferences & points → *Avoid pairs
 (restricted)*) hides behind an **access code** — a deliberate extra step, not
 a security measure; pairs loaded from a config file stay active and are shown
 as a count even while locked. Both residents' log lines carry an
@@ -434,9 +489,15 @@ non-zero if any scenario fails its stated fairness expectation.
 
 ## Benchmarking
 
-`python scripts/benchmark.py` times `build_schedule` across a few sizes against the
-spec's ≤60s target for 40 residents × 28 days × 10 shifts; pass `people days shifts`
-for a single custom run.
+The **Diagnostics → Performance lab** runs bounded synthetic cases on demand,
+without reading or changing the active schedule setup. Start with a preset or
+choose a custom case; the largest workloads require an explicit confirmation
+because they can occupy the app worker for about a minute. The result reports
+elapsed time, solver status, and whether the case met its target.
+
+For repeatable command-line measurements, `python scripts/benchmark.py` times the
+same benchmark model across several sizes against the spec's ≤60s target for
+40 residents × 28 days × 10 shifts; pass `people days shifts` for one custom run.
 
 ## App smoke test
 
@@ -465,9 +526,18 @@ CI runs ruff, mypy, and pytest on Python 3.11/3.12 — plus a stub-only job with
 no pandas/OR-Tools installed to guard the graceful-degradation path.
 
 ## Changelog
+- **Guided workspace and visual polish.** Reorganised the complete UI into a
+  six-step Setup → Coverage → Policies → History → Review & run → Results flow,
+  with smaller nested editor tabs and the existing mechanism explanations kept
+  beside their controls. Results now has focused Overview, Schedule, Fairness,
+  Audit, and Export workspaces; a separate on-demand Diagnostics / Performance
+  lab runs bounded synthetic benchmarks without touching live state. Added
+  optional display-preserving canonical name matching, shared upload guards,
+  reusable status/card treatments, and a cohesive Streamlit theme. Raised the
+  minimum supported Streamlit version to 1.58.
 - **Per-shift-type carryover, ledger reconciliation, and config repopulation.**
   The carryover ledger's per-shift-type history now feeds the next block's
-  per-label targets (default on; toggle in ④ Save / carryover), so shift-type
+  per-label targets (default on; toggle in ④ History → Fairness ledger), so shift-type
   debt is repaid in kind rather than as generic points — at the lowest fairness
   tier, so total/weekend balance is untouched, and gated on large rosters (no
   ledger-format change). Uploading a ledger now offers a **reconcile step** for

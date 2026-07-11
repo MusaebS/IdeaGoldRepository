@@ -5,24 +5,35 @@ this script wires the pieces together. Run with ``streamlit run app.py``.
 """
 import streamlit as st
 
-from ui.config_tabs import load_demo_data_once, render_config_tabs, render_generate_and_solve
-from ui.results import render_results
-from ui.state import init_session_state
+from ui.config_tabs import load_demo_data_once, render_application
+from ui.state import init_session_state, show_flash
+from ui.theme import apply_app_theme, render_hero
 
 st.set_page_config(page_title="Idea Gold Scheduler", page_icon="🗓️", layout="wide")
-st.title("🗓️ Idea Gold Scheduler")
-st.caption(
+apply_app_theme()
+init_session_state()
+show_flash()
+
+render_hero(
+    "Idea Gold Scheduler",
     "Build a provably fair on-call schedule. Set up shifts and people, tweak the "
-    "rules, then Generate — the optimiser balances the workload for you."
+    "rules, then Generate — the optimiser balances the workload for you.",
+    eyebrow="Clinical scheduling workspace",
+    meta=("Constraint-aware", "Cumulative fairness", "Auditable exports"),
 )
 
-init_session_state()
-
-# optional sample data for quick testing
-test_mode = st.checkbox("Test mode (preload example data)")
+with st.sidebar:
+    st.subheader("Workspace tools")
+    st.caption(
+        "Load the complete example setup to explore every stage without entering "
+        "a real roster. Turn it off at any time; your current edits stay in place."
+    )
+    test_mode = st.checkbox(
+        "Test mode (preload example data)",
+        key="test_mode",
+        help="Loads example shifts and residents once. It does not run the solver.",
+    )
 if test_mode:
     load_demo_data_once()
 
-session_config, carryover_ledger = render_config_tabs()
-render_generate_and_solve(session_config, carryover_ledger)
-render_results()
+render_application()
