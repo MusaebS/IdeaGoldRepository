@@ -24,6 +24,7 @@ from model.validation import validate_schedule
 
 from ui.editors import custom_columns_editor
 from ui.state import Keys, apply_manual_edits, normalize_edited_schedule, revert_manual_edits
+from ui.theme import render_card, render_section_header, render_status
 
 
 def style_schedule(df, data, color_mode, palette=None):
@@ -149,7 +150,7 @@ def _render_customisation(df) -> tuple:
             index=0,
             help="Shade the grid; the same colours flow into the Excel and PDF downloads.",
         )
-        tc = st.columns([2, 2, 4])
+        tc = st.columns([2, 2, 4], vertical_alignment="bottom")
         with tc[0]:
             st.color_picker(
                 "Theme colour", DEFAULT_PALETTE["points"], key="pal_theme",
@@ -157,8 +158,12 @@ def _render_customisation(df) -> tuple:
                 "derived from it automatically (unfilled stays the warning red).",
             )
         with tc[1]:
-            st.markdown("&nbsp;")
-            st.button("Apply theme shades", key="pal_theme_apply", on_click=_apply_theme)
+            st.button(
+                "Apply theme shades",
+                key="pal_theme_apply",
+                on_click=_apply_theme,
+                width="stretch",
+            )
         st.caption("Colours for each role (used by the modes above):")
         pcols = st.columns(5)
         for col, (key, lbl) in zip(
@@ -211,7 +216,7 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
         final_df.to_csv(index=False),
         file_name="schedule.csv",
         mime="text/csv",
-        use_container_width=True,
+        width="stretch",
     )
     try:
         excel_bytes = cached_export(
@@ -226,7 +231,7 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
             excel_bytes,
             file_name="schedule.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
+            width="stretch",
         )
     except ImportError as exc:  # pragma: no cover - openpyxl not installed
         dcols[1].info(f"Excel export needs openpyxl: {exc}")
@@ -245,7 +250,7 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
             pdf_bytes,
             file_name="schedule.pdf",
             mime="application/pdf",
-            use_container_width=True,
+            width="stretch",
         )
     except ImportError as exc:  # pragma: no cover - reportlab not installed
         dcols[2].info(f"PDF export needs reportlab: {exc}")
@@ -256,7 +261,7 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
         "Download Fairness Log",
         log_text,
         file_name="fairness_log.txt",
-        use_container_width=True,
+        width="stretch",
     )
     policy = LedgerPolicy(
         no_refund_penalties=st.session_state.get(Keys.LEDGER_NO_REFUND, True),
@@ -267,12 +272,12 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
         ledger_to_json(update_ledger(prior_ledger, df, data, policy=policy)),
         file_name=f"fairness_ledger_through_{data.end_date.isoformat()}.json",
         mime="application/json",
-        use_container_width=True,
+        width="stretch",
     )
     st.caption(
         "Keep the ledger — it's the cumulative fairness record. Streamlit Cloud "
         "doesn't store anything between sessions, so re-upload it under "
-        "'Carryover fairness' next block to keep months fair."
+        "History → Fairness ledger next block to keep months fair."
     )
     notes = _ledger_policy_notes(policy, prior_ledger, data)
     if notes:
@@ -369,18 +374,14 @@ def _render_rationale(df, result_data) -> None:
             st.caption("Generate a schedule with at least one shift to use this.")
 
 
-def render_results() -> None:
-    """Render everything below the Generate button, from session state.
-
-    Results render from ``session_state`` so they survive reruns (e.g. changing
-    the colour mode) without re-solving.
-    """
-    if st.session_state[Keys.RESULT_DF] is None:
-        return
-    df = st.session_state[Keys.RESULT_DF]
-    data = st.session_state[Keys.RESULT_DATA]
-    prior_ledger = st.session_state.get(Keys.RESULT_PRIOR_LEDGER)
-
+def _render_overview(df, data, points, quality) -> None:
+    """Render solver health, schedule quality, and preference outcomes."""
+    render_section_header(
+        "At-a-glance health",
+        "Confirm coverage and fairness before reviewing individual assignments.",
+        eyebrow="Overview",
+        level=3,
+    )
     _render_solver_caption(df, data)
 
     if st.session_state[Keys.MANUALLY_EDITED]:
@@ -396,8 +397,6 @@ def render_results() -> None:
                 "details in the manual-edit panel and the fairness log."
             )
 
-    points = calculate_points(df, data)
-    quality = schedule_quality(df, data, points=points)
     mcols = st.columns(3)
     mcols[0].metric("Schedule quality", f"{quality['score']} / 100")
     mcols[1].metric("Slots filled", f"{quality['filled']}/{quality['total_slots']}")
@@ -416,6 +415,15 @@ def render_results() -> None:
             )
         )
 
+
+def _render_schedule_workspace(df, data) -> tuple:
+    """Render the schedule grid, cosmetic controls, and manual-edit workflow."""
+    render_section_header(
+        "Schedule workspace",
+        "Shape the presentation, inspect every day, or make a controlled manual correction.",
+        eyebrow="Schedule",
+        level=3,
+    )
     color_mode, palette = _render_customisation(df)
 
     # Reorder / hide columns (cosmetic). Selection order = display order.
@@ -433,60 +441,139 @@ def render_results() -> None:
 
     try:
         st.dataframe(
-            style_schedule(final_df, data, color_mode, palette), use_container_width=True
+            style_schedule(final_df, data, color_mode, palette), width="stretch"
         )
     except Exception:
         # Colouring must never take down the results; fall back to plain.
         st.caption("Styled view unavailable; showing the plain table.")
-        st.dataframe(final_df, use_container_width=True)
+        st.dataframe(final_df, width="stretch")
 
+    _render_manual_edit(df, data)
+    return final_df, color_mode, palette
+
+
+def _render_fairness_workspace(df, data, points, prior_ledger) -> None:
+    """Render workload ranges, resident-level detail, and fairness download."""
+    render_section_header(
+        "Fairness review",
+        "Compare regular workload, cumulative history, and night-float duty before publishing.",
+        eyebrow="Fairness",
+        level=3,
+    )
     ranges = fairness_range_lines(points)
-    if ranges:
-        st.subheader("Fairness summary")
-        for line in ranges:
-            st.write(line)
-        fair_frame = build_fairness_frame(points, data, df, prior_ledger)
-        if len(fair_frame):
-            st.caption(
-                "Per resident: calls and points per shift type, targets and "
-                "deviations, cumulative history (with a ledger), and load notes."
-            )
-            st.dataframe(fair_frame, use_container_width=True)
-            st.download_button(
-                "Download fairness table (CSV)",
-                fair_frame.to_csv(index=False),
-                file_name="fairness_table.csv",
-                mime="text/csv",
-            )
-            chart_df = fair_frame[
-                ["Resident", "Total", "Weekend"]
-            ].set_index("Resident")
-            st.caption("Regular workload by resident (points)")
-            st.bar_chart(chart_df, stack=False)
-            nf_duty = {
-                name: int(info.get("night_float", 0)) for name, info in points.items()
-                if info.get("night_float", 0)
-            }
-            if nf_duty:
-                st.caption(
-                    "Night-float duty (days, outside regular fairness): "
-                    + " · ".join(f"{p} {d}" for p, d in sorted(nf_duty.items()))
-                )
+    if not ranges:
+        render_status(
+            "Fairness detail will appear when the result includes resident assignments.",
+            title="No fairness rows to compare",
+            tone="info",
+        )
+        return
 
+    st.subheader("Fairness summary")
+    for line in ranges:
+        st.write(line)
+    fair_frame = build_fairness_frame(points, data, df, prior_ledger)
+    if len(fair_frame):
+        st.caption(
+            "Per resident: calls and points per shift type, targets and "
+            "deviations, cumulative history (with a ledger), and load notes."
+        )
+        st.dataframe(fair_frame, width="stretch")
+        st.download_button(
+            "Download fairness table (CSV)",
+            fair_frame.to_csv(index=False),
+            file_name="fairness_table.csv",
+            mime="text/csv",
+        )
+        chart_df = fair_frame[["Resident", "Total", "Weekend"]].set_index("Resident")
+        st.caption("Regular workload by resident (points)")
+        st.bar_chart(chart_df, stack=False)
+        nf_duty = {
+            name: int(info.get("night_float", 0))
+            for name, info in points.items()
+            if info.get("night_float", 0)
+        }
+        if nf_duty:
+            st.caption(
+                "Night-float duty (days, outside regular fairness): "
+                + " · ".join(f"{p} {d}" for p, d in sorted(nf_duty.items()))
+            )
+
+
+def _render_audit_workspace(df, data) -> None:
+    """Render assignment-level evidence and the rationale explorer."""
+    render_section_header(
+        "Trace every decision",
+        "Archive the slot-level record, then inspect why a particular assignment was made.",
+        eyebrow="Audit trail",
+        level=3,
+    )
     with st.expander("Per-call detail (audit)", expanded=False):
         st.caption(
             "Every (date, shift) slot with who took it and what it was worth — "
             "download and archive it for future reference."
         )
         call_frame = build_assignment_frame(df, data)
-        st.dataframe(call_frame, use_container_width=True)
+        st.dataframe(call_frame, width="stretch")
         st.download_button(
             "Download per-call CSV",
             call_frame.to_csv(index=False),
             file_name="per_call_detail.csv",
             mime="text/csv",
         )
-
-    _render_downloads(final_df, df, data, points, color_mode, palette, prior_ledger)
-    _render_manual_edit(df, data)
     _render_rationale(df, data)
+
+
+def render_results() -> None:
+    """Render the persistent result as five eager, task-focused workspaces.
+
+    Results come from ``session_state`` so they survive cosmetic reruns without
+    re-solving. Streamlit tabs are intentionally eager: every existing widget
+    remains mounted and every export is prepared from the same display frame.
+    """
+    render_section_header(
+        "Results studio",
+        "Review quality, refine the schedule, verify fairness, audit decisions, and export.",
+        eyebrow="Result workspace",
+    )
+    if st.session_state[Keys.RESULT_DF] is None:
+        render_status(
+            "Complete the configuration, then use Review & run to generate a schedule.",
+            title="No schedule generated yet",
+            label="Ready",
+            tone="info",
+        )
+        render_card(
+            "Your review workspace is ready",
+            "Once a schedule is generated, this area opens into Overview, Schedule, "
+            "Fairness, Audit trail, and Export workspaces without losing your inputs.",
+            eyebrow="What happens next",
+            footer="All result calculations and downloads stay tied to the saved schedule.",
+        )
+        return
+
+    df = st.session_state[Keys.RESULT_DF]
+    data = st.session_state[Keys.RESULT_DATA]
+    prior_ledger = st.session_state.get(Keys.RESULT_PRIOR_LEDGER)
+    points = calculate_points(df, data)
+    quality = schedule_quality(df, data, points=points)
+
+    overview_tab, schedule_tab, fairness_tab, audit_tab, export_tab = st.tabs(
+        ["Overview", "Schedule", "Fairness", "Audit trail", "Export"]
+    )
+    with overview_tab:
+        _render_overview(df, data, points, quality)
+    with schedule_tab:
+        final_df, color_mode, palette = _render_schedule_workspace(df, data)
+    with fairness_tab:
+        _render_fairness_workspace(df, data, points, prior_ledger)
+    with audit_tab:
+        _render_audit_workspace(df, data)
+    with export_tab:
+        render_section_header(
+            "Publish and carry forward",
+            "Download the schedule, its evidence, and the ledger needed to keep future blocks fair.",
+            eyebrow="Export",
+            level=3,
+        )
+        _render_downloads(final_df, df, data, points, color_mode, palette, prior_ledger)

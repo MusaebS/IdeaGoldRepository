@@ -1,7 +1,6 @@
-"""Configuration tabs (①-④) and the Generate/solve flow."""
+"""Configuration workspaces and the Generate/solve flow."""
 from __future__ import annotations
 
-import hashlib
 import os
 from dataclasses import replace
 
@@ -49,8 +48,11 @@ from ui.editors import (
     shift_template_editor,
     weekday_points_editor,
 )
+from ui.diagnostics import render_diagnostics
 from ui.ledger_panel import render_ledger_panel
-from ui.state import Keys, flash, restore_display_state, set_result, show_flash
+from ui.state import Keys, flash, restore_display_state, set_result
+from ui.theme import card_container, render_section_header, render_status
+from ui.uploads import consume_upload_once
 
 
 def load_demo_data_once() -> None:
@@ -69,7 +71,7 @@ def load_demo_data_once() -> None:
 def populate_editors_from_config(data: InputData, state=None) -> None:
     """Fill every editor's session state from a loaded config.
 
-    The inverse of the ``InputData`` assembly in :func:`render_config_tabs` +
+    The inverse of the ``InputData`` assembly in :func:`session_config_from_state` +
     ``_active_config_maps``: an uploaded config lands in the tabs themselves,
     ready to review and tweak, instead of being consumed invisibly at
     Generate time. Widgets pick the values up on the rerun that follows.
@@ -256,7 +258,7 @@ def _active_config_maps() -> dict:
 def _availability_import_section(people: list) -> None:
     """Upload a monthly availability-request form export; apply as leaves.
 
-    Parsed once per file (md5 signature guard) into a preview with a per-row
+    Parsed once per file (content signature guard) into a preview with a per-row
     status, so one bad answer never blocks the rest; Apply adds only the valid
     rows as compensated leaves, deduplicated against what is already entered.
     """
@@ -275,7 +277,7 @@ def _availability_import_section(people: list) -> None:
             availability_template_csv(),
             file_name="availability_template.csv",
             mime="text/csv",
-            use_container_width=True,
+            width="stretch",
         )
         try:
             tcols[1].download_button(
@@ -283,29 +285,30 @@ def _availability_import_section(people: list) -> None:
                 availability_template_xlsx(),
                 file_name="availability_template.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+                width="stretch",
             )
         except RuntimeError as exc:  # pragma: no cover - openpyxl missing
             tcols[1].info(str(exc))
         uploaded = st.file_uploader(
             "Upload responses (xlsx / csv)", type=["xlsx", "csv"], key="avail_upload"
         )
-        if uploaded is not None:
-            sig = hashlib.md5(uploaded.getvalue()).hexdigest()
-            if st.session_state.get(Keys.AVAIL_SIG) != sig:
-                st.session_state[Keys.AVAIL_SIG] = sig  # set first: a bad file never loops
-                try:
-                    blob = uploaded.getvalue()
-                    if uploaded.name.lower().endswith(".csv"):
-                        raw_rows = read_availability_csv(blob.decode("utf-8-sig"))
-                    else:
-                        raw_rows = read_availability_xlsx(blob)
-                    st.session_state[Keys.AVAIL_PREVIEW] = parse_availability_rows(
-                        raw_rows, people
-                    )
-                except Exception as exc:
-                    st.session_state[Keys.AVAIL_PREVIEW] = None
-                    st.error(f"Could not read the file: {exc}")
+        blob = consume_upload_once(
+            uploaded,
+            Keys.AVAIL_SIG,
+            state=st.session_state,
+        )
+        if blob is not None:
+            try:
+                if uploaded.name.lower().endswith(".csv"):
+                    raw_rows = read_availability_csv(blob.decode("utf-8-sig"))
+                else:
+                    raw_rows = read_availability_xlsx(blob)
+                st.session_state[Keys.AVAIL_PREVIEW] = parse_availability_rows(
+                    raw_rows, people
+                )
+            except Exception as exc:
+                st.session_state[Keys.AVAIL_PREVIEW] = None
+                st.error(f"Could not read the file: {exc}")
 
         preview = st.session_state.get(Keys.AVAIL_PREVIEW)
         if not preview:
@@ -322,7 +325,7 @@ def _availability_import_section(people: list) -> None:
                 }
                 for r in preview
             ]),
-            use_container_width=True,
+            width="stretch",
         )
         valid_leaves = rows_to_leaves(preview)
         st.caption(f"{len(valid_leaves)} of {len(preview)} row(s) valid.")
@@ -361,117 +364,16 @@ def _inline_config_hints(config: InputData) -> list:
     ]
 
 
-def render_config_tabs() -> tuple:
-    """Render tabs ①-④; returns (session_config, carryover_ledger)."""
-    show_flash()
-    st.header("Configuration")
-    tab_people, tab_rules, tab_adv, tab_save = st.tabs(
-        ["① Shifts & people", "② Dates & rules", "③ Advanced", "④ Save / carryover"]
-    )
-
-    with tab_people:
-        shift_template_editor()
-        st.divider()
-        roster_editor()
-
-    with tab_rules:
-        # These widgets are session-state keyed (seeded in ui.state._defaults)
-        # so a loaded config can repopulate them programmatically.
-        dc = st.columns(2)
-        with dc[0]:
-            start_date = st.date_input("Start date", key=Keys.START_DATE)
-        with dc[1]:
-            end_date = st.date_input("End date", key=Keys.END_DATE)
-        rc = st.columns(2)
-        with rc[0]:
-            min_gap = st.slider(
-                "Minimum gap (rest days between shifts)", 0, 7, key=Keys.MIN_GAP
-            )
-        with rc[1]:
-            seed = st.number_input(
-                "Random seed", 0, 1_000_000, step=1, key=Keys.SEED,
-                help="Same seed reproduces the same schedule when the solver finishes.",
-            )
-        weekend_labels = st.multiselect(
-            "Weekend days", WEEKDAY_LABELS, key=Keys.WEEKEND_LABELS,
-            help="Days that count as weekend for fairness (a shift's 'Thu' flag also adds Thursday).",
-        )
-        weekend_days = [WEEKDAY_LABELS.index(name) for name in weekend_labels]
-
-        st.divider()
-        st.subheader("Leaves & rotators")
-        people = st.session_state[Keys.JUNIORS] + st.session_state[Keys.SENIORS]
-        # Date pickers default to the schedule block so entries land in the
-        # right month without scrolling from today.
-        date_range_editor(
-            "Leaves — resident unavailable during window", Keys.LEAVES, people,
-            with_compensation=True, default_start=start_date, default_end=end_date,
-        )
-        st.caption(
-            "Compensated leave keeps the resident's full fair share; uncompensated "
-            "scales it down for the absence (like a rotator)."
-        )
-        _availability_import_section(people)
-        st.divider()
-        date_range_editor(
-            "Rotators — resident only available during window", Keys.ROTATORS, people,
-            default_start=start_date, default_end=end_date,
-            shift_labels=[s.label for s in st.session_state[Keys.SHIFTS]],
-        )
-        st.caption(
-            "Rotators are normal roster members while active: groups, "
-            "blackouts, reductions, and preferences all apply to them."
-        )
-        st.divider()
-        st.subheader("Night float")
-        night_float_editor(
-            people,
-            {s.label: s.role for s in st.session_state[Keys.SHIFTS] if s.night_float},
-            default_start=start_date, default_end=end_date,
-        )
-        st.divider()
-        st.subheader("Groups & blackouts")
-        named_groups_editor(people)
-        st.divider()
-        blackouts_editor(people, default_start=start_date, default_end=end_date)
-        st.divider()
-        st.subheader("Shift closures")
-        closures_editor(
-            [s.label for s in st.session_state[Keys.SHIFTS]],
-            default_start=start_date, default_end=end_date,
-        )
-
-    with tab_adv:
-        st.subheader("Per-resident caps & extra points")
-        people = st.session_state[Keys.JUNIORS] + st.session_state[Keys.SENIORS]
-        caps_editor(people)
-        st.divider()
-        extra_points_editor(people)
-        st.divider()
-        st.subheader("Seniority groups, perks & exemptions")
-        seniority_editor(people)
-        st.divider()
-        perks_editor(people, default_start=start_date, default_end=end_date)
-        st.divider()
-        exemptions_editor(people, [s.label for s in st.session_state[Keys.SHIFTS]])
-        st.divider()
-        reductions_editor(
-            people, [s.label for s in st.session_state[Keys.SHIFTS]],
-            default_start=start_date, default_end=end_date,
-        )
-        st.divider()
-        preferences_editor(people, [s.label for s in st.session_state[Keys.SHIFTS]])
-        st.divider()
-        avoid_pairs_editor(people)
-        st.divider()
-        st.subheader("Point overrides & holidays")
-        weekday_points_editor([s.label for s in st.session_state[Keys.SHIFTS]])
-        st.divider()
-        holidays_editor(default_date=start_date)
-
-    session_config = InputData(
-        start_date=start_date,
-        end_date=end_date,
+def session_config_from_state() -> InputData:
+    """Assemble the active configuration from canonical session state."""
+    weekend_days = [
+        WEEKDAY_LABELS.index(name)
+        for name in st.session_state[Keys.WEEKEND_LABELS]
+        if name in WEEKDAY_LABELS
+    ]
+    return InputData(
+        start_date=st.session_state[Keys.START_DATE],
+        end_date=st.session_state[Keys.END_DATE],
         shifts=st.session_state[Keys.SHIFTS],
         juniors=st.session_state[Keys.JUNIORS],
         seniors=st.session_state[Keys.SENIORS],
@@ -479,46 +381,205 @@ def render_config_tabs() -> tuple:
         nf_seniors=st.session_state[Keys.NF_SENIORS],
         leaves=st.session_state[Keys.LEAVES],
         rotators=st.session_state[Keys.ROTATORS],
-        min_gap=min_gap,
-        seed=int(seed),
+        min_gap=int(st.session_state[Keys.MIN_GAP]),
+        seed=int(st.session_state[Keys.SEED]),
         weekend_days=weekend_days,
         **_active_config_maps(),
     )
 
-    # Early feedback: misconfigurations surface here as warnings while the
-    # user is still on the form, not only after clicking Generate.
-    for hint in _inline_config_hints(session_config):
-        st.warning(hint)
 
-    with tab_save:
-        st.subheader("Save / load configuration")
-        display_state = {
-            "palette": dict(st.session_state[Keys.PALETTE]),
-            "extra_cols": list(st.session_state[Keys.EXTRA_COLS]),
-            "extra_vals": {
-                col: dict(vals) for col, vals in st.session_state[Keys.EXTRA_VALS].items()
-            },
-            "col_order": list(st.session_state[Keys.COL_ORDER]),
-        }
-        st.download_button(
-            "Download config (JSON)",
-            input_data_to_json(session_config, display=display_state),
-            file_name="idea_gold_config.json",
-            mime="application/json",
-        )
-        st.caption("Includes the display setup: colours, custom columns, column order.")
-        uploaded_config = st.file_uploader(
-            "Load config (JSON) — fills in all the tabs for review", type="json"
-        )
-        if uploaded_config is not None:
-            # Import once per uploaded file (the uploader returns the same
-            # file on every rerun; the signature guard stops it clobbering
-            # later edits to the tabs or the colours/columns).
-            sig = hashlib.md5(uploaded_config.getvalue()).hexdigest()
-            if st.session_state.get(Keys.DISPLAY_RESTORED) != sig:
-                st.session_state[Keys.DISPLAY_RESTORED] = sig  # set first: a bad file never loops
-                text = uploaded_config.getvalue().decode("utf-8")
+def _display_state() -> dict:
+    return {
+        "palette": dict(st.session_state[Keys.PALETTE]),
+        "extra_cols": list(st.session_state[Keys.EXTRA_COLS]),
+        "extra_vals": {
+            col: dict(vals) for col, vals in st.session_state[Keys.EXTRA_VALS].items()
+        },
+        "col_order": list(st.session_state[Keys.COL_ORDER]),
+    }
+
+
+def _render_setup_workspace() -> None:
+    render_section_header(
+        "Build the scheduling block",
+        "Define the calendar, shift catalogue, and resident roster—the foundation "
+        "used by every coverage and fairness rule.",
+        eyebrow="Step 1 · Setup",
+    )
+    tab_block, tab_shifts, tab_roster = st.tabs(
+        ["Block settings", "Shift templates", "Resident roster"]
+    )
+    with tab_block:
+        with card_container(
+            "Calendar & rest",
+            "Choose the block window and the baseline spacing rules used by the optimiser.",
+        ):
+            dc = st.columns(2)
+            dc[0].date_input("Start date", key=Keys.START_DATE)
+            dc[1].date_input("End date", key=Keys.END_DATE)
+            rc = st.columns(2)
+            rc[0].slider(
+                "Minimum gap (rest days between shifts)", 0, 7, key=Keys.MIN_GAP
+            )
+            rc[1].number_input(
+                "Random seed",
+                0,
+                1_000_000,
+                step=1,
+                key=Keys.SEED,
+                help="Same seed reproduces the same schedule when the solver finishes.",
+            )
+            st.multiselect(
+                "Weekend days",
+                WEEKDAY_LABELS,
+                key=Keys.WEEKEND_LABELS,
+                help="Days that count as weekend for fairness (a shift's 'Thu' flag also adds Thursday).",
+            )
+    with tab_shifts:
+        with card_container():
+            shift_template_editor()
+    with tab_roster:
+        with card_container():
+            roster_editor()
+
+
+def _render_coverage_workspace() -> None:
+    render_section_header(
+        "Shape coverage and availability",
+        "Record when people can work, define the night-float overlay, and stand down "
+        "slots that should not enter demand.",
+        eyebrow="Step 2 · Coverage",
+    )
+    people = st.session_state[Keys.JUNIORS] + st.session_state[Keys.SENIORS]
+    shift_labels = [s.label for s in st.session_state[Keys.SHIFTS]]
+    start_date = st.session_state[Keys.START_DATE]
+    end_date = st.session_state[Keys.END_DATE]
+    tab_absence, tab_nf, tab_closures = st.tabs(
+        ["Leaves & rotators", "Night float", "Shift closures"]
+    )
+    with tab_absence:
+        with card_container():
+            date_range_editor(
+                "Leaves — resident unavailable during window",
+                Keys.LEAVES,
+                people,
+                with_compensation=True,
+                default_start=start_date,
+                default_end=end_date,
+            )
+            st.caption(
+                "Compensated leave keeps the resident's full fair share; uncompensated "
+                "scales it down for the absence (like a rotator)."
+            )
+            _availability_import_section(people)
+        with card_container():
+            date_range_editor(
+                "Rotators — resident only available during window",
+                Keys.ROTATORS,
+                people,
+                default_start=start_date,
+                default_end=end_date,
+                shift_labels=shift_labels,
+            )
+            st.caption(
+                "Rotators are normal roster members while active: groups, "
+                "blackouts, reductions, and preferences all apply to them."
+            )
+    with tab_nf:
+        with card_container():
+            night_float_editor(
+                people,
+                {s.label: s.role for s in st.session_state[Keys.SHIFTS] if s.night_float},
+                default_start=start_date,
+                default_end=end_date,
+            )
+    with tab_closures:
+        with card_container():
+            closures_editor(shift_labels, default_start=start_date, default_end=end_date)
+
+
+def _render_policies_workspace() -> None:
+    render_section_header(
+        "Tune fairness and operational policy",
+        "Apply team rules, load adjustments, preferences, exemptions, and point "
+        "semantics without hiding how each mechanism affects the solve.",
+        eyebrow="Step 3 · Policies",
+    )
+    people = st.session_state[Keys.JUNIORS] + st.session_state[Keys.SENIORS]
+    shift_labels = [s.label for s in st.session_state[Keys.SHIFTS]]
+    start_date = st.session_state[Keys.START_DATE]
+    end_date = st.session_state[Keys.END_DATE]
+    tab_teams, tab_fairness, tab_preference = st.tabs(
+        ["Teams & restrictions", "Fairness controls", "Preferences & points"]
+    )
+    with tab_teams:
+        with card_container():
+            named_groups_editor(people)
+        with card_container():
+            blackouts_editor(people, default_start=start_date, default_end=end_date)
+        with card_container():
+            exemptions_editor(people, shift_labels)
+        with card_container():
+            reductions_editor(
+                people,
+                shift_labels,
+                default_start=start_date,
+                default_end=end_date,
+            )
+    with tab_fairness:
+        with card_container():
+            caps_editor(people)
+        with card_container():
+            extra_points_editor(people)
+        with card_container():
+            seniority_editor(people)
+        with card_container():
+            perks_editor(people, default_start=start_date, default_end=end_date)
+    with tab_preference:
+        with card_container():
+            preferences_editor(people, shift_labels)
+        with card_container():
+            avoid_pairs_editor(people)
+        with card_container():
+            weekday_points_editor(shift_labels)
+        with card_container():
+            holidays_editor(default_date=start_date)
+
+
+def _render_history_workspace(session_config: InputData) -> dict | None:
+    render_section_header(
+        "Move safely between blocks",
+        "Save the complete setup, restore it later, and carry cumulative fairness "
+        "forward without keeping resident data on the app server.",
+        eyebrow="Step 4 · History & files",
+    )
+    tab_config, tab_ledger = st.tabs(["Configuration file", "Fairness ledger"])
+    with tab_config:
+        with card_container(
+            "Save / load configuration",
+            "The JSON is a portable snapshot of scheduling inputs and display settings.",
+        ):
+            st.download_button(
+                "Download config (JSON)",
+                input_data_to_json(session_config, display=_display_state()),
+                file_name="idea_gold_config.json",
+                mime="application/json",
+                width="stretch",
+            )
+            st.caption("Includes the display setup: colours, custom columns, column order.")
+            uploaded_config = st.file_uploader(
+                "Load config (JSON) — fills in all the tabs for review", type="json"
+            )
+            # Import once per uploaded file (the uploader returns the same file
+            # on every rerun; the guard stops it clobbering later tab/display edits).
+            blob = consume_upload_once(
+                uploaded_config,
+                Keys.DISPLAY_RESTORED,
+                state=st.session_state,
+            )
+            if blob is not None:
                 try:
+                    text = blob.decode("utf-8")
                     loaded = input_data_from_json(text)
                 except Exception as exc:
                     st.error(f"Could not read config: {exc}")
@@ -536,55 +597,160 @@ def render_config_tabs() -> tuple:
                         "review the tabs, then Generate."
                     )
                     st.rerun()
-        st.divider()
-        st.subheader("Carryover fairness (optional)")
-        st.caption(
-            "Leave this empty for a standalone, one-off schedule — this block is "
-            "balanced on its own, with no link to fairness history. To keep fairness "
-            "across months instead, upload the previous block's ledger here (residents "
-            "who carried extra get lighter targets now), tweak it in the grid if the "
-            "real world diverged, and download the updated ledger afterwards for "
-            "next time."
-        )
-        carryover_ledger = render_ledger_panel(
-            st.session_state[Keys.JUNIORS] + st.session_state[Keys.SENIORS],
-            [s.label for s in st.session_state[Keys.SHIFTS]],
-        )
-        st.checkbox(
-            "Penalties don't earn future relief (recommended)",
-            key=Keys.LEDGER_NO_REFUND,
-            help="Extra points imposed as a penalty are debited from the saved "
-            "ledger, so cumulative balancing never refunds a punishment with a "
-            "lighter later block.",
-        )
-        st.checkbox(
-            "Excused shortfalls aren't repaid later (recommended)",
-            key=Keys.LEDGER_NO_CATCHUP,
-            help="Load excused by uncompensated leave, rotator windows, perks, "
-            "or group load factors is credited in the saved ledger, so the "
-            "resident is not made to catch it up in later blocks (e.g. after a "
-            "perk expires).",
-        )
-        st.checkbox(
-            "Repay shift-type debt in the same shift type (recommended)",
-            key=Keys.LEDGER_LABEL_CARRYOVER,
-            help="Uses the ledger's per-shift-type history so someone who "
-            "carried extra of one shift type (e.g. nights) gets a lighter "
-            "target on that type now — not just fewer points overall. Off, "
-            "prior imbalance is repaid through total/weekend points only. "
-            "Never overrides total or weekend fairness, and on very large "
-            "blocks (where per-type targets are skipped for solver "
-            "performance) the history is recorded but not repaid.",
-        )
+    with tab_ledger:
+        with card_container():
+            st.subheader("Carryover fairness (optional)")
+            st.caption(
+                "Leave this empty for a standalone, one-off schedule — this block is "
+                "balanced on its own, with no link to fairness history. To keep fairness "
+                "across months instead, upload the previous block's ledger here (residents "
+                "who carried extra get lighter targets now), tweak it in the grid if the "
+                "real world diverged, and download the updated ledger afterwards for "
+                "next time."
+            )
+            carryover_ledger = render_ledger_panel(
+                st.session_state[Keys.JUNIORS] + st.session_state[Keys.SENIORS],
+                [s.label for s in st.session_state[Keys.SHIFTS]],
+            )
+        with card_container("Carryover policy", "Recommended defaults protect real-world exceptions."):
+            st.checkbox(
+                "Penalties don't earn future relief (recommended)",
+                key=Keys.LEDGER_NO_REFUND,
+                help="Extra points imposed as a penalty are debited from the saved "
+                "ledger, so cumulative balancing never refunds a punishment with a "
+                "lighter later block.",
+            )
+            st.checkbox(
+                "Excused shortfalls aren't repaid later (recommended)",
+                key=Keys.LEDGER_NO_CATCHUP,
+                help="Load excused by uncompensated leave, rotator windows, perks, "
+                "or group load factors is credited in the saved ledger, so the "
+                "resident is not made to catch it up in later blocks (e.g. after a "
+                "perk expires).",
+            )
+            st.checkbox(
+                "Repay shift-type debt in the same shift type (recommended)",
+                key=Keys.LEDGER_LABEL_CARRYOVER,
+                help="Uses the ledger's per-shift-type history so someone who "
+                "carried extra of one shift type (e.g. nights) gets a lighter "
+                "target on that type now — not just fewer points overall. Off, "
+                "prior imbalance is repaid through total/weekend points only. "
+                "Never overrides total or weekend fairness, and on very large "
+                "blocks (where per-type targets are skipped for solver "
+                "performance) the history is recorded but not repaid.",
+            )
+    return carryover_ledger
 
-    return session_config, carryover_ledger
+
+def _rule_count() -> int:
+    keys = (
+        Keys.LEAVES,
+        Keys.ROTATORS,
+        Keys.CAPS,
+        Keys.EXTRA_POINTS,
+        Keys.HOLIDAYS,
+        Keys.PERKS,
+        Keys.EXEMPT_SHIFTS,
+        Keys.NAMED_GROUPS,
+        Keys.BLACKOUTS,
+        Keys.REDUCTIONS,
+        Keys.PREFERRED_SHIFTS,
+        Keys.AVOID_PAIRS,
+        Keys.NF_ASSIGNMENTS,
+        Keys.CLOSURES,
+    )
+    return sum(len(st.session_state.get(key) or {}) for key in keys)
+
+
+def _render_review_workspace(session_config: InputData, carryover_ledger) -> None:
+    render_section_header(
+        "Review, validate, and generate",
+        "Confirm the block at a glance. Blocking issues and non-blocking advisories "
+        "are shown before the optimiser starts.",
+        eyebrow="Step 5 · Review & run",
+    )
+    span = max(0, (session_config.end_date - session_config.start_date).days + 1)
+    summary = st.columns(5)
+    summary[0].metric("Days", span)
+    summary[1].metric("Shifts", len(session_config.shifts))
+    summary[2].metric("Residents", len(session_config.juniors) + len(session_config.seniors))
+    summary[3].metric("Rules", _rule_count())
+    summary[4].metric("History", "Active" if carryover_ledger else "Standalone")
+
+    problems = validate_input(session_config)
+    hints = _inline_config_hints(session_config)
+    advisories = config_warnings(session_config) if not problems else []
+    if problems:
+        render_status(
+            f"{len(problems)} blocking issue(s) must be fixed before generation.",
+            tone="error",
+            title="Configuration needs attention",
+            label="Not ready",
+        )
+        with st.expander("Show blocking issues", expanded=True):
+            for problem in problems:
+                st.write(f"- {problem}")
+    elif advisories:
+        render_status(
+            f"Ready to solve, with {len(advisories)} advisory warning(s) to review.",
+            tone="warning",
+            title="Ready with advisories",
+            label="Review",
+        )
+        with st.expander("Show advisories", expanded=True):
+            for warning in advisories:
+                st.write(f"- {warning}")
+    else:
+        render_status(
+            "All required inputs pass validation. The optimiser is ready.",
+            tone="success",
+            title="Configuration ready",
+            label="Ready",
+        )
+    if hints and not problems:
+        for hint in hints:
+            st.warning(hint)
+    render_generate_and_solve(session_config, carryover_ledger)
+
+
+def render_application() -> None:
+    """Render the complete seven-workspace application in one stable script run."""
+    tabs = st.tabs(
+        [
+            "① Setup",
+            "② Coverage",
+            "③ Policies",
+            "④ History",
+            "⑤ Review & run",
+            "⑥ Results",
+            "Diagnostics",
+        ]
+    )
+    with tabs[0]:
+        _render_setup_workspace()
+    with tabs[1]:
+        _render_coverage_workspace()
+    with tabs[2]:
+        _render_policies_workspace()
+
+    session_config = session_config_from_state()
+    with tabs[3]:
+        carryover_ledger = _render_history_workspace(session_config)
+    with tabs[4]:
+        _render_review_workspace(session_config, carryover_ledger)
+    with tabs[5]:
+        from ui.results import render_results
+
+        render_results()
+    with tabs[6]:
+        render_diagnostics()
 
 
 def render_generate_and_solve(session_config, carryover_ledger) -> None:
     """The Generate button, validation, solve, and relax-and-retry recovery."""
     st.divider()
     generate_clicked = st.button(
-        "⚙️ Generate schedule", type="primary", use_container_width=True
+        "⚙️ Generate schedule", type="primary", width="stretch"
     )
 
     # A relaxed-constraint retry queued by the recovery buttons takes precedence
@@ -595,7 +761,7 @@ def render_generate_and_solve(session_config, carryover_ledger) -> None:
         data, relaxation_note = st.session_state.pop(Keys.RETRY_CONFIG)
     elif generate_clicked:
         # An uploaded config has already been imported into the editors (see
-        # the Save tab), so the session config always reflects it — plus any
+        # the History workspace), so the session config always reflects it — plus any
         # tweaks made since. No re-parse at Generate time.
         data = session_config
 

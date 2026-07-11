@@ -60,6 +60,8 @@ class Keys:
     DISPLAY_RESTORED = "display_restored_sig"
     DEMO_LOADED = "demo_loaded"
     RETRY_CONFIG = "retry_config"
+    NORMALIZE_NAMES = "normalize_names"
+    BENCHMARK_RESULT = "benchmark_result"
 
     # Result state
     RESULT_DF = "result_df"          # the live schedule (may carry manual edits)
@@ -124,6 +126,8 @@ def _defaults() -> dict:
         Keys.AVAIL_PREVIEW: None,
         Keys.AVAIL_SIG: None,
         Keys.DISPLAY_RESTORED: None,
+        Keys.NORMALIZE_NAMES: False,
+        Keys.BENCHMARK_RESULT: None,
         Keys.RESULT_DF: None,
         Keys.SOLVER_DF: None,
         Keys.RESULT_DATA: None,

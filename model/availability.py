@@ -21,6 +21,7 @@ from datetime import date, datetime
 from typing import List, Mapping, NamedTuple, Sequence
 
 from .data_models import Leave
+from .names import canonical_name
 
 __all__ = [
     "AvailabilityRow",
@@ -53,8 +54,8 @@ class AvailabilityRow(NamedTuple):
 
 
 def _canon(text) -> str:
-    """Trim, collapse internal whitespace, casefold — for headers and names."""
-    return " ".join(str(text).split()).casefold()
+    """Use the shared Unicode-aware matching rule for headers and names."""
+    return canonical_name(str(text))
 
 
 def _find_column(fieldnames, synonyms) -> str | None:

@@ -24,6 +24,7 @@ from model.data_models import (
     normalized_nf_assignments,
     normalized_reductions,
 )
+from model.names import canonical_name, dedupe_names
 from ui.patterns import FILL_MODES, expand_pattern, parse_fill_names
 from ui.state import Keys
 
@@ -33,18 +34,26 @@ WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 ADHOC_CHOICE = "(ad-hoc names…)"
 
 
+def _summary_table(data: pd.DataFrame) -> None:
+    """Render every read-only editor summary with the same compact grid."""
+    st.dataframe(data, hide_index=True, width="stretch")
+
+
 def _remove_control(options, label: str, key: str, format_func=str) -> object | None:
     """Shared selectbox + Remove button row; returns the choice on click."""
-    choice = st.selectbox(label, options, format_func=format_func, key=f"{key}_idx")
-    if st.button("Remove", key=f"{key}_btn"):
+    selector, action = st.columns([4, 1], vertical_alignment="bottom")
+    with selector:
+        choice = st.selectbox(label, options, format_func=format_func, key=f"{key}_idx")
+    with action:
+        clicked = st.button("Remove", key=f"{key}_btn", width="stretch")
+    if clicked:
         return choice
     return None
 
 
 def _add_button(key: str) -> bool:
     """An Add button vertically aligned with the input widgets beside it."""
-    st.markdown("&nbsp;")
-    return st.button("Add", key=key)
+    return st.button("Add", key=key, width="stretch")
 
 
 def date_range_editor(
@@ -71,7 +80,7 @@ def date_range_editor(
         st.caption("Add participants first to configure this.")
         return
     layout = [3, 2, 2, 2, 1] if with_compensation else [3, 2, 2, 1]
-    c = st.columns(layout)
+    c = st.columns(layout, vertical_alignment="bottom")
     with c[0]:
         who = st.selectbox("Resident", people, key=f"{key}_who")
     with c[1]:
@@ -91,7 +100,7 @@ def date_range_editor(
             shift_labels,
             key=f"{key}_cover",
             help="Anything left out is added to this resident's exemptions "
-            "(③ Advanced → Exemptions), where it can be reviewed or removed.",
+            "(③ Policies → Teams & restrictions), where it can be reviewed or removed.",
         )
     if clicked:
         entry = (who, start, end, compensated) if with_compensation else (who, start, end)
@@ -109,7 +118,7 @@ def date_range_editor(
             if with_compensation:
                 row["Compensated"] = entry[3] if len(entry) > 3 else True
             table_rows.append(row)
-        st.table(pd.DataFrame(table_rows))
+        _summary_table(pd.DataFrame(table_rows))
         removed = _remove_control(
             list(range(len(rows))),
             "Remove entry",
@@ -126,7 +135,7 @@ def caps_editor(people: list) -> None:
     if not people:
         st.caption("Add participants first to configure caps.")
         return
-    c = st.columns([3, 2, 2, 1])
+    c = st.columns([3, 2, 2, 1], vertical_alignment="bottom")
     with c[0]:
         who = st.selectbox("Resident", people, key="cap_who")
     with c[1]:
@@ -144,7 +153,7 @@ def caps_editor(people: list) -> None:
             st.toast(f"Set cap for {who}.")
     caps = st.session_state[Keys.CAPS]
     if caps:
-        st.table(pd.DataFrame([
+        _summary_table(pd.DataFrame([
             {
                 "Resident": p,
                 "Max total": v.get("total") or "—",
@@ -166,7 +175,7 @@ def extra_points_editor(people: list) -> None:
     if not people:
         st.caption("Add participants first to configure this.")
         return
-    c = st.columns([3, 2, 1])
+    c = st.columns([3, 2, 1], vertical_alignment="bottom")
     with c[0]:
         who = st.selectbox("Resident", people, key="extra_who")
     with c[1]:
@@ -180,7 +189,7 @@ def extra_points_editor(people: list) -> None:
                 st.session_state[Keys.EXTRA_POINTS].pop(who, None)
     ep = st.session_state[Keys.EXTRA_POINTS]
     if ep:
-        st.table(pd.DataFrame([{"Resident": p, "Extra points": v} for p, v in ep.items()]))
+        _summary_table(pd.DataFrame([{"Resident": p, "Extra points": v} for p, v in ep.items()]))
         removed = _remove_control(list(ep.keys()), "Remove extra", "extra_rm")
         if removed is not None:
             ep.pop(removed, None)
@@ -192,7 +201,7 @@ def weekday_points_editor(shift_labels: list) -> None:
     if not shift_labels:
         st.caption("Add shift templates first.")
         return
-    c = st.columns([3, 2, 2, 1])
+    c = st.columns([3, 2, 2, 1], vertical_alignment="bottom")
     with c[0]:
         label = st.selectbox("Shift", shift_labels, key="wp_shift")
     with c[1]:
@@ -204,7 +213,7 @@ def weekday_points_editor(shift_labels: list) -> None:
             st.session_state[Keys.WEEKDAY_POINTS][(label, WEEKDAY_LABELS.index(wd))] = pts
     wp = st.session_state[Keys.WEEKDAY_POINTS]
     if wp:
-        st.table(pd.DataFrame(
+        _summary_table(pd.DataFrame(
             [{"Shift": lbl, "Weekday": WEEKDAY_LABELS[d], "Points": v}
              for (lbl, d), v in wp.items()]
         ))
@@ -222,7 +231,7 @@ def weekday_points_editor(shift_labels: list) -> None:
 def holidays_editor(default_date: date | None = None) -> None:
     """Inline editor: bonus points for every shift on a date (with weekend option)."""
     st.markdown("**Holidays — bonus points for shifts on a date**")
-    c = st.columns([3, 2, 2, 1])
+    c = st.columns([3, 2, 2, 1], vertical_alignment="bottom")
     with c[0]:
         hd = st.date_input("Date", default_date or date.today(), key="hol_date")
     with c[1]:
@@ -237,7 +246,7 @@ def holidays_editor(default_date: date | None = None) -> None:
             st.session_state[Keys.HOLIDAYS].append((hd, bonus, wk))
     hs = st.session_state[Keys.HOLIDAYS]
     if hs:
-        st.table(pd.DataFrame(
+        _summary_table(pd.DataFrame(
             [{"Date": d, "Bonus": b, "Counts as weekend": w} for d, b, w in hs]
         ))
         removed = _remove_control(
@@ -251,7 +260,7 @@ def holidays_editor(default_date: date | None = None) -> None:
 def seniority_editor(people: list) -> None:
     """Groups with a load percentage (e.g. R2 = 90%) and resident assignment."""
     st.markdown("**Seniority groups — a load % per group (R2 at 90% carries ~10% less)**")
-    gc = st.columns([3, 2, 1])
+    gc = st.columns([3, 2, 1], vertical_alignment="bottom")
     with gc[0]:
         gname = st.text_input("Group name (e.g. R2)", key="grp_name")
     with gc[1]:
@@ -266,7 +275,7 @@ def seniority_editor(people: list) -> None:
                 st.warning("Give the group a name.")
     groups = st.session_state[Keys.GROUP_FACTORS]
     if groups:
-        st.table(pd.DataFrame(
+        _summary_table(pd.DataFrame(
             [{"Group": g, "Load %": f"{f * 100:g}%"} for g, f in groups.items()]
         ))
         removed = _remove_control(list(groups.keys()), "Remove group", "grp_rm")
@@ -281,19 +290,18 @@ def seniority_editor(people: list) -> None:
         if not groups:
             st.caption("Define a group above, then assign residents to it.")
         return
-    ac = st.columns([3, 2, 1])
+    ac = st.columns([3, 2, 1], vertical_alignment="bottom")
     with ac[0]:
         who = st.multiselect("Residents", people, key="grp_who")
     with ac[1]:
         target_group = st.selectbox("Group", list(groups.keys()), key="grp_target")
     with ac[2]:
-        st.markdown("&nbsp;")
-        if st.button("Assign", key="grp_assign"):
+        if st.button("Assign", key="grp_assign", width="stretch"):
             for p in who:
                 st.session_state[Keys.RESIDENT_GROUPS][p] = target_group
     assigned = st.session_state[Keys.RESIDENT_GROUPS]
     if assigned:
-        st.table(pd.DataFrame(
+        _summary_table(pd.DataFrame(
             [{"Resident": p, "Group": g} for p, g in assigned.items()]
         ))
         removed = _remove_control(list(assigned.keys()), "Unassign resident", "grp_unassign")
@@ -312,7 +320,7 @@ def named_groups_editor(people: list) -> None:
         "**Groups — name a set of residents once, then apply blackouts or "
         "shift reductions to the whole group**"
     )
-    gc = st.columns([3, 1])
+    gc = st.columns([3, 1], vertical_alignment="bottom")
     with gc[0]:
         gname = st.text_input("Group name (e.g. Team A)", key="team_name")
     with gc[1]:
@@ -324,21 +332,20 @@ def named_groups_editor(people: list) -> None:
                 st.warning("Give the group a name.")
     groups = st.session_state[Keys.NAMED_GROUPS]
     if groups and people:
-        ac = st.columns([3, 2, 1])
+        ac = st.columns([3, 2, 1], vertical_alignment="bottom")
         with ac[0]:
             who = st.multiselect("Residents", people, key="team_who")
         with ac[1]:
             target = st.selectbox("Group", list(groups.keys()), key="team_target")
         with ac[2]:
-            st.markdown("&nbsp;")
-            if st.button("Add to group", key="team_assign"):
+            if st.button("Add to group", key="team_assign", width="stretch"):
                 for p in who:
                     if p not in groups[target]:
                         groups[target].append(p)
     elif not people:
         st.caption("Add participants first to fill the groups.")
     if groups:
-        st.table(pd.DataFrame([
+        _summary_table(pd.DataFrame([
             {"Group": g, "Members": ", ".join(members) or "—"}
             for g, members in groups.items()
         ]))
@@ -394,7 +401,7 @@ def blackouts_editor(
     if not people:
         st.caption("Add participants first to configure blackouts.")
         return
-    c = st.columns([3, 2, 2, 2, 2, 1])
+    c = st.columns([3, 2, 2, 2, 2, 1], vertical_alignment="bottom")
     with c[0]:
         group, members = _group_or_adhoc_selector(people, "bo")
     with c[1]:
@@ -428,7 +435,7 @@ def blackouts_editor(
                 "Night call before": b.night_before,
                 "Compensated": b.compensated,
             })
-        st.table(pd.DataFrame(table_rows))
+        _summary_table(pd.DataFrame(table_rows))
         removed = _remove_control(
             list(range(len(entries))),
             "Remove blackout",
@@ -454,7 +461,7 @@ def perks_editor(
     if not people:
         st.caption("Add participants first to configure perks.")
         return
-    c = st.columns([3, 2, 2, 2, 2, 1])
+    c = st.columns([3, 2, 2, 2, 2, 1], vertical_alignment="bottom")
     with c[0]:
         who = st.selectbox("Resident", people, key="perk_who")
     with c[1]:
@@ -473,7 +480,7 @@ def perks_editor(
             st.toast(f"Added perk for {who}.")
     perks = st.session_state[Keys.PERKS]
     if perks:
-        st.table(pd.DataFrame([
+        _summary_table(pd.DataFrame([
             {
                 "Resident": p.name,
                 "Load %": f"{p.factor * 100:g}%",
@@ -507,7 +514,7 @@ def closures_editor(
     if not shift_labels:
         st.caption("Add shift templates first.")
         return
-    c = st.columns([3, 2, 2, 1])
+    c = st.columns([3, 2, 2, 1], vertical_alignment="bottom")
     with c[0]:
         label = st.selectbox("Shift", shift_labels, key="close_label")
     with c[1]:
@@ -531,7 +538,7 @@ def closures_editor(
         st.toast(f"Added closure for “{label}”.")
     rows = list(normalized_closures(st.session_state[Keys.CLOSURES]))
     if rows:
-        st.table(pd.DataFrame([
+        _summary_table(pd.DataFrame([
             {
                 "Shift": c.label,
                 "Start": c.start,
@@ -561,21 +568,20 @@ def exemptions_editor(people: list, shift_labels: list) -> None:
     if not people or not shift_labels:
         st.caption("Add participants and shift templates first.")
         return
-    c = st.columns([3, 3, 1])
+    c = st.columns([3, 3, 1], vertical_alignment="bottom")
     with c[0]:
         who = st.selectbox("Resident", people, key="ex_who")
     with c[1]:
         labels = st.multiselect("Never works", shift_labels, key="ex_labels")
     with c[2]:
-        st.markdown("&nbsp;")
-        if st.button("Set", key="ex_add"):
+        if st.button("Set", key="ex_add", width="stretch"):
             if labels:
                 st.session_state[Keys.EXEMPT_SHIFTS][who] = sorted(labels)
             else:
                 st.session_state[Keys.EXEMPT_SHIFTS].pop(who, None)
     ex = st.session_state[Keys.EXEMPT_SHIFTS]
     if ex:
-        st.table(pd.DataFrame(
+        _summary_table(pd.DataFrame(
             [{"Resident": p, "Exempt from": ", ".join(v)} for p, v in ex.items()]
         ))
         removed = _remove_control(list(ex.keys()), "Remove exemption", "ex_rm")
@@ -612,7 +618,7 @@ def avoid_pairs_editor(people: list) -> None:
         if len(people) < 2:
             st.caption("Add at least two participants first.")
             return
-        c = st.columns([3, 3, 1])
+        c = st.columns([3, 3, 1], vertical_alignment="bottom")
         with c[0]:
             first = st.selectbox("Resident A", people, key="avoid_a")
         with c[1]:
@@ -624,7 +630,7 @@ def avoid_pairs_editor(people: list) -> None:
                 elif not any({p[0], p[1]} == {first, second} for p in pairs):
                     pairs.append((first, second))
         if pairs:
-            st.table(pd.DataFrame(
+            _summary_table(pd.DataFrame(
                 [{"Resident A": p[0], "Resident B": p[1]} for p in pairs]
             ))
             removed = _remove_control(
@@ -651,7 +657,7 @@ def preferences_editor(people: list, shift_labels: list) -> None:
     if not people or not shift_labels:
         st.caption("Add participants and shift templates first.")
         return
-    c = st.columns([3, 3, 2, 1])
+    c = st.columns([3, 3, 2, 1], vertical_alignment="bottom")
     with c[0]:
         who = st.selectbox("Resident", people, key="pref_who")
     with c[1]:
@@ -659,8 +665,7 @@ def preferences_editor(people: list, shift_labels: list) -> None:
     with c[2]:
         day_choice = st.selectbox("Day type", list(DAY_TYPE_CHOICES), key="pref_day")
     with c[3]:
-        st.markdown("&nbsp;")
-        if st.button("Set", key="pref_set"):
+        if st.button("Set", key="pref_set", width="stretch"):
             if labels:
                 st.session_state[Keys.PREFERRED_SHIFTS][who] = sorted(labels)
             else:
@@ -674,7 +679,7 @@ def preferences_editor(people: list, shift_labels: list) -> None:
     days_map = st.session_state[Keys.PREFERRED_DAY_TYPE]
     everyone = sorted(set(shifts_map) | set(days_map))
     if everyone:
-        st.table(pd.DataFrame([
+        _summary_table(pd.DataFrame([
             {
                 "Resident": p,
                 "Prefers": ", ".join(shifts_map.get(p, [])) or "—",
@@ -713,7 +718,7 @@ def reductions_editor(
     if not people or not shift_labels:
         st.caption("Add participants and shift templates first.")
         return
-    c = st.columns([3, 3, 2, 2, 2, 1])
+    c = st.columns([3, 3, 2, 2, 2, 1], vertical_alignment="bottom")
     with c[0]:
         group, members = _group_or_adhoc_selector(people, "red")
     with c[1]:
@@ -747,7 +752,7 @@ def reductions_editor(
     entries = list(normalized_reductions(st.session_state[Keys.REDUCTIONS]))
     if entries:
         groups = st.session_state[Keys.NAMED_GROUPS]
-        st.table(pd.DataFrame([
+        _summary_table(pd.DataFrame([
             {
                 "Group": r.group or "(ad-hoc)",
                 "Members": ", ".join(
@@ -836,7 +841,7 @@ def night_float_editor(
         st.caption("Mark residents 'Night-float eligible' in the roster first.")
         return
     juniors = set(st.session_state[Keys.JUNIORS])
-    c = st.columns([3, 2, 2, 3, 1, 1])
+    c = st.columns([3, 2, 2, 3, 1, 1], vertical_alignment="bottom")
     with c[0]:
         who = st.selectbox("Resident", nf_pool, key="nfasg_who")
     # A coverer only covers their own role's NF shifts (the role comes from the
@@ -866,7 +871,7 @@ def night_float_editor(
         default_rest=st.session_state[Keys.NF_REST_DAYS],
     ))
     if entries:
-        st.table(pd.DataFrame([
+        _summary_table(pd.DataFrame([
             {
                 "Resident": a.name,
                 "Start": a.start,
@@ -919,20 +924,47 @@ def shift_template_editor() -> None:
             st.toast(f"Added shift “{cleaned}”.")
     shifts = st.session_state[Keys.SHIFTS]
     if shifts:
-        st.table(pd.DataFrame([s.__dict__ for s in shifts]))
+        _summary_table(pd.DataFrame([s.__dict__ for s in shifts]))
         # format_func closes over the local list, not session state: the test
         # harness may call it outside a script run where the proxy is empty.
-        del_idx = st.selectbox(
-            "Delete shift", list(range(len(shifts))),
-            format_func=lambda i: shifts[i].label,
-        )
-        if st.button("Delete shift", key="del_shift"):
+        selector, action = st.columns([4, 1], vertical_alignment="bottom")
+        with selector:
+            del_idx = st.selectbox(
+                "Delete shift", list(range(len(shifts))),
+                format_func=lambda i: shifts[i].label,
+            )
+        with action:
+            delete_shift = st.button("Delete shift", key="del_shift", width="stretch")
+        if delete_shift:
             shifts.pop(del_idx)
 
 
-def _parse_names(text: str) -> list:
-    """Parse one-name-per-line input, trimming and de-duplicating in order."""
-    return list(dict.fromkeys(n.strip() for n in text.splitlines() if n.strip()))
+def _parse_names(text: str, *, normalize: bool = False) -> list[str]:
+    """Parse roster lines and preserve the first spelling of each name.
+
+    Exact matching is the long-standing default. The optional canonical mode
+    changes comparison only: case, Unicode compatibility forms, and repeated
+    whitespace are ignored while the first entered display spelling survives.
+    """
+    names = [line.strip() for line in text.splitlines() if line.strip()]
+    return dedupe_names(names, mode="canonical" if normalize else "exact")
+
+
+def _roster_overlap(
+    juniors: list[str], seniors: list[str], *, normalize: bool = False
+) -> list[str]:
+    """Return cross-role duplicates, with both spellings shown when useful."""
+    if not normalize:
+        return sorted(set(juniors) & set(seniors))
+
+    senior_by_key = {canonical_name(name): name for name in seniors}
+    collisions = []
+    for junior in juniors:
+        senior = senior_by_key.get(canonical_name(junior))
+        if senior is None:
+            continue
+        collisions.append(junior if junior == senior else f"{junior} / {senior}")
+    return collisions
 
 
 def roster_editor() -> None:
@@ -940,19 +972,41 @@ def roster_editor() -> None:
     cols = st.columns(2)
     with cols[0]:
         st.subheader("Participants")
+        normalize_names = st.toggle(
+            "Case-insensitive name matching",
+            key=Keys.NORMALIZE_NAMES,
+            help=(
+                "Optional. Compares names after Unicode normalization, collapsed "
+                "whitespace, and case folding. It never rewrites the first spelling "
+                "you entered."
+            ),
+        )
+        st.caption(
+            "When on, names such as ‘Alice Smith’, ‘ALICE SMITH’, and equivalent "
+            "Unicode or spacing variants count as one person. The first spelling "
+            "stays unchanged in the schedule and exports."
+        )
         juniors_text = st.text_area(
             "Juniors (one per line)", "\n".join(st.session_state[Keys.JUNIORS])
         )
         seniors_text = st.text_area(
             "Seniors (one per line)", "\n".join(st.session_state[Keys.SENIORS])
         )
-        st.session_state[Keys.JUNIORS] = _parse_names(juniors_text)
-        st.session_state[Keys.SENIORS] = _parse_names(seniors_text)
-        both = set(st.session_state[Keys.JUNIORS]) & set(st.session_state[Keys.SENIORS])
+        st.session_state[Keys.JUNIORS] = _parse_names(
+            juniors_text, normalize=normalize_names
+        )
+        st.session_state[Keys.SENIORS] = _parse_names(
+            seniors_text, normalize=normalize_names
+        )
+        both = _roster_overlap(
+            st.session_state[Keys.JUNIORS],
+            st.session_state[Keys.SENIORS],
+            normalize=normalize_names,
+        )
         if both:
             st.warning(
                 "Listed as both junior and senior (fix before generating): "
-                + ", ".join(sorted(both))
+                + ", ".join(both)
             )
     with cols[1]:
         st.subheader("Night-float eligible")
@@ -978,17 +1032,17 @@ def custom_columns_editor(base_df) -> None:
         "extra columns (e.g. on-call team, consultant on service) you can label "
         "per day and carry into the downloads."
     )
-    ac = st.columns([3, 1])
+    ac = st.columns([3, 1], vertical_alignment="bottom")
     new_name = ac[0].text_input("New column name", key="newcol_name")
-    if ac[1].button("Add column", key="newcol_add"):
+    if ac[1].button("Add column", key="newcol_add", width="stretch"):
         name = new_name.strip()
         if name and name not in base_df.columns and name not in st.session_state[Keys.EXTRA_COLS]:
             st.session_state[Keys.EXTRA_COLS].append(name)
     if not st.session_state[Keys.EXTRA_COLS]:
         return
-    rc = st.columns([3, 1])
+    rc = st.columns([3, 1], vertical_alignment="bottom")
     rm = rc[0].selectbox("Remove column", st.session_state[Keys.EXTRA_COLS], key="rmcol_sel")
-    if rc[1].button("Remove column", key="rmcol_btn"):
+    if rc[1].button("Remove column", key="rmcol_btn", width="stretch"):
         st.session_state[Keys.EXTRA_COLS].remove(rm)
         st.session_state[Keys.EXTRA_VALS].pop(rm, None)
         st.rerun()
@@ -996,7 +1050,7 @@ def custom_columns_editor(base_df) -> None:
 
     # Auto-fill: paste a name list once instead of typing a value per day.
     st.markdown("**Auto-fill a column**")
-    fc = st.columns([2, 3, 3, 1])
+    fc = st.columns([2, 3, 3, 1], vertical_alignment="bottom")
     with fc[0]:
         fill_col = st.selectbox("Column to fill", st.session_state[Keys.EXTRA_COLS],
                                 key="fill_col")
@@ -1005,8 +1059,7 @@ def custom_columns_editor(base_df) -> None:
     with fc[2]:
         fill_mode = st.radio("Pattern", list(FILL_MODES), key="fill_mode")
     with fc[3]:
-        st.markdown("&nbsp;")
-        if st.button("Fill", key="fill_apply"):
+        if st.button("Fill", key="fill_apply", width="stretch"):
             names = parse_fill_names(fill_text)
             if not names:
                 st.warning("Enter at least one name to fill with.")
@@ -1024,7 +1077,7 @@ def custom_columns_editor(base_df) -> None:
         vals = st.session_state[Keys.EXTRA_VALS].get(name, {})
         editor_df[name] = [vals.get(str(d), "") for d in dates]
     edited = st.data_editor(
-        editor_df, key="extra_cols_editor", disabled=["Date"], use_container_width=True
+        editor_df, key="extra_cols_editor", disabled=["Date"], width="stretch"
     )
     for name in st.session_state[Keys.EXTRA_COLS]:
         st.session_state[Keys.EXTRA_VALS][name] = {
