@@ -684,6 +684,67 @@ def test_exemption_leaves_targets_unchanged():
     assert resolved.target_total_map == {"A": 2.0, "B": 2.0}
 
 
+def _two_label_data(**kw):
+    from model.data_models import ShiftTemplate
+    return _rt_data(
+        shifts=[
+            ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+            ShiftTemplate(label="N", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ],
+        **kw,
+    )
+
+
+def test_resolve_targets_label_carryover_lightens_label_loaded_resident():
+    from model.optimiser import resolve_targets
+
+    # Equal totals (the total dimension is neutral); A's history is all N,
+    # B's all D — repayment in kind swaps their label targets this block.
+    ledger = {
+        "A": {"total": 4.0, "weekend": 0.0, "labels": {"N": 4.0}},
+        "B": {"total": 4.0, "weekend": 0.0, "labels": {"D": 4.0}},
+    }
+    resolved = resolve_targets(_two_label_data(), ledger=ledger)
+    tl = resolved.target_label
+    # Cumulative N pool = 4 block + 4 prior -> 4 each; A already carries 4 so
+    # gets 0 now, B gets the whole block's N (clamped to the block pool).
+    assert tl[("A", "N")] == pytest.approx(0.0)
+    assert tl[("B", "N")] == pytest.approx(4.0)
+    assert tl[("A", "D")] == pytest.approx(4.0)
+    assert tl[("B", "D")] == pytest.approx(0.0)
+
+
+def test_resolve_targets_label_carryover_toggle_off_matches_per_block():
+    from model.optimiser import resolve_targets
+
+    ledger = {
+        "A": {"total": 4.0, "weekend": 0.0, "labels": {"N": 4.0}},
+        "B": {"total": 4.0, "weekend": 0.0, "labels": {"D": 4.0}},
+    }
+    off = resolve_targets(_two_label_data(), ledger=ledger, label_carryover=False)
+    plain = resolve_targets(_two_label_data())
+    assert off.target_label == plain.target_label
+
+
+def test_resolve_targets_label_carryover_ignores_stale_and_new_labels():
+    from model.optimiser import resolve_targets
+
+    # "Old" survives only in the history (a renamed/removed shift): no target
+    # is built for it. The current labels carry no history, so they fall back
+    # to the plain per-block fair share. A legacy ledger without any label
+    # history behaves the same way.
+    ledger = {
+        "A": {"total": 2.0, "weekend": 0.0, "labels": {"Old": 2.0}},
+        "B": {"total": 2.0, "weekend": 0.0},
+    }
+    resolved = resolve_targets(_two_label_data(), ledger=ledger)
+    tl = resolved.target_label
+    assert set(lbl for _, lbl in tl) == {"D", "N"}
+    for person in ("A", "B"):
+        assert tl[(person, "N")] == pytest.approx(2.0)  # 4 N points / 2 residents
+        assert tl[(person, "D")] == pytest.approx(2.0)
+
+
 def test_solver_never_assigns_exempt_resident():
     pytest.importorskip("ortools")
     data = _rt_data(exempt_shifts={"B": ["S"]}, min_gap=0)

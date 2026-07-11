@@ -1,6 +1,6 @@
 from dataclasses import replace
 import os
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Sequence, Tuple, cast
 
 # CP-SAT variable handles are opaque (real ortools IntVar or the _Var stub
 # below), so they are typed as Any throughout.
@@ -922,6 +922,7 @@ def _auto_label_targets(
     data: InputData,
     availability: Mapping[str, float],
     excluded: set | None = None,
+    prior_labels: Mapping[str, Mapping[str, float]] | None = None,
 ) -> Dict[Tuple[str, str], float]:
     """Per-(resident, label) fair share of each shift type's points.
 
@@ -937,6 +938,16 @@ def _auto_label_targets(
     * (resident, label) pairs under a load reduction — the cap governs the mix;
     * residents with any shift/day-type preference — their mix is intentionally
       free (two people preferring opposite shifts swap, which is fair).
+
+    ``prior_labels`` (resident -> label -> accumulated points from the ledger's
+    per-label history) switches each label to cumulative carryover balancing,
+    via the same clamped formula as the total/weekend dimensions: someone who
+    carried extra of a shift type before gets a lighter target on *that type*
+    now, so shift-type debt is repaid in kind. Labels no longer in the config
+    are ignored; labels with no history behave as per-block fair shares. A
+    resident's label targets need not sum to their total target (different
+    pools, skip rules and clamps) — harmless, because the total tier outweighs
+    the label tier by orders of magnitude and always settles first.
     """
     participants = list(data.juniors) + list(data.seniors)
     pref_people = set(data.preferred_shifts or {}) | set(data.preferred_day_type or {})
@@ -957,12 +968,25 @@ def _auto_label_targets(
         pool_weight = sum(availability.get(p, 0.0) for p in pool)
         if pool_weight <= 0:
             continue
+        shares: Dict[str, float] | None = None
+        if prior_labels:
+            prior = {
+                p: float((prior_labels.get(p) or {}).get(shift.label, 0.0)) for p in pool
+            }
+            if any(prior.values()):
+                shares = _carryover_targets(
+                    prior, label_points[shift.label], pool, availability,
+                    pool_weight, label_points[shift.label],
+                )
         for person in pool:
             if person in pref_people or (person, shift.label) in capped:
                 continue
-            targets[(person, shift.label)] = (
-                label_points[shift.label] * availability.get(person, 0.0) / pool_weight
-            )
+            if shares is not None:
+                targets[(person, shift.label)] = shares[person]
+            else:
+                targets[(person, shift.label)] = (
+                    label_points[shift.label] * availability.get(person, 0.0) / pool_weight
+                )
     return targets
 
 
@@ -971,6 +995,8 @@ def resolve_targets(
     ledger: Ledger | None = None,
     nf_cells: Mapping | None = None,
     closed_cells: set | None = None,
+    *,
+    label_carryover: bool = True,
 ) -> InputData:
     """Return a copy of ``data`` with all fairness targets resolved.
 
@@ -980,6 +1006,13 @@ def resolve_targets(
     the total map. ``nf_cells`` (night-float overlay) and ``closed_cells``
     (stood-down shifts) are excluded from the regular point pools so neither
     counts toward regular targets. The caller's ``InputData`` is never mutated.
+
+    ``label_carryover`` (default on) additionally feeds the ledger's per-label
+    history into the auto label targets, so shift-type debt is repaid in the
+    same shift type; off, per-label targets balance this block only and prior
+    imbalance is repaid via the total/weekend dimensions alone. Only applies
+    below the ``LABEL_TARGET_MAX_CELLS`` gate and when the caller has not set
+    ``target_label`` explicitly.
     """
     nf_cells = nf_cells or {}
     # Cells outside the regular point pool: NF-covered plus closed (see
@@ -1050,7 +1083,23 @@ def resolve_targets(
             day_count = (data.end_date - data.start_date).days + 1
             cells = len(participants) * max(1, day_count) * max(1, len(data.shifts))
             if cells <= LABEL_TARGET_MAX_CELLS:
-                target_label = _auto_label_targets(data, availability, excluded) or None
+                # Per-label carryover: the ledger's per-label history makes the
+                # label targets cumulative, so shift-type debt is repaid in the
+                # same shift type (above the gate it is recorded, not repaid).
+                # The Ledger alias types entry values as float, but "labels"
+                # is a nested per-label mapping; cast so mypy accepts it.
+                prior_labels: Dict[str, Mapping[str, float]] | None = None
+                if ledger and label_carryover:
+                    prior_labels = {
+                        p: cast("Mapping[str, float]", (ledger.get(p) or {}).get("labels") or {})
+                        for p in participants
+                    }
+                target_label = (
+                    _auto_label_targets(
+                        data, availability, excluded, prior_labels=prior_labels
+                    )
+                    or None
+                )
 
     # A copy so the caller's ``InputData`` is never mutated (re-running with
     # changed dates previously reused stale auto-targets).
@@ -1064,12 +1113,21 @@ def resolve_targets(
     )
 
 
-def build_schedule(data: InputData, env: str | None = None, ledger: Ledger | None = None) -> pd.DataFrame:
+def build_schedule(
+    data: InputData,
+    env: str | None = None,
+    ledger: Ledger | None = None,
+    *,
+    label_carryover: bool = True,
+) -> pd.DataFrame:
     """Build schedule with optional environment based time limit.
 
-    ``ledger`` (resident -> accumulated total/weekend/night_float points from
-    prior blocks) switches fairness from per-block to cumulative: residents who
+    ``ledger`` (resident -> accumulated total/weekend points from prior
+    blocks) switches fairness from per-block to cumulative: residents who
     carried extra previously get lighter targets this block.
+    ``label_carryover`` (default on) extends that to the ledger's per-label
+    history, repaying shift-type debt in the same shift type; see
+    ``resolve_targets``.
     """
     # Lazy import avoids a module-level cycle (validation imports this module).
     from .validation import validate_input
@@ -1092,7 +1150,10 @@ def build_schedule(data: InputData, env: str | None = None, ledger: Ledger | Non
     # are removed from regular demand and excluded from the point/fairness pools.
     closed_cells = resolve_closures(data)
     # The resolved targets are exposed on ``df.attrs`` below.
-    solve_data = resolve_targets(data, ledger, nf_cells=nf_cells, closed_cells=closed_cells)
+    solve_data = resolve_targets(
+        data, ledger, nf_cells=nf_cells, closed_cells=closed_cells,
+        label_carryover=label_carryover,
+    )
     target_total = solve_data.target_total
     target_total_map = solve_data.target_total_map
     target_weekend = solve_data.target_weekend

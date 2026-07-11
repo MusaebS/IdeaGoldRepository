@@ -90,6 +90,40 @@ def test_no_ledger_is_unchanged_behaviour():
     assert abs(pts["A"]["total"] - pts["B"]["total"]) <= 1  # even split, no carryover
 
 
+def test_label_carryover_shifts_label_load_to_others():
+    pytest.importorskip("ortools")
+    from model.optimiser import build_schedule
+    from model.fairness import calculate_points
+
+    # Equal cumulative totals, but A's history is all N and B's all D: with
+    # per-label carryover the block repays the debt in kind (A works fewer N
+    # than B) while totals stay balanced.
+    shifts = [
+        ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="N", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+    ]
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 8),
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+    )
+    ledger = {
+        "A": {"total": 8.0, "weekend": 0.0, "labels": {"N": 8.0}},
+        "B": {"total": 8.0, "weekend": 0.0, "labels": {"D": 8.0}},
+    }
+    df = build_schedule(data, env="test", ledger=ledger)
+    pts = calculate_points(df, data)
+    assert pts["A"]["labels"].get("N", 0.0) < pts["B"]["labels"].get("N", 0.0)
+    assert abs(pts["A"]["total"] - pts["B"]["total"]) <= 1
+
+
 # --- ledger policy: no auto-compensation --------------------------------------
 
 def _df(*assignments):
@@ -484,3 +518,111 @@ def test_rows_to_ledger_reports_problems_and_allows_negatives():
     assert any("no resident name" in p for p in problems)
     ledger2, _ = rows_to_ledger([{"Resident": "B", "Total": 1.0, "Weekend": -2.0}])
     assert ledger2["B"]["weekend"] == -2.0
+
+
+# --- Reconciliation helpers -------------------------------------------------
+
+def _rec_ledger():
+    return {
+        "Alicia": {"total": 6.0, "weekend": 2.0,
+                   "labels": {"Night": 4.0, "Day": 2.0},
+                   "label_counts": {"Night": 2, "Day": 2}},
+        "Bob": {"total": 3.0, "weekend": 1.0,
+                "labels": {"Day": 3.0}, "label_counts": {"Day": 3}},
+    }
+
+
+def test_reconcile_report_flags_unknowns_with_suggestions():
+    from model.ledger import reconcile_report
+
+    report = reconcile_report(_rec_ledger(), ["Alice", "Bob", "Cara"], ["Day", "Nights"])
+    assert report.unknown_people == ("Alicia",)
+    # Roster names without a ledger entry ("Alice" until the merge, "Cara").
+    assert report.new_people == ("Alice", "Cara")
+    assert report.unknown_labels == ("Night",)
+    assert report.new_labels == ("Nights",)  # current label with no history yet
+    assert report.has_mismatches
+    assert report.person_suggestions["Alicia"] == ("Alice",)
+    assert report.label_suggestions["Night"] == ("Nights",)
+
+
+def test_reconcile_report_clean_and_legacy():
+    from model.ledger import reconcile_report
+
+    # Exact match everywhere: nothing to reconcile.
+    clean = reconcile_report(_rec_ledger(), ["Alicia", "Bob"], ["Night", "Day"])
+    assert not clean.has_mismatches
+    assert clean.unknown_people == () and clean.unknown_labels == ()
+    # A legacy ledger without label history never reports "new" labels.
+    legacy = reconcile_report({"Alicia": {"total": 1.0, "weekend": 0.0}},
+                              ["Alicia"], ["Day"])
+    assert legacy.new_labels == ()
+    assert not legacy.has_mismatches
+
+
+def test_rename_person_moves_entry_and_merges_history():
+    from model.ledger import rename_person
+
+    original = _rec_ledger()
+    renamed = rename_person(original, "Alicia", "Alice")
+    assert "Alicia" not in renamed
+    assert renamed["Alice"]["labels"] == {"Night": 4.0, "Day": 2.0}
+    assert original == _rec_ledger()  # pure: input untouched
+
+    # Renaming onto an existing entry merges both histories.
+    merged = rename_person(original, "Alicia", "Bob")
+    assert merged["Bob"]["total"] == 9.0
+    assert merged["Bob"]["weekend"] == 3.0
+    assert merged["Bob"]["labels"] == {"Night": 4.0, "Day": 5.0}
+    assert merged["Bob"]["label_counts"] == {"Night": 2, "Day": 5}
+
+    # A merge drops the transient audit note; missing old name is a no-op.
+    with_audit = {"A": {"total": 1.0, "weekend": 0.0, "adjustments": {"x": 1}},
+                  "B": {"total": 2.0, "weekend": 0.0}}
+    assert "adjustments" not in rename_person(with_audit, "A", "B")["B"]
+    assert rename_person(original, "Zed", "Alice") == original
+
+
+def test_rename_label_merges_and_totals_untouched():
+    from model.ledger import rename_label
+
+    original = _rec_ledger()
+    renamed = rename_label(original, "Night", "Nights")
+    assert renamed["Alicia"]["labels"] == {"Nights": 4.0, "Day": 2.0}
+    assert renamed["Alicia"]["label_counts"] == {"Nights": 2, "Day": 2}
+    assert renamed["Alicia"]["total"] == 6.0  # dimensions untouched
+    assert renamed["Bob"] == original["Bob"]  # no Night history: unchanged
+    assert original == _rec_ledger()  # pure
+
+    # Renaming onto an existing label sums the histories.
+    folded = rename_label(original, "Night", "Day")
+    assert folded["Alicia"]["labels"] == {"Day": 6.0}
+    assert folded["Alicia"]["label_counts"] == {"Day": 4}
+
+
+def test_drop_person_and_drop_label():
+    from model.ledger import drop_label, drop_person
+
+    original = _rec_ledger()
+    without_bob = drop_person(original, "Bob")
+    assert set(without_bob) == {"Alicia"}
+    assert original == _rec_ledger()  # pure
+
+    without_night = drop_label(original, "Night")
+    assert without_night["Alicia"]["labels"] == {"Day": 2.0}
+    assert without_night["Alicia"]["total"] == 6.0  # totals kept by design
+    # Dropping the only label removes the now-empty history keys.
+    only_day = drop_label(without_night, "Day")
+    assert "labels" not in only_day["Bob"]
+    assert "label_counts" not in only_day["Bob"]
+
+
+def test_reconcile_helpers_tolerate_missing_keys():
+    from model.ledger import reconcile_report, rename_label, rename_person
+
+    sparse = {"A": {"total": 1.0}}  # no weekend/labels/label_counts
+    merged = rename_person({**sparse, "B": {"weekend": 2.0}}, "A", "B")
+    assert merged["B"]["total"] == 1.0 and merged["B"]["weekend"] == 2.0
+    assert rename_label(sparse, "X", "Y") == {"A": {"total": 1.0}}
+    report = reconcile_report({}, [], [])
+    assert not report.has_mismatches

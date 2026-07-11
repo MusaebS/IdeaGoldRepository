@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import os
 from dataclasses import replace
-from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -51,7 +50,7 @@ from ui.editors import (
     weekday_points_editor,
 )
 from ui.ledger_panel import render_ledger_panel
-from ui.state import Keys, restore_display_state, set_result
+from ui.state import Keys, flash, restore_display_state, set_result, show_flash
 
 
 def load_demo_data_once() -> None:
@@ -65,6 +64,59 @@ def load_demo_data_once() -> None:
     st.session_state[Keys.NF_JUNIORS] = nf_juniors
     st.session_state[Keys.NF_SENIORS] = nf_seniors
     st.session_state[Keys.DEMO_LOADED] = True
+
+
+def populate_editors_from_config(data: InputData, state=None) -> None:
+    """Fill every editor's session state from a loaded config.
+
+    The inverse of the ``InputData`` assembly in :func:`render_config_tabs` +
+    ``_active_config_maps``: an uploaded config lands in the tabs themselves,
+    ready to review and tweak, instead of being consumed invisibly at
+    Generate time. Widgets pick the values up on the rerun that follows.
+    ``state`` defaults to ``st.session_state``; tests may pass a plain dict.
+    """
+    ss = st.session_state if state is None else state
+    ss[Keys.SHIFTS] = list(data.shifts)
+    ss[Keys.JUNIORS] = list(data.juniors)
+    ss[Keys.SENIORS] = list(data.seniors)
+    ss[Keys.NF_JUNIORS] = list(data.nf_juniors)
+    ss[Keys.NF_SENIORS] = list(data.nf_seniors)
+    ss[Keys.START_DATE] = data.start_date
+    ss[Keys.END_DATE] = data.end_date
+    ss[Keys.MIN_GAP] = int(data.min_gap)
+    ss[Keys.SEED] = int(data.seed)
+    weekend_days = data.weekend_days if data.weekend_days is not None else [5, 6]
+    ss[Keys.WEEKEND_LABELS] = [WEEKDAY_LABELS[d] for d in weekend_days]
+    ss[Keys.LEAVES] = list(data.leaves or [])
+    ss[Keys.ROTATORS] = list(data.rotators or [])
+    caps = {p: {"total": v} for p, v in (data.max_total or {}).items()}
+    for person, excused in (data.max_total_excused or {}).items():
+        if person in caps and excused:
+            caps[person]["excused"] = True
+    ss[Keys.CAPS] = caps
+    ss[Keys.EXTRA_POINTS] = dict(data.extra_points or {})
+    ss[Keys.WEEKDAY_POINTS] = dict(data.weekday_points or {})
+    ss[Keys.HOLIDAYS] = list(data.holidays or [])
+    ss[Keys.GROUP_FACTORS] = dict(data.group_factors or {})
+    ss[Keys.RESIDENT_GROUPS] = dict(data.resident_groups or {})
+    ss[Keys.PERKS] = list(data.perks or [])
+    ss[Keys.EXEMPT_SHIFTS] = {
+        p: list(labels) for p, labels in (data.exempt_shifts or {}).items()
+    }
+    ss[Keys.NAMED_GROUPS] = {
+        g: list(members) for g, members in (data.named_groups or {}).items()
+    }
+    ss[Keys.BLACKOUTS] = list(data.blackouts or [])
+    ss[Keys.REDUCTIONS] = list(data.reductions or [])
+    ss[Keys.PREFERRED_SHIFTS] = {
+        p: list(labels) for p, labels in (data.preferred_shifts or {}).items()
+    }
+    ss[Keys.PREFERRED_DAY_TYPE] = dict(data.preferred_day_type or {})
+    ss[Keys.AVOID_PAIRS] = [tuple(pair) for pair in (data.avoid_pairs or [])]
+    ss[Keys.NF_COVERAGE] = dict(data.nf_coverage or {})
+    ss[Keys.NF_ASSIGNMENTS] = list(data.nf_assignments or [])
+    ss[Keys.NF_REST_DAYS] = int(data.nf_rest_days)
+    ss[Keys.CLOSURES] = list(data.closures or [])
 
 
 def _active_config_maps() -> dict:
@@ -285,6 +337,7 @@ def _availability_import_section(people: list) -> None:
             ):
                 st.session_state[Keys.LEAVES].extend(new_leaves)
                 st.session_state[Keys.AVAIL_PREVIEW] = None
+                flash(f"Added {len(new_leaves)} compensated leave(s) from the import.")
                 st.rerun()
         elif valid_leaves:
             bcols[0].caption("All valid rows are already in the leaves list.")
@@ -309,7 +362,8 @@ def _inline_config_hints(config: InputData) -> list:
 
 
 def render_config_tabs() -> tuple:
-    """Render tabs ①-④; returns (session_config, uploaded_config, carryover_ledger)."""
+    """Render tabs ①-④; returns (session_config, carryover_ledger)."""
+    show_flash()
     st.header("Configuration")
     tab_people, tab_rules, tab_adv, tab_save = st.tabs(
         ["① Shifts & people", "② Dates & rules", "③ Advanced", "④ Save / carryover"]
@@ -321,21 +375,25 @@ def render_config_tabs() -> tuple:
         roster_editor()
 
     with tab_rules:
+        # These widgets are session-state keyed (seeded in ui.state._defaults)
+        # so a loaded config can repopulate them programmatically.
         dc = st.columns(2)
         with dc[0]:
-            start_date = st.date_input("Start date", date.today())
+            start_date = st.date_input("Start date", key=Keys.START_DATE)
         with dc[1]:
-            end_date = st.date_input("End date", date.today() + timedelta(days=27))
+            end_date = st.date_input("End date", key=Keys.END_DATE)
         rc = st.columns(2)
         with rc[0]:
-            min_gap = st.slider("Minimum gap (rest days between shifts)", 0, 7, 1)
+            min_gap = st.slider(
+                "Minimum gap (rest days between shifts)", 0, 7, key=Keys.MIN_GAP
+            )
         with rc[1]:
             seed = st.number_input(
-                "Random seed", 0, 1_000_000, 0, 1,
+                "Random seed", 0, 1_000_000, step=1, key=Keys.SEED,
                 help="Same seed reproduces the same schedule when the solver finishes.",
             )
         weekend_labels = st.multiselect(
-            "Weekend days", WEEKDAY_LABELS, default=["Sat", "Sun"],
+            "Weekend days", WEEKDAY_LABELS, key=Keys.WEEKEND_LABELS,
             help="Days that count as weekend for fairness (a shift's 'Thu' flag also adds Thursday).",
         )
         weekend_days = [WEEKDAY_LABELS.index(name) for name in weekend_labels]
@@ -449,20 +507,34 @@ def render_config_tabs() -> tuple:
             mime="application/json",
         )
         st.caption("Includes the display setup: colours, custom columns, column order.")
-        uploaded_config = st.file_uploader("Load config (JSON), then click Generate", type="json")
+        uploaded_config = st.file_uploader(
+            "Load config (JSON) — fills in all the tabs for review", type="json"
+        )
         if uploaded_config is not None:
-            # Restore the display section once per uploaded file (the uploader
-            # returns the same file on every rerun; the signature guard stops
-            # it clobbering later manual colour/column changes).
+            # Import once per uploaded file (the uploader returns the same
+            # file on every rerun; the signature guard stops it clobbering
+            # later edits to the tabs or the colours/columns).
             sig = hashlib.md5(uploaded_config.getvalue()).hexdigest()
             if st.session_state.get(Keys.DISPLAY_RESTORED) != sig:
                 st.session_state[Keys.DISPLAY_RESTORED] = sig  # set first: a bad file never loops
+                text = uploaded_config.getvalue().decode("utf-8")
                 try:
-                    display = display_from_json(uploaded_config.getvalue().decode("utf-8"))
-                except Exception:
-                    display = None
-                if display:
-                    restore_display_state(display)
+                    loaded = input_data_from_json(text)
+                except Exception as exc:
+                    st.error(f"Could not read config: {exc}")
+                else:
+                    populate_editors_from_config(loaded)
+                    try:
+                        display = display_from_json(text)
+                    except Exception:
+                        display = None
+                    if display:
+                        restore_display_state(display)
+                    flash(
+                        f"Loaded config: {len(loaded.shifts)} shift(s), "
+                        f"{len(loaded.juniors) + len(loaded.seniors)} resident(s) — "
+                        "review the tabs, then Generate."
+                    )
                     st.rerun()
         st.divider()
         st.subheader("Carryover fairness (optional)")
@@ -475,7 +547,8 @@ def render_config_tabs() -> tuple:
             "next time."
         )
         carryover_ledger = render_ledger_panel(
-            st.session_state[Keys.JUNIORS] + st.session_state[Keys.SENIORS]
+            st.session_state[Keys.JUNIORS] + st.session_state[Keys.SENIORS],
+            [s.label for s in st.session_state[Keys.SHIFTS]],
         )
         st.checkbox(
             "Penalties don't earn future relief (recommended)",
@@ -492,11 +565,22 @@ def render_config_tabs() -> tuple:
             "resident is not made to catch it up in later blocks (e.g. after a "
             "perk expires).",
         )
+        st.checkbox(
+            "Repay shift-type debt in the same shift type (recommended)",
+            key=Keys.LEDGER_LABEL_CARRYOVER,
+            help="Uses the ledger's per-shift-type history so someone who "
+            "carried extra of one shift type (e.g. nights) gets a lighter "
+            "target on that type now — not just fewer points overall. Off, "
+            "prior imbalance is repaid through total/weekend points only. "
+            "Never overrides total or weekend fairness, and on very large "
+            "blocks (where per-type targets are skipped for solver "
+            "performance) the history is recorded but not repaid.",
+        )
 
-    return session_config, uploaded_config, carryover_ledger
+    return session_config, carryover_ledger
 
 
-def render_generate_and_solve(session_config, uploaded_config, carryover_ledger) -> None:
+def render_generate_and_solve(session_config, carryover_ledger) -> None:
     """The Generate button, validation, solve, and relax-and-retry recovery."""
     st.divider()
     generate_clicked = st.button(
@@ -510,13 +594,10 @@ def render_generate_and_solve(session_config, uploaded_config, carryover_ledger)
     if st.session_state.get(Keys.RETRY_CONFIG) is not None:
         data, relaxation_note = st.session_state.pop(Keys.RETRY_CONFIG)
     elif generate_clicked:
-        if uploaded_config is not None:
-            try:
-                data = input_data_from_json(uploaded_config.getvalue().decode("utf-8"))
-            except Exception as exc:
-                st.error(f"Could not read config: {exc}")
-        else:
-            data = session_config
+        # An uploaded config has already been imported into the editors (see
+        # the Save tab), so the session config always reflects it — plus any
+        # tweaks made since. No re-parse at Generate time.
+        data = session_config
 
     if data is None:
         return
@@ -537,7 +618,10 @@ def render_generate_and_solve(session_config, uploaded_config, carryover_ledger)
     df = None
     try:
         with st.spinner("Optimising…"):
-            df = build_schedule(data, env=env, ledger=carryover_ledger)
+            df = build_schedule(
+                data, env=env, ledger=carryover_ledger,
+                label_carryover=st.session_state.get(Keys.LEDGER_LABEL_CARRYOVER, True),
+            )
     except RuntimeError as exc:
         st.error(str(exc))
         if data.min_gap > 0:

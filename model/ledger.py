@@ -1,16 +1,18 @@
 """Cumulative fairness ledger.
 
 A ledger records each resident's accumulated points across past scheduling
-blocks (``total``, ``weekend``, ``night_float``). Feeding it into the next block
-lets the optimiser balance *cumulative* load — a resident who carried extra last
-block is given a lighter target this block — and the updated ledger is saved for
+blocks (``total`` and ``weekend``). Feeding it into the next block lets the
+optimiser balance *cumulative* load — a resident who carried extra last block
+is given a lighter target this block — and the updated ledger is saved for
 the block after that.
 
-Alongside the three carryover dimensions, each entry also accumulates an
-informational per-shift-type history: ``"labels"`` (points per label) and
-``"label_counts"`` (call counts per label). These feed the fairness table's
-cumulative "which calls" view; carryover balancing itself stays on the three
-dimensions. Old ledger files without them load unchanged, and old app
+Alongside the two carryover dimensions, each entry also accumulates a
+per-shift-type history: ``"labels"`` (points per label) and ``"label_counts"``
+(call counts per label), plus an informational ``"nf_days"`` night-float duty
+count. The label history feeds the fairness table's cumulative "which calls"
+view and — when per-label carryover is enabled (the default) — the next
+block's per-label targets, so shift-type debt is repaid in the same shift
+type. Old ledger files without these keys load unchanged, and old app
 versions simply strip the extra keys.
 
 The ledger only influences the fairness *targets* (computed in
@@ -44,9 +46,10 @@ not an excusal (they reduce earned points but earn no credit).
 """
 from __future__ import annotations
 
+import difflib
 import json
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, Mapping, Sequence, Tuple
 
 from .data_models import InputData
 from .fairness import calculate_label_counts, calculate_points
@@ -64,6 +67,12 @@ __all__ = [
     "ledger_from_json",
     "ledger_to_rows",
     "rows_to_ledger",
+    "ReconcileReport",
+    "reconcile_report",
+    "rename_person",
+    "rename_label",
+    "drop_person",
+    "drop_label",
 ]
 
 DIMENSIONS = ("total", "weekend")
@@ -278,7 +287,7 @@ ROW_FIELDS = (("Total", "total"), ("Weekend", "weekend"))
 
 
 def ledger_to_rows(ledger) -> list:
-    """Flatten a ledger into editable rows (the three carryover dimensions).
+    """Flatten a ledger into editable rows (the Total / Weekend dimensions).
 
     Per-label history and audit notes are not part of the grid; keep the
     loaded ledger around and pass it as ``base`` to :func:`rows_to_ledger` so
@@ -338,3 +347,171 @@ def rows_to_ledger(rows, base=None):
             entry["nf_days"] = int(extra["nf_days"])
         out[name] = entry
     return out, problems
+
+
+# --- Reconciliation: match an uploaded ledger against the current config ----
+#
+# Ledger names and shift labels are matched by exact, case-sensitive string
+# everywhere else in the app, so real-world drift — a misspelling fixed on the
+# roster, a renamed shift, a shift retired or added, a resident joining or
+# leaving — silently splits or orphans history. These pure helpers turn that
+# drift into an explicit report plus small corrective operations the UI can
+# offer for confirmation. None of them mutate their input.
+
+
+@dataclass(frozen=True)
+class ReconcileReport:
+    """Mismatches between a ledger and the current roster / shift catalogue.
+
+    ``unknown_*`` are ledger entries with no exact match in the current
+    config (a misspelling, a rename, or someone/something genuinely gone);
+    ``new_*`` are current names/labels absent from the ledger (they simply
+    start with no history). ``*_suggestions`` map each unknown to close
+    matches in the current config, best first. ``new_labels`` is only
+    reported when the ledger carries some label history at all — a legacy
+    file without any is not evidence of drift.
+    """
+
+    unknown_people: Tuple[str, ...]
+    new_people: Tuple[str, ...]
+    unknown_labels: Tuple[str, ...]
+    new_labels: Tuple[str, ...]
+    person_suggestions: Dict[str, Tuple[str, ...]]
+    label_suggestions: Dict[str, Tuple[str, ...]]
+
+    @property
+    def has_mismatches(self) -> bool:
+        return bool(self.unknown_people or self.unknown_labels)
+
+
+def _ledger_labels(ledger) -> list:
+    """Every shift label appearing in any entry's label history, sorted."""
+    seen: set[str] = set()
+    for entry in (ledger or {}).values():
+        for key in ("labels", "label_counts"):
+            seen.update(str(label) for label in (entry or {}).get(key) or {})
+    return sorted(seen)
+
+
+def _suggestions(
+    unknown: Sequence[str], candidates: Sequence[str]
+) -> Dict[str, Tuple[str, ...]]:
+    return {
+        name: tuple(difflib.get_close_matches(name, list(candidates), n=3, cutoff=0.6))
+        for name in unknown
+    }
+
+
+def reconcile_report(ledger, roster, shift_labels) -> ReconcileReport:
+    """Compare a ledger's names and labels with the current configuration.
+
+    This is what turns a near-miss (a misspelling, a renamed shift) into an
+    explicit choice instead of a silent zero-history restart.
+    """
+    ledger = ledger or {}
+    roster = [str(r) for r in (roster or [])]
+    labels = [str(lbl) for lbl in (shift_labels or [])]
+    history_labels = _ledger_labels(ledger)
+    unknown_people = tuple(sorted(set(ledger) - set(roster)))
+    unknown_labels = tuple(lbl for lbl in history_labels if lbl not in set(labels))
+    return ReconcileReport(
+        unknown_people=unknown_people,
+        new_people=tuple(n for n in roster if n not in ledger),
+        unknown_labels=unknown_labels,
+        new_labels=(
+            tuple(lbl for lbl in labels if lbl not in set(history_labels))
+            if history_labels
+            else ()
+        ),
+        person_suggestions=_suggestions(unknown_people, roster),
+        label_suggestions=_suggestions(unknown_labels, labels),
+    )
+
+
+def _copy_entry(entry: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        key: dict(value) if isinstance(value, dict) else value
+        for key, value in (entry or {}).items()
+    }
+
+
+def _merge_entries(a: Mapping[str, Any], b: Mapping[str, Any]) -> Dict[str, Any]:
+    """Combine two residents' histories: dimensions summed, labels union-summed.
+
+    The transient ``adjustments`` audit note describes a single block update
+    of a single identity, so it has no meaning for a merged one and is dropped
+    (it is stripped on every load anyway).
+    """
+    merged: Dict[str, Any] = {
+        dim: float(a.get(dim, 0.0)) + float(b.get(dim, 0.0)) for dim in DIMENSIONS
+    }
+    for key, cast in (("labels", float), ("label_counts", int)):
+        if (a.get(key) or b.get(key)):
+            hist = {str(k): cast(v) for k, v in (a.get(key) or {}).items()}
+            for k, v in (b.get(key) or {}).items():
+                hist[str(k)] = hist.get(str(k), cast(0)) + cast(v)
+            merged[key] = hist
+    nf_days = int(a.get("nf_days") or 0) + int(b.get("nf_days") or 0)
+    if nf_days:
+        merged["nf_days"] = nf_days
+    return merged
+
+
+def rename_person(ledger, old: str, new: str) -> Dict[str, Dict[str, Any]]:
+    """Return a copy of ``ledger`` with ``old``'s history filed under ``new``.
+
+    Fixes a misspelled or changed name so the person keeps their carryover
+    and per-label history. If ``new`` already exists the two histories are
+    merged. A missing ``old`` (or ``old == new``) returns an unchanged copy.
+    """
+    out = {name: _copy_entry(entry) for name, entry in (ledger or {}).items()}
+    if old not in out or old == new:
+        return out
+    moved = out.pop(old)
+    out[new] = _merge_entries(out[new], moved) if new in out else moved
+    return out
+
+
+def rename_label(ledger, old: str, new: str) -> Dict[str, Dict[str, Any]]:
+    """Return a copy with label history under ``old`` folded into ``new``.
+
+    Repairs a renamed shift so its history keeps feeding the cumulative
+    per-label view and per-label carryover. The total/weekend dimensions are
+    untouched: the work was done regardless of what the shift is called now.
+    """
+    if old == new:
+        return {name: _copy_entry(entry) for name, entry in (ledger or {}).items()}
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, entry in (ledger or {}).items():
+        entry = _copy_entry(entry)
+        for key, cast in (("labels", float), ("label_counts", int)):
+            hist = entry.get(key)
+            if hist and old in hist:
+                moved = hist.pop(old)
+                hist[new] = cast(hist.get(new, 0)) + cast(moved)
+        out[name] = entry
+    return out
+
+
+def drop_person(ledger, name: str) -> Dict[str, Dict[str, Any]]:
+    """Return a copy without ``name``'s entry (their history is discarded)."""
+    return {n: _copy_entry(e) for n, e in (ledger or {}).items() if n != name}
+
+
+def drop_label(ledger, label: str) -> Dict[str, Dict[str, Any]]:
+    """Return a copy with ``label`` removed from every label history.
+
+    Deliberately leaves the total/weekend dimensions alone: removing a dead
+    shift's history is bookkeeping, not un-earning the points worked on it.
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, entry in (ledger or {}).items():
+        entry = _copy_entry(entry)
+        for key in ("labels", "label_counts"):
+            hist = entry.get(key)
+            if hist and label in hist:
+                del hist[label]
+                if not hist:
+                    del entry[key]
+        out[name] = entry
+    return out
