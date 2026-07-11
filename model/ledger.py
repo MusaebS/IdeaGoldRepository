@@ -386,7 +386,7 @@ class ReconcileReport:
 
 def _ledger_labels(ledger) -> list:
     """Every shift label appearing in any entry's label history, sorted."""
-    seen = set()
+    seen: set[str] = set()
     for entry in (ledger or {}).values():
         for key in ("labels", "label_counts"):
             seen.update(str(label) for label in (entry or {}).get(key) or {})

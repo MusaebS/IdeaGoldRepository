@@ -1,6 +1,6 @@
 from dataclasses import replace
 import os
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Sequence, Tuple, cast
 
 # CP-SAT variable handles are opaque (real ortools IntVar or the _Var stub
 # below), so they are typed as Any throughout.
@@ -1086,10 +1086,12 @@ def resolve_targets(
                 # Per-label carryover: the ledger's per-label history makes the
                 # label targets cumulative, so shift-type debt is repaid in the
                 # same shift type (above the gate it is recorded, not repaid).
-                prior_labels = None
+                # The Ledger alias types entry values as float, but "labels"
+                # is a nested per-label mapping; cast so mypy accepts it.
+                prior_labels: Dict[str, Mapping[str, float]] | None = None
                 if ledger and label_carryover:
                     prior_labels = {
-                        p: ((ledger.get(p) or {}).get("labels") or {})
+                        p: cast("Mapping[str, float]", (ledger.get(p) or {}).get("labels") or {})
                         for p in participants
                     }
                 target_label = (
