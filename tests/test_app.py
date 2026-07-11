@@ -109,6 +109,29 @@ def test_test_mode_generate_produces_schedule(monkeypatch):
     assert any("Schedule generated" in s.value for s in at.success)
 
 
+def test_feasible_at_time_limit_shows_prominent_warning():
+    df, data = _result_fixture()
+    df.attrs["solver_status"] = "FEASIBLE"
+    df.attrs["wall_time_sec"] = 59.8
+    df.attrs["time_limit_sec"] = 60
+    at = _at()
+    at.run()
+    _seed_result(at, df, data)
+    at.run()
+    assert not at.exception
+    assert any("stopped at its 60s time limit" in w.value for w in at.warning)
+    # An OPTIMAL solve shows no such warning.
+    df2, data2 = _result_fixture()
+    df2.attrs["solver_status"] = "OPTIMAL"
+    df2.attrs["wall_time_sec"] = 2.0
+    df2.attrs["time_limit_sec"] = 60
+    at2 = _at()
+    at2.run()
+    _seed_result(at2, df2, data2)
+    at2.run()
+    assert not any("time limit" in w.value for w in at2.warning)
+
+
 def test_seeded_results_survive_rerun():
     df, data = _result_fixture()
     at = _at()

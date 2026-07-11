@@ -794,6 +794,17 @@ def render_application() -> None:
 def render_generate_and_solve(session_config, carryover_ledger) -> None:
     """The Generate button, validation, solve, and relax-and-retry recovery."""
     st.divider()
+    st.number_input(
+        "Solver time limit (seconds, 0 = automatic)",
+        min_value=0,
+        max_value=3600,
+        step=30,
+        key=Keys.TIME_LIMIT,
+        help="How long the optimiser may search. The automatic budget is "
+        "60 s, which can be too short for large rosters — if the result says "
+        "the solver hit its limit and the spread looks uneven, try 300 s or "
+        "more. Longer limits never make the schedule worse, only slower.",
+    )
     generate_clicked = st.button(
         "⚙️ Generate schedule", type="primary", width="stretch"
     )
@@ -832,6 +843,7 @@ def render_generate_and_solve(session_config, carryover_ledger) -> None:
             df = build_schedule(
                 data, env=env, ledger=carryover_ledger,
                 label_carryover=st.session_state.get(Keys.LEDGER_LABEL_CARRYOVER, True),
+                time_limit_sec=float(st.session_state.get(Keys.TIME_LIMIT) or 0),
             )
     except RuntimeError as exc:
         st.error(str(exc))

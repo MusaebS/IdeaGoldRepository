@@ -819,6 +819,14 @@ def test_resolve_targets_reduction_shifts_load_within_role():
     assert tmap["A"] == pytest.approx(4.0) and tmap["B"] == pytest.approx(4.0)
 
 
+def test_build_schedule_time_limit_override_lands_in_attrs():
+    df = build_schedule(_rt_data(), env="test", time_limit_sec=123.0)
+    assert df.attrs["time_limit_sec"] == 123.0
+    # 0 / None fall back to the env budget (test env = 1s at this size).
+    auto = build_schedule(_rt_data(), env="test", time_limit_sec=0)
+    assert auto.attrs["time_limit_sec"] != 123.0
+
+
 def test_solver_never_assigns_exempt_resident():
     pytest.importorskip("ortools")
     data = _rt_data(exempt_shifts={"B": ["S"]}, min_gap=0)

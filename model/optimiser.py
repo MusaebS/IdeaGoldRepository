@@ -1163,6 +1163,7 @@ def build_schedule(
     ledger: Ledger | None = None,
     *,
     label_carryover: bool = True,
+    time_limit_sec: float | None = None,
 ) -> pd.DataFrame:
     """Build schedule with optional environment based time limit.
 
@@ -1172,6 +1173,9 @@ def build_schedule(
     ``label_carryover`` (default on) extends that to the ledger's per-label
     history, repaying shift-type debt in the same shift type; see
     ``resolve_targets``.
+    ``time_limit_sec`` overrides the env/size-derived solver budget — large
+    rosters may need far more than the default 60 s to move past a first
+    feasible-but-uneven incumbent.
     """
     # Lazy import avoids a module-level cycle (validation imports this module).
     from .validation import validate_input
@@ -1205,7 +1209,11 @@ def build_schedule(
     using_stub = not ORTOOLS_AVAILABLE
     solver = SchedulerSolver(solve_data, nf_cells=nf_cells, closed_cells=closed_cells)
     env = (env or os.environ.get("ENV", "prod")).lower()
-    limit = compute_time_limit(env, len(participants) or 1, day_count, len(data.shifts) or 1)
+    limit: float = (
+        float(time_limit_sec)
+        if time_limit_sec and time_limit_sec > 0
+        else compute_time_limit(env, len(participants) or 1, day_count, len(data.shifts) or 1)
+    )
     df = solver.solve(time_limit_sec=limit)
     df.attrs["time_limit_sec"] = limit
     df.attrs["solver_warning"] = None
