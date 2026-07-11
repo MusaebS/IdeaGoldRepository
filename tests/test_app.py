@@ -439,6 +439,137 @@ def test_ledger_panel_clear_returns_to_standalone():
     assert not at.exception
 
 
+def test_ledger_reconcile_apply_merges_and_updates_base():
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob"]
+    at.session_state["shifts"] = [
+        ShiftTemplate(label="Day", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+    ]
+    # As if a ledger was uploaded with a misspelled name and a renamed shift.
+    at.session_state["ledger_base"] = {
+        "Alicia": {"total": 5.0, "weekend": 2.0,
+                   "labels": {"D": 5.0}, "label_counts": {"D": 5}},
+        "Bob": {"total": 3.0, "weekend": 1.0},
+    }
+    at.session_state["ledger_rows"] = [
+        {"Resident": "Alicia", "Total": 5.0, "Weekend": 2.0},
+        {"Resident": "Bob", "Total": 3.0, "Weekend": 1.0},
+    ]
+    at.run()
+    at.selectbox(key="ledgrec_p_Alicia").set_value("Merge into Alice")
+    at.selectbox(key="ledgrec_l_D").set_value("Merge into Day")
+    apply = [b for b in at.button if b.key == "ledgrec_apply"]
+    assert apply, "Reconcile apply button not found"
+    apply[0].click()
+    at.run()
+    base = at.session_state["ledger_base"]
+    assert "Alicia" not in base
+    assert base["Alice"]["total"] == 5.0
+    assert base["Alice"]["labels"] == {"Day": 5.0}  # rename + label merge kept history
+    assert base["Alice"]["label_counts"] == {"Day": 5}
+    assert {r["Resident"] for r in at.session_state["ledger_rows"]} == {"Alice", "Bob"}
+    assert not at.exception
+
+
+def test_ledger_reconcile_dismiss_keeps_history_and_hides_panel():
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice"]
+    at.session_state["ledger_base"] = {"Zed": {"total": 2.0, "weekend": 0.0}}
+    at.session_state["ledger_rows"] = [{"Resident": "Zed", "Total": 2.0, "Weekend": 0.0}]
+    at.run()
+    assert [s for s in at.selectbox if str(s.key).startswith("ledgrec_")]
+    dismiss = [b for b in at.button if b.key == "ledgrec_dismiss"]
+    assert dismiss, "Reconcile dismiss button not found"
+    dismiss[0].click()
+    at.run()
+    # The reconcile widgets are gone; the unmatched entry is kept as history.
+    assert not [s for s in at.selectbox if str(s.key).startswith("ledgrec_")]
+    assert at.session_state["ledger_base"] == {"Zed": {"total": 2.0, "weekend": 0.0}}
+    assert not at.exception
+
+
+def test_populate_editors_from_config_round_trips_into_session():
+    from datetime import date as _date
+
+    from model.data_models import LoadReduction
+    from ui.config_tabs import populate_editors_from_config
+
+    data = InputData(
+        start_date=_date(2026, 3, 2),
+        end_date=_date(2026, 3, 15),
+        shifts=[
+            ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+            ShiftTemplate(label="N", role="Junior", night_float=False, thu_weekend=False, points=2.0),
+        ],
+        juniors=["Alice", "Bob"],
+        seniors=["Sam"],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=2,
+        seed=7,
+        weekend_days=[4, 5],  # Fri/Sat
+        max_total={"Alice": 4.0},
+        max_total_excused={"Alice": True},
+        extra_points={"Bob": 1.0},
+        reductions=[LoadReduction(None, ("Bob",), ("N",), 0.0, _date(2026, 3, 2), _date(2026, 3, 8))],
+    )
+    state: dict = {}
+    populate_editors_from_config(data, state=state)
+    assert state["shifts"] == data.shifts
+    assert state["juniors"] == ["Alice", "Bob"] and state["seniors"] == ["Sam"]
+    assert state["start_date"] == _date(2026, 3, 2)
+    assert state["min_gap"] == 2 and state["seed"] == 7
+    assert state["weekend_labels"] == ["Fri", "Sat"]
+    assert state["caps"] == {"Alice": {"total": 4.0, "excused": True}}
+    assert state["extra_points"] == {"Bob": 1.0}
+    assert len(state["reductions"]) == 1
+
+
+def test_config_upload_populates_editors_and_generate_uses_it():
+    from model.config_io import input_data_to_json
+
+    data = InputData(
+        start_date=date(2026, 4, 6),
+        end_date=date(2026, 4, 12),
+        shifts=[
+            ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ],
+        juniors=["Alice", "Bob"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+    )
+
+    class _Upload:
+        name = "config.json"
+
+        def __init__(self, payload: bytes):
+            self._payload = payload
+
+        def getvalue(self) -> bytes:
+            return self._payload
+
+    at = _at()
+    at.run()
+    at.session_state["config_uploader_stub"] = _Upload(input_data_to_json(data).encode())
+    # Streamlit's AppTest can't drive a real file_uploader, so exercise the
+    # importer directly: it must land in the tab session state the same way.
+    from ui.config_tabs import populate_editors_from_config
+    populate_editors_from_config(data, state=at.session_state)
+    at.run()
+    assert at.session_state["shifts"] == data.shifts
+    assert at.session_state["juniors"] == ["Alice", "Bob"]
+    assert at.session_state["start_date"] == date(2026, 4, 6)
+    assert not at.exception
+
+
 def test_availability_apply_adds_compensated_leaves_with_dedupe():
     from model.availability import AvailabilityRow
 

@@ -203,6 +203,26 @@ audit note in the ledger JSON, and the download caption lists what was applied.
 Two checkboxes under **④ Save / carryover** restore pure cumulative balancing if
 you really want deviations repaid.
 
+**Per-shift-type debt is repaid in kind (default).** The ledger also carries each
+resident's accumulated points *per shift type*. When "Repay shift-type debt in the
+same shift type" is ticked (the default, in **④ Save / carryover**), someone who
+worked more than their share of, say, nights last block gets a lighter *night*
+target now — not just fewer points overall. This sits at the lowest fairness tier,
+so it never overrides the total or weekend balance, and on very large blocks (where
+per-type targets are skipped for solver speed) the history is still recorded but not
+auto-repaid. Untick it to fall back to repaying imbalance through total/weekend
+points only. No change to the ledger file format — old ledgers just start each
+shift type at zero history.
+
+**Reconciling a ledger after names or shifts change.** Names and shift labels are
+matched exactly, so a fixed misspelling, a renamed shift, a retired shift, or a new
+joiner would otherwise silently orphan or restart history. After you upload a
+ledger, a **reconcile step** (under the grid in ④) lists every ledger name/shift
+that doesn't match the current setup, with likely matches suggested first, and lets
+you **merge** it into the current entry (keeping its history), **keep** it as
+dormant history, or **remove** it — nothing changes until you click Apply, and you
+can dismiss the panel to use the ledger as-is.
+
 **Where is it kept?** The app is stateless — nothing is stored server-side, which
 matters on Streamlit Community Cloud where the filesystem is wiped on every
 restart. The ledger is *your* file: download it after each block (named
@@ -280,9 +300,9 @@ Per entry, choose what happens to the rest of their load *this* block:
 
 Either way — and unlike perks or group factors — the reduction is **never
 excused**: the ledger's no-catch-up policy issues no credit for it, so the
-deficit is always repaid through carryover. Caveat: repayment is tracked on
-the total / weekend dimensions, so a reduced label that is not weekend repays
-via total points (per-label carryover targets are future work).
+deficit is always repaid through carryover. With per-shift-type carryover on
+(the default), a reduced shift type is repaid in *that* shift type; the
+total / weekend dimensions still balance overall load on top.
 
 ## Fairness table, per-call audit & ledger editor
 
@@ -298,10 +318,12 @@ weekend/night-float flags — download the CSV each month for future reference.
 The carryover ledger is now **editable in-app** (④ Save / carryover): upload
 it, adjust any resident's cumulative numbers after a real-world change, add or
 remove residents, download the edited JSON without generating — and whatever
-the grid shows is what the next Generate balances against. The saved ledger
-also accumulates per-shift-type points and call counts across blocks
-(informational; carryover balancing stays on the three dimensions; old ledger
-files load unchanged).
+the grid shows is what the next Generate balances against. Uploading also runs
+the **reconcile step** (see [Carryover fairness](#carryover-fairness-cumulative-across-blocks))
+so a renamed resident or shift keeps its history instead of restarting at zero.
+The saved ledger accumulates per-shift-type points and call counts across
+blocks; these feed both the cumulative "which calls" view and, by default, the
+next block's per-shift-type targets. Old ledger files load unchanged.
 
 ## Importing availability requests
 
@@ -399,6 +421,10 @@ Two guarantees underpin the "is the result actually fair?" question:
   skip it so the extra variables can't starve the primary balance under a
   solve-time limit. Load reductions and shift preferences deliberately opt a
   resident out of this pin (the whole point of those features is a chosen mix).
+  Across blocks, a carryover ledger extends this to the *cumulative* mix: the
+  `multi_block_label_ledger` audit scenario checks that a shift type someone
+  was kept off in one block is repaid to them in later blocks, not just as
+  generic points.
 
 `python scripts/fairness_audit.py` solves ~20 scenarios end-to-end (small,
 large, extreme, and every feature) and checks the *outcome*: total / weekend /
@@ -439,6 +465,21 @@ CI runs ruff, mypy, and pytest on Python 3.11/3.12 — plus a stub-only job with
 no pandas/OR-Tools installed to guard the graceful-degradation path.
 
 ## Changelog
+- **Per-shift-type carryover, ledger reconciliation, and config repopulation.**
+  The carryover ledger's per-shift-type history now feeds the next block's
+  per-label targets (default on; toggle in ④ Save / carryover), so shift-type
+  debt is repaid in kind rather than as generic points — at the lowest fairness
+  tier, so total/weekend balance is untouched, and gated on large rosters (no
+  ledger-format change). Uploading a ledger now offers a **reconcile step** for
+  names/shifts that don't match the current setup (merge keeping history, keep
+  as dormant history, or remove; likely matches suggested via `difflib`), so a
+  fixed misspelling or a renamed shift no longer silently restarts history.
+  Uploading a config now **repopulates every editor tab** for review instead of
+  being consumed invisibly at Generate. Plus success toasts on uploads, applies,
+  and the main editor adds. New helpers: `model/ledger.py` `reconcile_report` /
+  `rename_person` / `rename_label` / `drop_person` / `drop_label`; `optimiser`
+  `label_carryover` flag; `ui/config_tabs.py` `populate_editors_from_config`;
+  `ui/state.py` `flash` / `show_flash`.
 - Night float reworked into a **separate coverage overlay** instead of a shift
   type inside the regular scheduler. Shifts are marked *night-float-eligible*
   with a per-shift coverage pattern (`nf_coverage`) and explicit coverer periods

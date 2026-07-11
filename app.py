@@ -23,6 +23,6 @@ test_mode = st.checkbox("Test mode (preload example data)")
 if test_mode:
     load_demo_data_once()
 
-session_config, uploaded_config, carryover_ledger = render_config_tabs()
-render_generate_and_solve(session_config, uploaded_config, carryover_ledger)
+session_config, carryover_ledger = render_config_tabs()
+render_generate_and_solve(session_config, carryover_ledger)
 render_results()

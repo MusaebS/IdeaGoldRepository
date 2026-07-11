@@ -100,6 +100,7 @@ def date_range_editor(
             merged = set(st.session_state[Keys.EXEMPT_SHIFTS].get(who, []))
             merged |= set(shift_labels) - set(covers)
             st.session_state[Keys.EXEMPT_SHIFTS][who] = sorted(merged)
+        st.toast(f"Added entry for {who}.")
     rows = st.session_state[key]
     if rows:
         table_rows = []
@@ -140,6 +141,7 @@ def caps_editor(people: list) -> None:
     with c[3]:
         if _add_button("cap_add"):
             st.session_state[Keys.CAPS][who] = {"total": mt, "excused": not compensate}
+            st.toast(f"Set cap for {who}.")
     caps = st.session_state[Keys.CAPS]
     if caps:
         st.table(pd.DataFrame([
@@ -173,6 +175,7 @@ def extra_points_editor(people: list) -> None:
         if _add_button("extra_add"):
             if pts > 0:
                 st.session_state[Keys.EXTRA_POINTS][who] = pts
+                st.toast(f"Set {pts:g} extra point(s) for {who}.")
             else:
                 st.session_state[Keys.EXTRA_POINTS].pop(who, None)
     ep = st.session_state[Keys.EXTRA_POINTS]
@@ -258,6 +261,7 @@ def seniority_editor(people: list) -> None:
             name = gname.strip()
             if name:
                 st.session_state[Keys.GROUP_FACTORS][name] = gpct / 100.0
+                st.toast(f"Added seniority group “{name}”.")
             else:
                 st.warning("Give the group a name.")
     groups = st.session_state[Keys.GROUP_FACTORS]
@@ -409,6 +413,7 @@ def blackouts_editor(
                 st.session_state[Keys.BLACKOUTS].append(
                     Blackout(group, members, start, end, night_before, compensated)
                 )
+                st.toast("Added blackout window.")
     entries = list(normalized_blackouts(st.session_state[Keys.BLACKOUTS]))
     if entries:
         groups = st.session_state[Keys.NAMED_GROUPS]
@@ -465,6 +470,7 @@ def perks_editor(
     with c[-1]:
         if _add_button("perk_add"):
             st.session_state[Keys.PERKS].append(Perk(who, pct / 100.0, start, end))
+            st.toast(f"Added perk for {who}.")
     perks = st.session_state[Keys.PERKS]
     if perks:
         st.table(pd.DataFrame([
@@ -522,6 +528,7 @@ def closures_editor(
         st.session_state[Keys.CLOSURES].append(
             ShiftClosure(label, start, end, weekdays)
         )
+        st.toast(f"Added closure for “{label}”.")
     rows = list(normalized_closures(st.session_state[Keys.CLOSURES]))
     if rows:
         st.table(pd.DataFrame([
@@ -736,6 +743,7 @@ def reductions_editor(
                         start, end, REDUCTION_MODES[mode],
                     )
                 )
+                st.toast("Added shift-type reduction.")
     entries = list(normalized_reductions(st.session_state[Keys.REDUCTIONS]))
     if entries:
         groups = st.session_state[Keys.NAMED_GROUPS]
@@ -908,6 +916,7 @@ def shift_template_editor() -> None:
                     label=cleaned, role=role, night_float=nf, thu_weekend=thu_wk, points=points
                 )
             )
+            st.toast(f"Added shift “{cleaned}”.")
     shifts = st.session_state[Keys.SHIFTS]
     if shifts:
         st.table(pd.DataFrame([s.__dict__ for s in shifts]))

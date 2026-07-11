@@ -424,6 +424,45 @@ def recurring_nf_ledger():
         FAILURES.append(("recurring NF ledger", [f"cumulative ranges {ranges}"]))
 
 
+def multi_block_label_ledger():
+    # Per-label carryover: J0 works none of the heavy N shift in block 0 (a
+    # work-less reduction), accruing N-type debt. Later blocks must repay the
+    # debt *in kind* — extra N for J0, not just extra points of any type —
+    # so the cumulative per-label history converges alongside the totals.
+    # (Without label carryover the per-block N shares stay equal and J0's N
+    # history would lag forever.)
+    juniors = [f"J{i}" for i in range(4)]
+    ledger: dict = {}
+    n_ranges = []
+    for block in range(4):
+        start = MON + timedelta(days=14 * block)
+        data = mk([sh("D"), sh("N", 2.0)], juniors, days=14, start=start)
+        if block == 0:
+            data = replace(data, reductions=[
+                LoadReduction(None, ("J0",), ("N",), 0.0, start, start + timedelta(days=13))
+            ])
+        df = build_schedule(data, env="dev", ledger=ledger or None)
+        ledger = update_ledger(ledger, df, data)
+        n_ranges.append(
+            _spread((ledger[p].get("labels") or {}).get("N", 0.0) for p in juniors)
+        )
+    total_range = _spread(ledger[p]["total"] for p in juniors)
+    converged = (
+        n_ranges[-1] <= 2.0 and n_ranges[-1] < n_ranges[0] and total_range <= 2.0
+    )
+    print(
+        ("PASS" if converged else "FAIL")
+        + f"  {'4-block label ledger (J0 no N wk1)':<38} cumulative N ranges "
+        + " -> ".join(f"{r:.1f}" for r in n_ranges)
+        + f"  tot rng {total_range:.1f}"
+    )
+    if not converged:
+        FAILURES.append((
+            "multi-block label ledger",
+            [f"cumulative N ranges {n_ranges}", f"total range {total_range}"],
+        ))
+
+
 def extreme_more_shifts_than_people():
     data = mk([sh("D"), sh("E"), sh("F")], ["A", "B"], days=10)
     report("2 people, 3 shifts/day (1 unfilled/day)", measure(solve(data), data),
@@ -474,6 +513,7 @@ def main() -> int:
         features_reduction, features_avoid_pair, features_preferences_neutral,
         features_caps_penalty, features_factors, overlay_night_float,
         closures_scenario, multi_block_ledger, recurring_nf_ledger,
+        multi_block_label_ledger,
         extreme_more_shifts_than_people, extreme_heavy_shift, extreme_min_gap,
     ):
         scenario()

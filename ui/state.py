@@ -1,6 +1,8 @@
 """Session-state management: key registry, defaults, and result lifecycle."""
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import streamlit as st
 
 from model.coloring import DEFAULT_PALETTE
@@ -20,6 +22,11 @@ class Keys:
     SENIORS = "seniors"
     NF_JUNIORS = "nf_juniors"
     NF_SENIORS = "nf_seniors"
+    START_DATE = "start_date"
+    END_DATE = "end_date"
+    MIN_GAP = "min_gap"
+    SEED = "seed"
+    WEEKEND_LABELS = "weekend_labels"
     LEAVES = "leaves"
     ROTATORS = "rotators"
     CAPS = "caps"
@@ -43,9 +50,11 @@ class Keys:
     CLOSURES = "closures"                # [ShiftClosure] stood-down shift cells
     LEDGER_NO_REFUND = "ledger_no_refund"
     LEDGER_NO_CATCHUP = "ledger_no_catchup"
+    LEDGER_LABEL_CARRYOVER = "ledger_label_carryover"
     LEDGER_ROWS = "ledger_rows"          # editable grid rows (None = no ledger)
     LEDGER_BASE = "ledger_base"          # uploaded ledger (keeps label history)
     LEDGER_SIG = "ledger_upload_sig"
+    LEDGER_RECONCILE_DISMISSED = "ledger_reconcile_dismissed"  # sig of dismissed upload
     AVAIL_PREVIEW = "avail_preview"      # parsed availability rows (None = no file)
     AVAIL_SIG = "avail_upload_sig"
     DISPLAY_RESTORED = "display_restored_sig"
@@ -69,6 +78,7 @@ class Keys:
     KNOWN_COLS = "known_cols"
     EXPORT_CACHE = "export_cache"
     PAL_PREFIX = "pal_"
+    FLASH = "flash_message"
 
 
 def _defaults() -> dict:
@@ -78,6 +88,11 @@ def _defaults() -> dict:
         Keys.SENIORS: [],
         Keys.NF_JUNIORS: [],
         Keys.NF_SENIORS: [],
+        Keys.START_DATE: date.today(),
+        Keys.END_DATE: date.today() + timedelta(days=27),
+        Keys.MIN_GAP: 1,
+        Keys.SEED: 0,
+        Keys.WEEKEND_LABELS: ["Sat", "Sun"],
         Keys.LEAVES: [],
         Keys.ROTATORS: [],
         Keys.CAPS: {},
@@ -101,9 +116,11 @@ def _defaults() -> dict:
         Keys.CLOSURES: [],
         Keys.LEDGER_NO_REFUND: True,
         Keys.LEDGER_NO_CATCHUP: True,
+        Keys.LEDGER_LABEL_CARRYOVER: True,
         Keys.LEDGER_ROWS: None,
         Keys.LEDGER_BASE: None,
         Keys.LEDGER_SIG: None,
+        Keys.LEDGER_RECONCILE_DISMISSED: None,
         Keys.AVAIL_PREVIEW: None,
         Keys.AVAIL_SIG: None,
         Keys.DISPLAY_RESTORED: None,
@@ -133,6 +150,29 @@ def init_session_state() -> None:
 def bump_result_version() -> None:
     """Invalidate result-derived caches (the export cache keys off this)."""
     st.session_state[Keys.RESULT_VERSION] += 1
+
+
+def flash(message: str) -> None:
+    """Queue a success message to show after the next rerun.
+
+    A toast fired right before ``st.rerun()`` is lost with the interrupted
+    script run, so actions that mutate state and rerun (uploads, apply
+    buttons) queue their confirmation here; ``show_flash`` displays it at the
+    top of the next run.
+    """
+    st.session_state[Keys.FLASH] = message
+
+
+def show_flash() -> None:
+    """Display and clear the queued flash message, if any."""
+    message = st.session_state.pop(Keys.FLASH, None)
+    if not message:
+        return
+    toast = getattr(st, "toast", None)
+    if callable(toast):
+        toast(message)
+    else:  # pragma: no cover - very old streamlit
+        st.success(message)
 
 
 def set_result(df, data, prior_ledger) -> None:
