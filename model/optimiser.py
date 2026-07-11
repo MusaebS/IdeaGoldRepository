@@ -846,7 +846,7 @@ def _apply_reduction_targets(
     data: InputData,
     target_total_map: Dict[str, float] | None,
     target_night_float: Dict[str, float] | None,
-    participants: Sequence[str],
+    role_members: Mapping[str, Sequence[str]],
 ) -> Tuple[Dict[str, float] | None, Dict[str, float] | None]:
     """Fold "work less now" reductions into the total / night-float targets.
 
@@ -854,7 +854,9 @@ def _apply_reduction_targets(
     less this block; the ledger repays the shortfall later). ``keep_total=True``
     caps leave targets alone so the member is compensated with other shift
     types in-block. Weights are never touched either way, so the ledger's
-    no-catch-up policy cannot credit (excuse) the reduction.
+    no-catch-up policy cannot credit (excuse) the reduction. The shed load is
+    redistributed within the member's role pool — the only residents eligible
+    for the shifts being shed.
     """
     caps = [c for c in reduction_caps(data) if not c.keep_total]
     if not caps:
@@ -864,9 +866,13 @@ def _apply_reduction_targets(
         totals_delta: Dict[str, float] = {}
         for cap in caps:
             totals_delta[cap.person] = totals_delta.get(cap.person, 0.0) + cap.reduce_total
-        target_total_map = _shift_reduced_targets(
-            target_total_map, totals_delta, participants
-        )
+        target_total_map = dict(target_total_map)
+        for members in role_members.values():
+            sub = {p: totals_delta[p] for p in members if p in totals_delta}
+            if members and sub:
+                target_total_map.update(_shift_reduced_targets(
+                    {p: target_total_map.get(p, 0.0) for p in members}, sub, members
+                ))
 
     nf_delta: Dict[str, float] = {}
     for cap in caps:
@@ -1007,6 +1013,18 @@ def resolve_targets(
     (stood-down shifts) are excluded from the regular point pools so neither
     counts toward regular targets. The caller's ``InputData`` is never mutated.
 
+    Auto targets are **role-aware**: juniors can only work Junior-role shifts
+    and seniors Senior-role ones, so each role's point pool is split within
+    that role. A single global share is only reachable when the two pools'
+    per-head demand happens to match; splitting per role makes the targets
+    achievable, and any *structural* cross-role difference (e.g. 3 senior
+    shifts/day for 22 seniors vs 4 junior shifts/day for 40 juniors) is
+    surfaced by ``config_warnings`` instead of being smeared over everyone as
+    unreachable targets. Carryover, extra points, and reductions reconcile
+    within the same role pool. The scalar ``target_total`` stays the global
+    per-head mean for backward-compatible display; the per-resident map is
+    what the solver and reports use.
+
     ``label_carryover`` (default on) additionally feeds the ledger's per-label
     history into the auto label targets, so shift-type debt is repaid in the
     same shift type; off, per-label targets balance this block only and prior
@@ -1019,6 +1037,7 @@ def resolve_targets(
     # model.closures) — the fair-share targets are computed on the open demand.
     excluded = set(nf_cells) | set(closed_cells or set())
     participants = data.juniors + data.seniors
+    role_members = {"Junior": list(data.juniors), "Senior": list(data.seniors)}
     target_total = data.target_total
     target_total_map = data.target_total_map
     target_weekend = data.target_weekend
@@ -1026,57 +1045,82 @@ def resolve_targets(
     target_label = data.target_label
 
     if participants:
-        # Regular demand only: reserved (NF-covered / closed) cells carry no
-        # regular points.
-        total_points = 0.0
-        weekend_points = 0.0
+        # Regular demand only, bucketed by the role that can work it: reserved
+        # (NF-covered / closed) cells carry no regular points.
+        pool_total = {"Junior": 0.0, "Senior": 0.0}
+        pool_weekend = {"Junior": 0.0, "Senior": 0.0}
         for slot in slot_points(data):
             if (slot.day, slot.shift.label) in excluded:
                 continue
-            total_points += slot.points
+            pool_total[slot.shift.role] += slot.points
             if slot.weekend:
-                weekend_points += slot.points
+                pool_weekend[slot.shift.role] += slot.points
+        total_points = pool_total["Junior"] + pool_total["Senior"]
 
         availability = _availability_weights(data)
-        weight_sum = sum(availability.values())
+        role_weight = {
+            role: sum(availability.get(p, 0.0) for p in members)
+            for role, members in role_members.items()
+        }
+
+        def _role_shares(pools: Mapping[str, float]) -> Dict[str, float]:
+            """Availability-weighted split of each role's pool within the role."""
+            shares: Dict[str, float] = {}
+            for role, members in role_members.items():
+                weight_sum = role_weight[role]
+                for p in members:
+                    shares[p] = (
+                        pools[role] * availability.get(p, 0.0) / weight_sum
+                        if weight_sum > 0
+                        else 0.0
+                    )
+            return shares
 
         if target_total is None:
             target_total = total_points / len(participants)
-            if weight_sum > 0:
-                target_total_map = {
-                    p: total_points * availability[p] / weight_sum for p in participants
-                }
+            target_total_map = _role_shares(pool_total)
         if target_weekend is None:
-            if weight_sum > 0:
-                target_weekend = {
-                    p: weekend_points * availability[p] / weight_sum for p in participants
-                }
-            else:
-                target_weekend = {p: 0.0 for p in participants}
+            target_weekend = _role_shares(pool_weekend)
 
         # Night float is a separate coverage overlay, no longer a balanced
         # regular target (target_night_float stays whatever the caller set).
 
         if ledger:
             # Carryover fairness: targets balance cumulative load (prior + this
-            # block) rather than this block alone. Overrides the per-block maps.
-            prior_total = {p: ledger.get(p, {}).get("total", 0.0) for p in participants}
-            prior_wk = {p: ledger.get(p, {}).get("weekend", 0.0) for p in participants}
-            target_total_map = _carryover_targets(
-                prior_total, total_points, participants, availability, weight_sum, total_points
-            )
-            target_weekend = _carryover_targets(
-                prior_wk, weekend_points, participants, availability, weight_sum, weekend_points
-            )
+            # block) rather than this block alone, within each role pool.
+            # Overrides the per-block maps.
+            target_total_map = {}
+            target_weekend = {}
+            for role, members in role_members.items():
+                if not members:
+                    continue
+                prior_total = {p: ledger.get(p, {}).get("total", 0.0) for p in members}
+                prior_wk = {p: ledger.get(p, {}).get("weekend", 0.0) for p in members}
+                target_total_map.update(_carryover_targets(
+                    prior_total, pool_total[role], members, availability,
+                    role_weight[role], pool_total[role],
+                ))
+                target_weekend.update(_carryover_targets(
+                    prior_wk, pool_weekend[role], members, availability,
+                    role_weight[role], pool_weekend[role],
+                ))
 
         if data.extra_points and target_total_map:
-            target_total_map = _apply_extra_points(
-                target_total_map, data.extra_points, participants
-            )
+            # A penalty raises the punished resident's target; the relief goes
+            # to the residents who can actually absorb those shifts — the same
+            # role pool.
+            target_total_map = dict(target_total_map)
+            for members in role_members.values():
+                if members and any(data.extra_points.get(p) for p in members):
+                    target_total_map.update(_apply_extra_points(
+                        {p: target_total_map[p] for p in members},
+                        data.extra_points,
+                        members,
+                    ))
 
         if data.reductions:
             target_total_map, target_night_float = _apply_reduction_targets(
-                data, target_total_map, target_night_float, participants
+                data, target_total_map, target_night_float, role_members
             )
 
         if target_label is None:

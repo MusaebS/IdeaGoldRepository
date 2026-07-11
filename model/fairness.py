@@ -446,10 +446,22 @@ def schedule_quality(
                 filled += 1
     coverage = filled / total_slots if total_slots else 1.0
 
+    # Balance is measured within each role and the worst role counts: juniors
+    # and seniors work disjoint shift pools, so a cross-role difference is
+    # structural (supply vs demand, flagged by config_warnings), not something
+    # the optimiser could have scheduled away.
+    def _role_range(key: str) -> float:
+        ranges = []
+        for members in (data.juniors, data.seniors):
+            vals = [pts[p][key] for p in members if p in pts]
+            if len(vals) > 1:
+                ranges.append(max(vals) - min(vals))
+        return max(ranges) if ranges else 0.0
+
     totals = [v["total"] for v in pts.values()] or [0.0]
     weekends = [v["weekend"] for v in pts.values()] or [0.0]
-    total_range = max(totals) - min(totals)
-    weekend_range = max(weekends) - min(weekends)
+    total_range = _role_range("total")
+    weekend_range = _role_range("weekend")
     mean_total = sum(totals) / len(totals)
     mean_weekend = sum(weekends) / len(weekends)
     balance_total = 1.0 - min(1.0, total_range / mean_total) if mean_total > 0 else 1.0

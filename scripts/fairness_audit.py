@@ -463,6 +463,39 @@ def multi_block_label_ledger():
         ))
 
 
+def mixed_role_pools():
+    # Juniors and seniors work disjoint shift pools with different per-head
+    # demand (juniors 56/8 = 7 pts, seniors 14/4 = 3.5 pts). Targets are
+    # role-aware: fairness must be exact WITHIN each role; the cross-role gap
+    # is structural (supply vs demand) and merely reported. This is the shape
+    # of the real-world run that motivated the fix (40J/22S, 4+3 shifts/day).
+    juniors = [f"J{i}" for i in range(8)]
+    seniors = [f"S{i}" for i in range(4)]
+    data = mk(
+        [sh("D1"), sh("D2"), sh("N", 2.0), sh("SR", role="Senior")],
+        juniors, days=14, seniors=seniors,
+    )
+    df = solve(data)
+    points = calculate_points(df, data)
+    j_rng = _spread(points[p]["total"] for p in juniors)
+    s_rng = _spread(points[p]["total"] for p in seniors)
+    records = df.to_dict("records")
+    unfilled = sum(
+        1 for row in records for s in data.shifts if row.get(s.label) in (None, "Unfilled")
+    )
+    ok = j_rng <= 1.0 and s_rng <= 1.0 and unfilled == 0
+    print(
+        ("PASS" if ok else "FAIL")
+        + f"  {'mixed roles 8J/4S (per-role balance)':<38} junior rng {j_rng:.1f}"
+        + f"  senior rng {s_rng:.1f}  unf {unfilled}"
+    )
+    if not ok:
+        FAILURES.append((
+            "mixed role pools",
+            [f"junior range {j_rng}", f"senior range {s_rng}", f"unfilled {unfilled}"],
+        ))
+
+
 def extreme_more_shifts_than_people():
     data = mk([sh("D"), sh("E"), sh("F")], ["A", "B"], days=10)
     report("2 people, 3 shifts/day (1 unfilled/day)", measure(solve(data), data),
@@ -513,7 +546,7 @@ def main() -> int:
         features_reduction, features_avoid_pair, features_preferences_neutral,
         features_caps_penalty, features_factors, overlay_night_float,
         closures_scenario, multi_block_ledger, recurring_nf_ledger,
-        multi_block_label_ledger,
+        multi_block_label_ledger, mixed_role_pools,
         extreme_more_shifts_than_people, extreme_heavy_shift, extreme_min_gap,
     ):
         scenario()
