@@ -89,6 +89,7 @@ def populate_editors_from_config(data: InputData, state=None) -> None:
     ss[Keys.SEED] = int(data.seed)
     weekend_days = data.weekend_days if data.weekend_days is not None else [5, 6]
     ss[Keys.WEEKEND_LABELS] = [WEEKDAY_LABELS[d] for d in weekend_days]
+    ss[Keys.WEEKEND_MULTIPLIER] = float(data.weekend_multiplier)
     ss[Keys.LEAVES] = list(data.leaves or [])
     ss[Keys.ROTATORS] = list(data.rotators or [])
     caps = {p: {"total": v} for p, v in (data.max_total or {}).items()}
@@ -384,6 +385,7 @@ def session_config_from_state() -> InputData:
         min_gap=int(st.session_state[Keys.MIN_GAP]),
         seed=int(st.session_state[Keys.SEED]),
         weekend_days=weekend_days,
+        weekend_multiplier=float(st.session_state[Keys.WEEKEND_MULTIPLIER]),
         **_active_config_maps(),
     )
 
@@ -429,11 +431,24 @@ def _render_setup_workspace() -> None:
                 key=Keys.SEED,
                 help="Same seed reproduces the same schedule when the solver finishes.",
             )
-            st.multiselect(
+            wc = st.columns(2)
+            wc[0].multiselect(
                 "Weekend days",
                 WEEKDAY_LABELS,
                 key=Keys.WEEKEND_LABELS,
                 help="Days that count as weekend for fairness (a shift's 'Thu' flag also adds Thursday).",
+            )
+            wc[1].number_input(
+                "Weekend shift points (×)",
+                min_value=1.0,
+                max_value=5.0,
+                step=0.5,
+                key=Keys.WEEKEND_MULTIPLIER,
+                help="Weekend shifts count this many times their points (×2 by "
+                "default: one weekend shift ≈ two weekday shifts). This folds "
+                "weekend fairness into the strongest balancing tier, so weekend "
+                "load evens out as part of the totals. Set ×1 for the old "
+                "equal-points behaviour; old saved configs load as ×1.",
             )
     with tab_shifts:
         with card_container():

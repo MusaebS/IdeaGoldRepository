@@ -377,6 +377,12 @@ class InputData:
     # the date also counts toward weekend balance.
     weekday_points: Dict[Tuple[str, int], float] | None = None
     holidays: List[Tuple[date, float, bool]] | None = None
+    # Weekend slots are worth ``weekend_multiplier`` × their points (after any
+    # weekday override / holiday bonus). 2.0 makes a weekend shift count
+    # double, folding weekend fairness into the strongest (total) tier; 1.0
+    # (the default, and what old config files load as) keeps historical
+    # behaviour.
+    weekend_multiplier: float = 1.0
     # Seniority groups: a named group (e.g. "R2") maps to a load factor and
     # residents are assigned to groups. An R2 at 0.9 fairly carries ~10% fewer
     # points than an R1 at 1.0; the reduction flows through every fairness

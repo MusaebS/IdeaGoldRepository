@@ -463,6 +463,19 @@ def multi_block_label_ledger():
         ))
 
 
+def weekend_double_points():
+    # weekend_multiplier=2: weekend slots carry double points, so weekend
+    # imbalance lands in the strongest (total) tier. 28 days from a Monday =
+    # 8 weekend days; pool = 20 + 16 = 36 pts over 4 juniors -> 9 each with
+    # exactly 2 weekend slots (4 pts) per head.
+    juniors = [f"J{i}" for i in range(4)]
+    data = replace(mk([sh("D")], juniors, days=28), weekend_multiplier=2.0)
+    report(
+        "weekend x2 4x28x1 (folds into totals)", measure(solve(data), data),
+        {"total_range": 1, "weekend_range": 2, "unfilled": 0},
+    )
+
+
 def mixed_role_pools():
     # Juniors and seniors work disjoint shift pools with different per-head
     # demand (juniors 56/8 = 7 pts, seniors 14/4 = 3.5 pts). Targets are
@@ -546,7 +559,7 @@ def main() -> int:
         features_reduction, features_avoid_pair, features_preferences_neutral,
         features_caps_penalty, features_factors, overlay_night_float,
         closures_scenario, multi_block_ledger, recurring_nf_ledger,
-        multi_block_label_ledger, mixed_role_pools,
+        multi_block_label_ledger, mixed_role_pools, weekend_double_points,
         extreme_more_shifts_than_people, extreme_heavy_shift, extreme_min_gap,
     ):
         scenario()
