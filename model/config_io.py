@@ -90,6 +90,7 @@ def input_data_to_json(data: InputData, display: dict | None = None) -> str:
         "nf_block_length": data.nf_block_length,
         "seed": data.seed,
         "weekend_days": data.weekend_days,
+        "weekend_multiplier": data.weekend_multiplier,
         "max_total": data.max_total,
         "max_total_excused": data.max_total_excused or None,
         "max_nights": data.max_nights,
@@ -256,6 +257,7 @@ def input_data_from_json(text: str) -> InputData:
         leaves=_leaves_from_json(raw.get("leaves")),
         rotators=_windows_from_json(raw.get("rotators")),
         min_gap=int(raw.get("min_gap", 1)),
+        weekend_multiplier=float(raw.get("weekend_multiplier", 1.0)),
         nf_block_length=int(raw.get("nf_block_length", 5)),
         seed=int(raw.get("seed", 0)),
         weekend_days=(

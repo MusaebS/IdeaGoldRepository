@@ -33,7 +33,13 @@ def effective_points(day: date, shift: ShiftTemplate, data) -> float:
     """Return the points a shift is worth on a given day.
 
     Starts from the shift's default, replaces it with a weekday override if one
-    exists (e.g. night = 2 on Tuesdays), then adds any holiday bonus for that date.
+    exists (e.g. night = 2 on Tuesdays), then adds any holiday bonus for that
+    date, and finally multiplies weekend slots by ``data.weekend_multiplier``
+    (e.g. 2.0 makes every weekend shift count double — one weekend ≈ two
+    weekdays in the total balance). The multiplier lives here, in the single
+    source of per-slot value, so the solver, targets, fairness reports,
+    exports, and ledger all agree on it automatically. A holiday flagged as
+    weekend gets both its bonus and the multiplier.
     """
     pts = shift.points
     weekday_points = getattr(data, "weekday_points", None)
@@ -44,6 +50,11 @@ def effective_points(day: date, shift: ShiftTemplate, data) -> float:
         for h_date, bonus, _weekend in holidays:
             if h_date == day:
                 pts += bonus
+    multiplier = getattr(data, "weekend_multiplier", 1.0) or 1.0
+    if multiplier != 1.0 and is_weekend(
+        day, shift, getattr(data, "weekend_days", None), weekend_holiday_dates(data)
+    ):
+        pts *= multiplier
     return pts
 
 

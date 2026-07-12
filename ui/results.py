@@ -134,10 +134,26 @@ def _render_solver_caption(df, data) -> None:
         st.warning(warning)
     status = df.attrs.get("solver_status") if hasattr(df, "attrs") else None
     wall = df.attrs.get("wall_time_sec") if hasattr(df, "attrs") else None
+    limit = df.attrs.get("time_limit_sec") if hasattr(df, "attrs") else None
+    # A FEASIBLE solve that used (nearly) its whole budget stopped searching,
+    # not because the schedule was as fair as possible — say so loudly, since
+    # this is exactly how "someone got 0 shifts while slots went unfilled"
+    # results happen on big rosters with the default 60 s budget.
+    if status == "FEASIBLE" and wall is not None and limit and wall >= 0.9 * limit:
+        st.warning(
+            f"The solver stopped at its {limit:.0f}s time limit before proving "
+            "the fairest schedule — the spread may be more uneven than "
+            "necessary. Raise the solver time limit in ⑤ Review & run (e.g. "
+            "300 s) or reduce the problem size, then regenerate."
+        )
     if status:
-        detail = f"Solver status: {status} · seed {data.seed}"
+        # The applied min_gap is shown so a relax-and-retry solve can never
+        # silently differ from what the user thinks was used.
+        detail = f"Solver status: {status} · seed {data.seed} · min_gap {data.min_gap}"
         if wall is not None:
             detail += f" · {wall:.2f}s"
+        if limit:
+            detail += f" (limit {limit:.0f}s)"
         st.caption(detail)
 
 

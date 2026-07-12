@@ -27,6 +27,8 @@ class Keys:
     MIN_GAP = "min_gap"
     SEED = "seed"
     WEEKEND_LABELS = "weekend_labels"
+    WEEKEND_MULTIPLIER = "weekend_multiplier"
+    TIME_LIMIT = "solver_time_limit"     # seconds; 0 = auto (env/size based)
     LEAVES = "leaves"
     ROTATORS = "rotators"
     CAPS = "caps"
@@ -60,6 +62,11 @@ class Keys:
     DISPLAY_RESTORED = "display_restored_sig"
     DEMO_LOADED = "demo_loaded"
     RETRY_CONFIG = "retry_config"
+    # Queued cross-tab updates, applied at the top of the NEXT run before any
+    # widget renders (Streamlit forbids writing a keyed widget's state after
+    # the widget was instantiated in the same run).
+    PENDING_CONFIG = "pending_config"    # (InputData, display dict | None) from an upload
+    PENDING_STATE = "pending_widget_state"  # {session key: value} e.g. min_gap write-back
     NORMALIZE_NAMES = "normalize_names"
     BENCHMARK_RESULT = "benchmark_result"
 
@@ -95,6 +102,10 @@ def _defaults() -> dict:
         Keys.MIN_GAP: 1,
         Keys.SEED: 0,
         Keys.WEEKEND_LABELS: ["Sat", "Sun"],
+        # New sessions default weekend shifts to double points (the strongest
+        # way to keep weekend load even); old saved configs load as 1.0.
+        Keys.WEEKEND_MULTIPLIER: 2.0,
+        Keys.TIME_LIMIT: 0,
         Keys.LEAVES: [],
         Keys.ROTATORS: [],
         Keys.CAPS: {},
@@ -126,6 +137,8 @@ def _defaults() -> dict:
         Keys.AVAIL_PREVIEW: None,
         Keys.AVAIL_SIG: None,
         Keys.DISPLAY_RESTORED: None,
+        Keys.PENDING_CONFIG: None,
+        Keys.PENDING_STATE: None,
         Keys.NORMALIZE_NAMES: False,
         Keys.BENCHMARK_RESULT: None,
         Keys.RESULT_DF: None,

@@ -143,8 +143,8 @@ def report(name, metrics, expects, notes=()):
             print(f"      !! {violation}")
 
 
-def solve(data, env="dev"):
-    return build_schedule(data, env=env)
+def solve(data, env="dev", time_limit_sec=None):
+    return build_schedule(data, env=env, time_limit_sec=time_limit_sec)
 
 
 # --- scenarios ---------------------------------------------------------------
@@ -463,6 +463,52 @@ def multi_block_label_ledger():
         ))
 
 
+def weekend_double_points():
+    # weekend_multiplier=2: weekend slots carry double points, so weekend
+    # imbalance lands in the strongest (total) tier. 28 days from a Monday =
+    # 8 weekend days; pool = 20 + 16 = 36 pts over 4 juniors -> 9 each with
+    # exactly 2 weekend slots (4 pts) per head.
+    juniors = [f"J{i}" for i in range(4)]
+    data = replace(mk([sh("D")], juniors, days=28), weekend_multiplier=2.0)
+    report(
+        "weekend x2 4x28x1 (folds into totals)", measure(solve(data), data),
+        {"total_range": 1, "weekend_range": 2, "unfilled": 0},
+    )
+
+
+def mixed_role_pools():
+    # Juniors and seniors work disjoint shift pools with different per-head
+    # demand (juniors 56/8 = 7 pts, seniors 14/4 = 3.5 pts). Targets are
+    # role-aware: fairness must be exact WITHIN each role; the cross-role gap
+    # is structural (supply vs demand) and merely reported. This is the shape
+    # of the real-world run that motivated the fix (40J/22S, 4+3 shifts/day).
+    juniors = [f"J{i}" for i in range(8)]
+    seniors = [f"S{i}" for i in range(4)]
+    data = mk(
+        [sh("D1"), sh("D2"), sh("N", 2.0), sh("SR", role="Senior")],
+        juniors, days=14, seniors=seniors,
+    )
+    df = solve(data)
+    points = calculate_points(df, data)
+    j_rng = _spread(points[p]["total"] for p in juniors)
+    s_rng = _spread(points[p]["total"] for p in seniors)
+    records = df.to_dict("records")
+    unfilled = sum(
+        1 for row in records for s in data.shifts if row.get(s.label) in (None, "Unfilled")
+    )
+    ok = j_rng <= 1.0 and s_rng <= 1.0 and unfilled == 0
+    print(
+        ("PASS" if ok else "FAIL")
+        + f"  {'mixed roles 8J/4S (per-role balance)':<38} junior rng {j_rng:.1f}"
+        + f"  senior rng {s_rng:.1f}  unf {unfilled}"
+    )
+    if not ok:
+        FAILURES.append((
+            "mixed role pools",
+            [f"junior range {j_rng}", f"senior range {s_rng}", f"unfilled {unfilled}"],
+        ))
+
+
 def extreme_more_shifts_than_people():
     data = mk([sh("D"), sh("E"), sh("F")], ["A", "B"], days=10)
     report("2 people, 3 shifts/day (1 unfilled/day)", measure(solve(data), data),
@@ -492,13 +538,20 @@ def spec_scale(seeds=(0, 1, 2)):
             nf_juniors=nf_j, nf_seniors=nf_s, leaves=[], rotators=[],
             min_gap=1, nf_block_length=5, seed=seed,
         )
-        # At spec scale the solve is time-limited (FEASIBLE), so total-dev is a
-        # budget artefact, not an unfairness — the guarantees that must hold are
-        # full coverage and no hard-rule violations. Per-label targets are gated
-        # off above LABEL_TARGET_MAX_CELLS so they can't starve the primary
-        # balance here. Deviation is printed for information.
-        report(f"spec-scale 45x28x10 seed {seed} (info)", measure(solve(data, env="dev"), data),
-               {"unfilled": 0})
+        # At spec scale the solve is time-limited, so total-dev is a budget
+        # artefact, not an unfairness — the guarantees that must hold are
+        # full coverage and no hard-rule violations. Per-label targets are
+        # gated off above LABEL_TARGET_MAX_CELLS so they can't starve the
+        # primary balance here. Deviation is printed for information. The 30 s
+        # budget (vs dev's 10 s) gives CP-SAT room to reach a zero-unfilled
+        # incumbent on every seed; the exact trajectory shifts with model
+        # changes (e.g. role-aware targets), and coverage still dominates the
+        # objective, so a too-small budget fails on search time, not fairness.
+        report(
+            f"spec-scale 45x28x10 seed {seed} (info)",
+            measure(solve(data, time_limit_sec=30), data),
+            {"unfilled": 0},
+        )
 
 
 def main() -> int:
@@ -513,7 +566,7 @@ def main() -> int:
         features_reduction, features_avoid_pair, features_preferences_neutral,
         features_caps_penalty, features_factors, overlay_night_float,
         closures_scenario, multi_block_ledger, recurring_nf_ledger,
-        multi_block_label_ledger,
+        multi_block_label_ledger, mixed_role_pools, weekend_double_points,
         extreme_more_shifts_than_people, extreme_heavy_shift, extreme_min_gap,
     ):
         scenario()

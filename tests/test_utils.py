@@ -115,6 +115,42 @@ def test_effective_points_with_no_override_maps():
     assert effective_points(MON, _shift(points=2.0), data) == 2.0
 
 
+# --- weekend_multiplier -------------------------------------------------------
+
+def test_weekend_multiplier_scales_weekend_slots_only():
+    data = _data(weekend_multiplier=2.0)
+    assert effective_points(SAT, _shift(points=1.0), data) == 2.0
+    assert effective_points(SUN, _shift(points=1.5), data) == 3.0
+    assert effective_points(MON, _shift(points=1.0), data) == 1.0  # weekdays untouched
+
+
+def test_weekend_multiplier_default_is_off():
+    assert effective_points(SAT, _shift(points=1.0), _data()) == 1.0
+
+
+def test_weekend_multiplier_respects_custom_weekend_and_thu_flag():
+    data = _data(weekend_multiplier=2.0, weekend_days=[4, 5])  # Fri/Sat weekend
+    assert effective_points(FRI, _shift(), data) == 2.0
+    assert effective_points(SUN, _shift(), data) == 1.0  # Sunday is a weekday here
+    # The per-shift Thursday flag counts as weekend for that shift only.
+    assert effective_points(THU, _shift(thu_weekend=True), data) == 2.0
+    assert effective_points(THU, _shift(), data) == 1.0
+
+
+def test_weekend_multiplier_stacks_with_override_and_holiday():
+    # Override replaces the base, the holiday bonus adds, then the weekend
+    # multiplier scales the lot — a weekend holiday gets both.
+    data = _data(
+        weekend_multiplier=2.0,
+        weekday_points={("S", SAT.weekday()): 3.0},
+        holidays=[(SAT, 1.0, False)],
+    )
+    assert effective_points(SAT, _shift(points=1.0), data) == 8.0  # (3 + 1) * 2
+    # A weekday holiday flagged count-as-weekend is scaled too.
+    flagged = _data(weekend_multiplier=2.0, holidays=[(TUE, 1.0, True)])
+    assert effective_points(TUE, _shift(points=1.0), flagged) == 4.0  # (1 + 1) * 2
+
+
 # --- weekend_holiday_dates ---------------------------------------------------
 
 def test_weekend_holiday_dates_only_flagged():

@@ -1,5 +1,6 @@
 import sys, os
 import json
+from dataclasses import replace
 from datetime import date
 
 import pytest
@@ -73,6 +74,13 @@ def test_config_from_minimal_json():
     assert data.rotators == []
     assert data.min_gap == 1  # default
     assert data.nf_block_length == 5  # default
+    assert data.weekend_multiplier == 1.0  # old files keep equal weekend points
+
+
+def test_weekend_multiplier_round_trips():
+    data = _sample_data()
+    doubled = input_data_from_json(input_data_to_json(replace(data, weekend_multiplier=2.0)))
+    assert doubled.weekend_multiplier == 2.0
 
 
 def test_legacy_three_tuple_leave_normalizes_to_compensated():

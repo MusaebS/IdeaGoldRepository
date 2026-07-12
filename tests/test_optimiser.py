@@ -745,6 +745,88 @@ def test_resolve_targets_label_carryover_ignores_stale_and_new_labels():
         assert tl[(person, "D")] == pytest.approx(2.0)
 
 
+def _mixed_role_data(**kw):
+    # 4 days; 2 Junior-role shifts (8-pt pool) for 2 juniors -> 4 each, and
+    # 1 Senior-role shift (4-pt pool) for 2 seniors -> 2 each. The old global
+    # split would hand everyone the 3.0 mean, which neither role can reach;
+    # the cross-role difference here is structural, not schedulable away.
+    from model.data_models import ShiftTemplate
+    base = dict(
+        shifts=[
+            ShiftTemplate(label="J1", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+            ShiftTemplate(label="J2", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+            ShiftTemplate(label="S1", role="Senior", night_float=False, thu_weekend=False, points=1.0),
+        ],
+        juniors=["A", "B"],
+        seniors=["X", "Y"],
+    )
+    base.update(kw)
+    return _rt_data(**base)
+
+
+def test_resolve_targets_splits_pools_per_role():
+    from model.optimiser import resolve_targets
+
+    resolved = resolve_targets(_mixed_role_data())
+    # Juniors share the 8-point junior pool, seniors the 4-point senior pool —
+    # not one global 3.0 mean that neither role could actually reach.
+    assert resolved.target_total_map == {"A": 4.0, "B": 4.0, "X": 2.0, "Y": 2.0}
+    assert resolved.target_total == pytest.approx(3.0)  # global mean kept for display
+
+
+def test_resolve_targets_ledger_carryover_stays_within_role():
+    from model.optimiser import resolve_targets
+
+    # X carried 2 extra senior points; the relief must come from Y (the other
+    # senior), never from the juniors, whose shifts X cannot work.
+    ledger = {
+        "X": {"total": 2.0, "weekend": 0.0},
+        "A": {"total": 0.0, "weekend": 0.0},
+    }
+    resolved = resolve_targets(_mixed_role_data(), ledger=ledger)
+    tmap = resolved.target_total_map
+    # Senior pool: cumulative 4+2=6 -> 3 each; X carries 2 -> 1; Y -> 3.
+    assert tmap["X"] == pytest.approx(1.0)
+    assert tmap["Y"] == pytest.approx(3.0)
+    # Junior targets are untouched by the senior's history.
+    assert tmap["A"] == pytest.approx(4.0)
+    assert tmap["B"] == pytest.approx(4.0)
+
+
+def test_resolve_targets_extra_points_reconcile_within_role():
+    from model.optimiser import resolve_targets
+
+    resolved = resolve_targets(_mixed_role_data(extra_points={"X": 1.0}))
+    tmap = resolved.target_total_map
+    # X's penalty is absorbed by Y alone; the senior pool still sums to 4.
+    assert tmap["X"] > tmap["Y"]
+    assert tmap["X"] + tmap["Y"] == pytest.approx(4.0)
+    assert tmap["A"] == pytest.approx(4.0) and tmap["B"] == pytest.approx(4.0)
+
+
+def test_resolve_targets_reduction_shifts_load_within_role():
+    from model.data_models import LoadReduction
+    from model.optimiser import resolve_targets
+
+    data = _mixed_role_data(reductions=[
+        LoadReduction(None, ("X",), ("S1",), 0.0, date(2023, 1, 2), date(2023, 1, 5)),
+    ])
+    resolved = resolve_targets(data)
+    tmap = resolved.target_total_map
+    # X works none of S1 this block; the load lands on Y, not on the juniors.
+    assert tmap["X"] == pytest.approx(0.0)
+    assert tmap["Y"] == pytest.approx(4.0)
+    assert tmap["A"] == pytest.approx(4.0) and tmap["B"] == pytest.approx(4.0)
+
+
+def test_build_schedule_time_limit_override_lands_in_attrs():
+    df = build_schedule(_rt_data(), env="test", time_limit_sec=123.0)
+    assert df.attrs["time_limit_sec"] == 123.0
+    # 0 / None fall back to the env budget (test env = 1s at this size).
+    auto = build_schedule(_rt_data(), env="test", time_limit_sec=0)
+    assert auto.attrs["time_limit_sec"] != 123.0
+
+
 def test_solver_never_assigns_exempt_resident():
     pytest.importorskip("ortools")
     data = _rt_data(exempt_shifts={"B": ["S"]}, min_gap=0)
