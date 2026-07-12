@@ -149,6 +149,44 @@ def test_seeded_results_survive_rerun():
     assert at.session_state["result_version"] == 1
 
 
+def test_fairness_workspace_splits_roles_and_lists_annotations():
+    from model.data_models import Blackout
+
+    shifts = [
+        ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="S", role="Senior", night_float=False, thu_weekend=False, points=1.0),
+    ]
+    data = InputData(
+        start_date=date(2023, 1, 2),
+        end_date=date(2023, 1, 3),
+        shifts=shifts,
+        juniors=["Alice", "Bob"],
+        seniors=["Sam"],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+        blackouts=[Blackout(None, ("Alice",), date(2023, 1, 2), date(2023, 1, 2))],
+    )
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 2), "Day": "Monday", "D": "Bob", "S": "Sam"},
+        {"Date": date(2023, 1, 3), "Day": "Tuesday", "D": "Alice", "S": "Sam"},
+    ])
+    df.attrs["target_total_map"] = {"Alice": 1.0, "Bob": 1.0, "Sam": 2.0}
+    at = _at()
+    at.run()
+    _seed_result(at, df, data)
+    at.session_state["result_prior_ledger"] = {"Alice": {"total": 3.0, "weekend": 0.0}}
+    at.run()
+    assert not at.exception
+    labels = {tab.label for tab in at.tabs}
+    assert any(label.startswith("Juniors (") for label in labels)
+    assert any(label.startswith("Seniors (") for label in labels)
+    # The blackout annotation lives in an expander, not in the tables.
+    assert any("Load annotations" in e.label for e in at.expander)
+
+
 # --- manual-edit persistence -------------------------------------------------
 
 def test_normalize_edited_schedule_restores_dates_attrs_and_blanks():

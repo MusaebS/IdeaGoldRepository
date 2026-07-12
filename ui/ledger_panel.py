@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -67,6 +68,49 @@ def _mismatch_choices(unknown, suggestions, candidates, kind: str, key_prefix: s
             "discards the history.",
         )
     return choices
+
+
+def _standings_chart(ledger: dict) -> None:
+    """Cumulative standings carried into this block, at a glance.
+
+    Sorted heaviest-first so whoever the next block should relieve is at the
+    top; total and weekend points side by side. Grid edits update it live.
+    """
+    rows = [
+        {"Resident": person, "Kind": kind, "Points": float(entry.get(dim, 0.0))}
+        for person, entry in (ledger or {}).items()
+        for kind, dim in (("Total", "total"), ("Weekend", "weekend"))
+    ]
+    if len(ledger or {}) < 2:
+        return
+    frame = pd.DataFrame(rows)
+    order = (
+        frame[frame["Kind"] == "Total"]
+        .sort_values("Points", ascending=False)["Resident"].tolist()
+    )
+    with st.expander("Cumulative standings chart", expanded=False):
+        st.caption(
+            "What each resident carries into this block. The next Generate "
+            "gives lighter targets to whoever is highest here."
+        )
+        st.altair_chart(
+            alt.Chart(frame)
+            .mark_bar()
+            .encode(
+                y=alt.Y("Resident:N", sort=order, title=None),
+                x=alt.X("Points:Q", title="Cumulative points"),
+                yOffset="Kind:N",
+                color=alt.Color(
+                    "Kind:N",
+                    scale=alt.Scale(domain=["Total", "Weekend"],
+                                    range=["#7A5800", "#c9a227"]),
+                    legend=alt.Legend(title=None, orient="top"),
+                ),
+                tooltip=["Resident", "Kind", "Points"],
+            )
+            .properties(height=max(120, 16 * len(order))),
+            use_container_width=True,
+        )
 
 
 def _label_history_section(ledger: dict) -> None:
@@ -268,6 +312,7 @@ def render_ledger_panel(roster: list, shift_labels: list | None = None) -> dict 
     )
     for problem in problems:
         st.warning(problem)
+    _standings_chart(ledger)
     _label_history_section(ledger)
     _reconcile_section(ledger, list(roster or []), list(shift_labels))
 

@@ -1,4 +1,5 @@
 import sys, os
+import io
 from datetime import date
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -39,6 +40,39 @@ def _sample():
     df = pd.DataFrame([
         {"Date": date(2023, 1, 7), "Day": "Saturday", "D": "Alice", "N": "Bob"},
         {"Date": date(2023, 1, 8), "Day": "Sunday", "D": "Alice", "N": "Bob"},
+    ])
+    return df, data
+
+
+def _df_and_data(**overrides):
+    """Two-day, two-shift fixture; kwargs override the InputData fields.
+
+    Passing ``seniors=["Bob"]`` moves Bob out of the junior list automatically
+    so role-split tests don't have to restate the roster.
+    """
+    shifts = [
+        ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="N", role="Junior", night_float=False, thu_weekend=False, points=2.0),
+    ]
+    base = dict(
+        start_date=date(2023, 1, 7),
+        end_date=date(2023, 1, 8),
+        shifts=shifts,
+        juniors=["Alice", "Bob"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+    )
+    base.update(overrides)
+    if overrides.get("seniors") and "juniors" not in overrides:
+        base["juniors"] = [p for p in base["juniors"] if p not in base["seniors"]]
+    data = InputData(**base)
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 7), "Day": "Saturday", "D": "Alice", "N": "Bob"},
+        {"Date": date(2023, 1, 8), "Day": "Sunday", "D": "Bob", "N": "Alice"},
     ])
     return df, data
 
@@ -151,3 +185,132 @@ def test_build_assignment_frame_lists_every_slot():
     assert sat_n["Weekend"] is True and sat_n["Night float"] is True
     sun_n = next(r for r in records if r["Shift"] == "N" and r["Date"] == date(2023, 1, 8))
     assert sun_n["Resident"] == "Unfilled"
+
+
+# --- print views / report helpers ----------------------------------------------
+
+def test_schedule_print_view_merges_dates_and_labels_unfilled():
+    from model.exporters import schedule_print_view
+
+    df, data = _df_and_data()
+    df.loc[1, "D"] = None  # a genuine gap
+    columns, rows, weekend_rows = schedule_print_view(df, data)
+    assert columns[0] == "Date" and "Day" not in columns
+    assert rows[0]["Date"].startswith(("Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri"))
+    assert rows[1]["D"] == "Unfilled"  # explicit, not a blank cell
+
+
+def test_schedule_print_view_flags_weekend_rows():
+    from model.exporters import schedule_print_view
+
+    shifts = [ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 6), end_date=date(2023, 1, 8),  # Fri..Sun
+        shifts=shifts, juniors=["A", "B"], seniors=[], nf_juniors=[], nf_seniors=[],
+        leaves=[], rotators=[], min_gap=0,
+    )
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 6), "Day": "Friday", "D": "A"},
+        {"Date": date(2023, 1, 7), "Day": "Saturday", "D": "B"},
+        {"Date": date(2023, 1, 8), "Day": "Sunday", "D": "A"},
+    ])
+    _, _, weekend_rows = schedule_print_view(df, data)
+    assert weekend_rows == {1, 2}
+
+
+def test_fairness_print_sections_split_by_role_and_curated():
+    from model.exporters import fairness_print_sections
+
+    df, data = _df_and_data(seniors=["Bob"])
+    points = calculate_points(df, data)
+    fairness = build_fairness_frame(points, data, df)
+    sections = fairness_print_sections(fairness, data)
+    titles = [t for t, _, _ in sections]
+    assert titles == ["Juniors", "Seniors"]
+    junior_cols = sections[0][1]
+    assert "Notes" not in junior_cols and "Role" not in junior_cols
+    assert "Resident" in junior_cols and "Total" in junior_cols
+    # Per-label COUNT columns print; raw per-label point columns stay in CSV.
+    assert "D n" in junior_cols and "D" not in junior_cols
+    # NF duty is dropped when nobody has any.
+    assert "NF duty (days)" not in junior_cols
+
+
+def test_annotation_footnotes_number_only_noted_residents():
+    from model.exporters import annotation_footnotes
+
+    df, data = _df_and_data(exempt_shifts={"Alice": ["N"]})
+    points = calculate_points(df, data)
+    fairness = build_fairness_frame(points, data, df)
+    markers, lines = annotation_footnotes(fairness)
+    assert markers == {"Alice": 1}
+    assert lines == [f"1. Alice — {fairness.set_index('Resident').loc['Alice', 'Notes']}"]
+
+
+def test_report_header_and_legend():
+    from model.exporters import legend_entries, report_header_lines
+
+    df, data = _df_and_data()
+    df.attrs["solver_status"] = "OPTIMAL"
+    df.attrs["wall_time_sec"] = 3.0
+    lines = report_header_lines(data, df, {"score": 100.0, "unfilled": 0})
+    text = " ".join(lines)
+    assert "juniors" in text and "Generated" in text
+    assert "Solver OPTIMAL in 3s" in text and "Quality 100.0/100" in text
+    legend = legend_entries("auto")
+    labels = [label for _, label in legend]
+    assert any("Unfilled" in label for label in labels)
+    assert any("Weekend" in label for label in labels)
+
+
+def test_build_cumulative_frame_segments():
+    from model.exporters import build_cumulative_frame
+
+    df, data = _df_and_data()
+    points = calculate_points(df, data)
+    prior = {"Alice": {"total": 5.0, "weekend": 2.0}}
+    frame = build_cumulative_frame(points, prior, data)
+    alice = frame[frame["Resident"] == "Alice"]
+    assert set(alice["Segment"]) == {"Prior blocks", "This block"}
+    prior_row = alice[alice["Segment"] == "Prior blocks"].iloc[0]
+    assert prior_row["Points"] == 5.0
+    assert prior_row["Cumulative"] == 5.0 + points["Alice"]["total"]
+    # Bob has no history: prior segment is zero, not missing.
+    bob_prior = frame[(frame["Resident"] == "Bob") & (frame["Segment"] == "Prior blocks")]
+    assert len(bob_prior) == 1 and bob_prior.iloc[0]["Points"] == 0.0
+
+
+def _with_gap(df):
+    """A frame whose first D cell is a genuine solver-style None gap."""
+    records = df.to_dict("records")
+    records[0]["D"] = None
+    return pd.DataFrame(records)
+
+
+def test_pdf_with_notes_ledger_and_gaps_still_renders():
+    pytest.importorskip("reportlab")
+    from model.data_models import Blackout
+
+    df, data = _df_and_data(
+        seniors=["Bob"],
+        blackouts=[Blackout(None, ("Alice",), date(2023, 1, 7), date(2023, 1, 8))],
+    )
+    prior = {"Alice": {"total": 5.0, "weekend": 2.0}}
+    out = schedule_to_pdf_bytes(_with_gap(df), data, color_mode="auto", prior_ledger=prior)
+    assert out[:4] == b"%PDF"
+
+
+def test_excel_gains_per_call_sheet_and_unfilled_labels():
+    pytest.importorskip("openpyxl")
+    from openpyxl import load_workbook
+
+    df, data = _df_and_data()
+    df = _with_gap(df)
+    out = schedule_to_excel_bytes(df, data)
+    book = load_workbook(io.BytesIO(out))
+    assert set(book.sheetnames) >= {"Schedule", "Fairness", "Per-call"}
+    schedule = book["Schedule"]
+    header = [c.value for c in schedule[1]]
+    values = [c.value for c in schedule[2]]
+    assert values[header.index("D")] == "Unfilled"
+    assert schedule.freeze_panes == "B2"
