@@ -669,7 +669,7 @@ class SchedulerSolver:
 
         self.model.Minimize(sum(terms))
 
-    def solve(self, time_limit_sec: int | None = None):
+    def solve(self, time_limit_sec: float | None = None):
         solver = cp_model.CpSolver()
         if not hasattr(solver, "OPTIMAL"):
             solver.OPTIMAL = getattr(cp_model, "OPTIMAL", 0)

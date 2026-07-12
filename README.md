@@ -12,9 +12,16 @@ The solver supports fractional fairness targets via `InputData.target_total`, `t
 **Night float is a separate coverage overlay, not a balanced dimension.** It runs *before* the regular scheduler: the dates it covers are assigned to their night-float coverer and removed from regular demand, and each coverer is treated like an *uncompensated* leave for their block (blocked from regular shifts, reduced regular target, no future catch-up). See [Night float](#night-float-a-coverage-overlay) below. Night-float work carries no regular points by default, so it does not enter the total/weekend/per-label balance; the fairness log reports each coverer's night-float **duty days** as an informational figure outside the balance.
 
 If `target_total` or `target_weekend` are not provided, `build_schedule` calculates
-them automatically. It divides the total points and weekend points for the block
-evenly among all listed residents and returns the resolved targets on the schedule
-DataFrame's `attrs`, without mutating the `InputData` object. For example:
+them automatically — **per role**: juniors can only work Junior-role shifts and
+seniors Senior-role ones, so each role's point pool is divided (availability-
+weighted) among that role's residents. A single all-roster share is only
+meaningful when both roles happen to have the same per-head demand; when they
+don't (say 84 senior slots for 22 seniors = 3.8 each vs 112 junior slots for 40
+juniors = 2.8 each), the totals are balanced *within* each role and the
+structural cross-role difference is reported by the pre-solve advisories
+instead of being smeared over everyone as an unreachable target. The resolved
+targets ride on the schedule DataFrame's `attrs`, without mutating the
+`InputData` object. For example:
 
 ```python
 data = InputData(
@@ -459,14 +466,47 @@ Weekend fairness defaults to Saturday/Sunday. Set **Weekend days** in the app (o
 weekend, e.g. `[4, 5]` for Friday/Saturday. The per-shift "Thu counts as weekend"
 flag still adds Thursday for individual shifts on top of this.
 
+**Weekend shift points (×)** — `InputData.weekend_multiplier` — makes every
+weekend slot worth a multiple of its points (applied after weekday overrides
+and holiday bonuses, in the single `effective_points` source, so the solver,
+targets, fairness table/log, exports, and ledger all agree). New sessions
+default to **×2**: one weekend shift ≈ two weekday shifts, which folds weekend
+fairness into the strongest balancing tier — whoever carries an extra weekend
+automatically does fewer weekday shifts. The trade-offs: totals move in
+coarser steps (a ×2 weekend shift is 2 points) and a saved config without the
+field keeps the old behaviour (×1). It cannot fix a *structural* weekend
+lock — see the min_gap advisory below.
+
+## Pre-solve capacity advisories
+
+Before generating, **⑤ Review & run** lists structural facts that no solver
+setting can overcome, so an uneven result is never a mystery:
+
+- **min_gap ceiling** — with a gap of *g*, a resident fits at most
+  ⌈days/(g+1)⌉ shifts in the block. If a role's roster × ceiling falls short
+  of its slots, the shortfall is *guaranteed* unfilled; within ~10% it's
+  flagged as very tight (expect unfilled slots or uneven spread).
+- **Weekly-rhythm lock** — when (min_gap+1) is divisible by 7 on a 3+-week
+  block, every resident repeats the same weekday all block: whoever starts on
+  a Saturday works *every* Saturday, and weekend fairness is mathematically
+  impossible. Use a smaller gap and let the point balance spread the load.
+- **Cross-role workload gap** — when the two roles' per-head point averages
+  differ by more than a point, the difference is a roster/shift-mix fact;
+  totals are balanced within each role.
+
 ## How fairness is verified
 
-Two guarantees underpin the "is the result actually fair?" question:
+Three guarantees underpin the "is the result actually fair?" question:
 
 - **Coverage before fairness.** The solver never leaves a *fillable* on-call
   slot empty to make point totals look tidier — an uncovered on-call is never
   an acceptable price for equality. Unfilled slots appear only when coverage
   is genuinely impossible (caps, blackouts, eligibility, too few residents).
+- **Balance within each role.** Targets split each role's own point pool
+  among that role's residents (the `mixed_role_pools` audit scenario holds
+  both roles to a ≤1-point spread). A cross-role difference reflects the
+  roster/shift mix — it is reported by the pre-solve advisories, not treated
+  as solver unfairness the model could never fix.
 - **Per-shift-type balance.** Equal *total* points is not enough if one
   resident works all the heavy nights and another only day shifts. On top of
   total / weekend balance, each shift type's points are split
@@ -526,6 +566,22 @@ CI runs ruff, mypy, and pytest on Python 3.11/3.12 — plus a stub-only job with
 no pandas/OR-Tools installed to guard the graceful-degradation path.
 
 ## Changelog
+- **Role-aware fairness, weekend ×2, capacity advisories, solver budget, and
+  upload fixes.** Auto targets now split each role's point pool within that
+  role (juniors and seniors work disjoint shift pools; a single global share
+  was unreachable whenever their per-head demand differed, showing up as
+  systematic cross-role inequality) — ledger carryover, extra points, and
+  reductions reconcile within the role too, and `schedule_quality` scores
+  within-role balance. New `weekend_multiplier` (UI default ×2; old configs
+  ×1) makes weekend shifts count double so weekend fairness rides the
+  strongest tier. New pre-solve capacity advisories explain structural limits
+  (min_gap shift ceiling, the weekly-rhythm weekend lock, cross-role workload
+  gaps). The solver time limit is now a UI control, and a FEASIBLE solve that
+  exhausted its budget shows a prominent "raise the limit" warning instead of
+  a quiet caption. Fixed: config upload crashed (keyed-widget writes after
+  render; now queued via `PENDING_CONFIG` and applied before widgets), the
+  infeasible-retry path silently solving with a different min_gap than the
+  slider showed, and Generate giving no success feedback.
 - **Guided workspace and visual polish.** Reorganised the complete UI into a
   six-step Setup → Coverage → Policies → History → Review & run → Results flow,
   with smaller nested editor tabs and the existing mechanism explanations kept
