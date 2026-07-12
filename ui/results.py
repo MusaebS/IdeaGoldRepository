@@ -18,6 +18,7 @@ from model.fairness import (
     format_fairness_log,
     preference_satisfaction,
     schedule_quality,
+    quality_diagnosis,
 )
 from model.ledger import LedgerPolicy, block_adjustments, ledger_to_json, update_ledger
 from model.validation import validate_schedule
@@ -419,8 +420,17 @@ def _render_overview(df, data, points, quality) -> None:
     mcols[2].metric("Unfilled", quality["unfilled"])
     st.caption(
         f"Total-points range {quality['total_range']:.1f} · "
-        f"weekend range {quality['weekend_range']:.1f} (smaller is fairer)"
+        f"weekend range {quality['weekend_range']:.1f} (smaller is fairer) · "
+        f"score = 50% coverage ({quality['coverage']:.0%}) + 30% total balance "
+        f"({quality['balance_total']:.0%}) + 20% weekend balance "
+        f"({quality['balance_weekend']:.0%})"
     )
+    if quality["score"] < 90:
+        reasons = quality_diagnosis(df, data, quality)
+        if reasons:
+            with st.expander("Why isn't the quality higher?", expanded=True):
+                for reason in reasons:
+                    st.write(f"- {reason}")
     pref_stats = preference_satisfaction(df, data)
     if pref_stats:
         st.caption(

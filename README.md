@@ -566,6 +566,21 @@ CI runs ruff, mypy, and pytest on Python 3.11/3.12 — plus a stub-only job with
 no pandas/OR-Tools installed to guard the graceful-degradation path.
 
 ## Changelog
+- **Shift-type fairness at department scale, honest quality score, and a
+  "why isn't quality higher?" diagnosis.** The per-shift-type balancing gate
+  rose 6k → 20k cells (re-measured under role-aware targets: the label tier
+  now costs the primary balance nothing and halves per-type call spread), so
+  equal Ward/ER/night distribution applies to real rosters — and per-type
+  ledger carryover with it; the ledger panel now shows the cumulative
+  calls-per-type history it tracks. The automatic solver budget scales with
+  problem size (up to 300 s) instead of a flat 60 s that stranded big rosters
+  on early uneven incumbents. `schedule_quality` grants an integrality
+  allowance (an unavoidable one-shift difference no longer costs points — a
+  proven-optimal schedule can score 100), the Overview shows the 50/30/20
+  score breakdown, and a diagnosis expander explains low scores in plain
+  language with the fix (raise the time limit, relax min_gap, capacity
+  advisories). The min_gap slider became a number input (its filled track
+  could render out of sync with the value).
 - **Role-aware fairness, weekend ×2, capacity advisories, solver budget, and
   upload fixes.** Auto targets now split each role's point pool within that
   role (juniors and seniors work disjoint shift pools; a single global share

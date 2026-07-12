@@ -89,8 +89,8 @@ def test_generate_with_empty_config_shows_validation_errors():
 
 
 def test_test_mode_generate_produces_schedule(monkeypatch):
-    # dev = 10s solver budget: the demo roster (10 shifts x 28 days) reliably
-    # solves to FEASIBLE in that window; test's 1s budget hits UNKNOWN.
+    # dev budget (10s base, size-scaled to ~30s for the 45x28x10 demo roster)
+    # reliably reaches FEASIBLE; test's 1s budget hits UNKNOWN.
     monkeypatch.setenv("ENV", "dev")
     at = _at()
     at.run()
@@ -612,7 +612,7 @@ def test_pending_config_applies_before_widgets_render():
     assert at.session_state["juniors"] == ["Alice", "Bob"]
     # The keyed widgets themselves show the loaded values.
     assert at.date_input(key="start_date").value == date(2026, 4, 6)
-    assert at.slider(key="min_gap").value == 3
+    assert at.number_input(key="min_gap").value == 3
     assert at.number_input(key="seed").value == 9
 
 
@@ -621,12 +621,12 @@ def test_pending_state_updates_min_gap_slider():
     # always shows the gap the schedule was actually built with.
     at = _at()
     at.run()
-    assert at.slider(key="min_gap").value == 1  # default
+    assert at.number_input(key="min_gap").value == 1  # default
     at.session_state["pending_widget_state"] = {"min_gap": 0}
     at.run()
     assert not at.exception
     assert at.session_state["pending_widget_state"] is None
-    assert at.slider(key="min_gap").value == 0
+    assert at.number_input(key="min_gap").value == 0
 
 
 def test_availability_apply_adds_compensated_leaves_with_dedupe():

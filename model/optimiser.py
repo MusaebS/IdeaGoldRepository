@@ -916,12 +916,13 @@ def _apply_extra_points(
 # Per-label fairness adds ~residents×labels deviation variables. On small and
 # mid-size rosters (a typical department) that is free — the solver reaches
 # optimality and the low-priority label tier is satisfied only after total,
-# weekend, and night-float balance. On a very large, time-limited problem the
-# extra variables instead starve the primary balance without achieving label
-# balance, so per-label targets are only auto-set below this size (measured:
-# safe to ~24×28×8 ≈ 5.4k cells; harmful at 45×28×10 ≈ 12.6k). Set
-# ``target_label`` explicitly to override the gate.
-LABEL_TARGET_MAX_CELLS = 6000
+# weekend, and night-float balance. The 6k gate dated from role-blind targets,
+# whose unreachable global shares left the solver too little time-limited
+# progress for the label tier; with role-aware targets (re-measured at
+# 45×28×7 ≈ 8.8k cells, 60 s) the label tier costs the primary balance
+# nothing and halves the per-shift-type spread, so the gate now only excludes
+# truly huge problems. Set ``target_label`` explicitly to override the gate.
+LABEL_TARGET_MAX_CELLS = 20000
 
 
 def _auto_label_targets(
@@ -1280,7 +1281,14 @@ def respects_min_gap(df: pd.DataFrame, gap: int, shifts=None) -> bool:
 
 
 def compute_time_limit(env: str, num_people: int, num_days: int, num_shifts: int) -> int:
-    """Scale time limits by environment and rough problem size."""
+    """Scale time limits by environment and rough problem size.
+
+    Below 4000 cells the base budget shrinks; above it the budget *grows*
+    with size (capped at 5× base — 300 s in prod). A flat 60 s was tuned for
+    small blocks and routinely left department-scale rosters (8–17k cells)
+    stuck on an early, uneven incumbent, especially on slow shared hosting.
+    The Review & run time-limit control still overrides this entirely.
+    """
     env = env.lower()
     base_map = {"dev": 10, "test": 1, "prod": 60}
     base = base_map.get(env, base_map["prod"])
@@ -1288,7 +1296,7 @@ def compute_time_limit(env: str, num_people: int, num_days: int, num_shifts: int
     if size <= 500:
         return max(1, int(round(base * 0.5)))
     if size >= 4000:
-        return base
+        return int(round(base * min(5.0, size / 4000)))
     scale = 0.5 + 0.5 * (size / 4000)
     return max(1, min(base, int(round(base * scale))))
 
