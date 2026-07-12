@@ -420,8 +420,19 @@ def _render_setup_workspace() -> None:
             dc[0].date_input("Start date", key=Keys.START_DATE)
             dc[1].date_input("End date", key=Keys.END_DATE)
             rc = st.columns(2)
-            rc[0].slider(
-                "Minimum gap (rest days between shifts)", 0, 7, key=Keys.MIN_GAP
+            # A number input, not a slider: the slider's filled track rendered
+            # out of sync with the selected value on some browsers/locales,
+            # and an exact number is what this setting is anyway.
+            rc[0].number_input(
+                "Minimum gap (rest days between shifts)",
+                min_value=0,
+                max_value=7,
+                step=1,
+                key=Keys.MIN_GAP,
+                help="Days of rest required between a resident's shifts. High "
+                "values sharply cap how many shifts each resident can work "
+                "(see the Review & run advisories); 6 locks everyone to one "
+                "weekday on a 4-week block, making weekend fairness impossible.",
             )
             rc[1].number_input(
                 "Random seed",

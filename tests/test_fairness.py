@@ -142,6 +142,63 @@ def test_schedule_quality_penalizes_unfilled_and_imbalance():
     assert q["score"] < 100.0
 
 
+def test_schedule_quality_allows_one_shift_granularity():
+    # 3 residents, 2 slots: someone must end a whole shift apart — the
+    # unavoidable one-slot difference must not count against balance.
+    shifts = [ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 2),
+        end_date=date(2023, 1, 3),
+        shifts=shifts,
+        juniors=["A", "B", "C"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+    )
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 2), "S": "A"},
+        {"Date": date(2023, 1, 3), "S": "B"},
+    ])
+    q = schedule_quality(df, data)
+    assert q["total_range"] == 1.0  # the raw spread is still reported
+    assert q["balance_total"] == 1.0  # but not penalized: one shift is atomic
+    assert q["score"] == 100.0
+
+
+def test_quality_diagnosis_flags_timeout_and_structure():
+    from model.fairness import quality_diagnosis
+
+    shifts = [ShiftTemplate(label="S", role="Junior", night_float=False, thu_weekend=False, points=1.0)]
+    data = InputData(
+        start_date=date(2023, 1, 2),
+        end_date=date(2023, 1, 29),  # 28 days
+        shifts=shifts,
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=6,  # weekly lock + capacity squeeze
+    )
+    df = pd.DataFrame([{"Date": date(2023, 1, 2), "S": "A"}])
+    df.attrs["solver_status"] = "FEASIBLE"
+    df.attrs["wall_time_sec"] = 59.5
+    df.attrs["time_limit_sec"] = 60
+    quality = {"unfilled": 3, "balance_total": 0.5}
+    reasons = quality_diagnosis(df, data, quality)
+    text = " ".join(reasons)
+    assert "budget" in text  # solver stopped at the limit
+    assert "unfilled" in text.lower()
+    assert "weekend fairness is impossible" in text  # min_gap 6 structural lock
+    # An OPTIMAL solve doesn't blame the time limit.
+    df.attrs["solver_status"] = "OPTIMAL"
+    assert not any("budget" in r for r in quality_diagnosis(df, data, quality))
+
+
 def test_assignment_rationale_for_assigned_person():
     df, shifts = _sample_df_and_shifts()
     data = InputData(

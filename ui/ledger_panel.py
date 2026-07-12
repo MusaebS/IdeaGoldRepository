@@ -69,6 +69,41 @@ def _mismatch_choices(unknown, suggestions, candidates, kind: str, key_prefix: s
     return choices
 
 
+def _label_history_section(ledger: dict) -> None:
+    """Read-only view of the cumulative per-shift-type history.
+
+    The grid edits only the Total/Weekend carryover dimensions, but the
+    ledger also tracks every resident's calls per shift type across blocks —
+    this is what feeds the next block's per-type targets ("Repay shift-type
+    debt in the same shift type"). Showing it here makes that monitoring
+    visible instead of leaving users to wonder whether shift-type fairness is
+    tracked at all.
+    """
+    counts = {
+        person: (entry.get("label_counts") or {})
+        for person, entry in (ledger or {}).items()
+    }
+    all_labels = sorted({lbl for hist in counts.values() for lbl in hist})
+    if not all_labels:
+        return
+    with st.expander("Per-shift-type history (calls per type, tracked automatically)"):
+        st.caption(
+            "Cumulative calls per shift type across the blocks in this ledger. "
+            "With ④ History → “Repay shift-type debt in the same shift type” "
+            "on (the default), whoever is behind on a type is favoured for it "
+            "next block. Updated automatically each time you download the "
+            "ledger after generating — not editable here."
+        )
+        st.dataframe(
+            pd.DataFrame([
+                {"Resident": person, **{lbl: hist.get(lbl, 0) for lbl in all_labels}}
+                for person, hist in sorted(counts.items())
+            ]),
+            hide_index=True,
+            width="stretch",
+        )
+
+
 def _reconcile_section(ledger: dict, roster: list, shift_labels: list) -> None:
     """Post-upload confirmation step for names/shifts that don't match."""
     report = reconcile_report(ledger, roster, shift_labels)
@@ -233,6 +268,7 @@ def render_ledger_panel(roster: list, shift_labels: list | None = None) -> dict 
     )
     for problem in problems:
         st.warning(problem)
+    _label_history_section(ledger)
     _reconcile_section(ledger, list(roster or []), list(shift_labels))
 
     bcols = st.columns(2)

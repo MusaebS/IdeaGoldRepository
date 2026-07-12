@@ -15,7 +15,7 @@ from .data_models import (
     normalized_perks,
     normalized_reductions,
 )
-from .points import classify_slot
+from .points import classify_slot, slot_points
 from .utils import effective_points, is_weekend, weekend_holiday_dates
 
 __all__ = [
@@ -27,6 +27,7 @@ __all__ = [
     "load_annotation_notes",
     "preference_satisfaction",
     "schedule_quality",
+    "quality_diagnosis",
     "assignment_rationale",
 ]
 
@@ -464,9 +465,23 @@ def schedule_quality(
     weekend_range = _role_range({p: v["weekend"] for p, v in pts.items()})
     mean_total = sum(totals) / len(totals)
     mean_weekend = sum(weekends) / len(weekends)
-    balance_total = 1.0 - min(1.0, total_range / mean_total) if mean_total > 0 else 1.0
+
+    # Integrality allowance: shifts are indivisible, so when the pool doesn't
+    # divide evenly the best possible schedule still differs by one shift —
+    # up to the heaviest slot's points (e.g. 2 with doubled weekends). Only
+    # the spread *beyond* that unavoidable step counts against the score;
+    # a provably optimal schedule should be able to score 100.
+    step_total = 0.0
+    step_weekend = 0.0
+    for slot in slot_points(data):
+        step_total = max(step_total, slot.points)
+        if slot.weekend:
+            step_weekend = max(step_weekend, slot.points)
+    excess_total = max(0.0, total_range - step_total)
+    excess_weekend = max(0.0, weekend_range - step_weekend)
+    balance_total = 1.0 - min(1.0, excess_total / mean_total) if mean_total > 0 else 1.0
     balance_weekend = (
-        1.0 - min(1.0, weekend_range / mean_weekend) if mean_weekend > 0 else 1.0
+        1.0 - min(1.0, excess_weekend / mean_weekend) if mean_weekend > 0 else 1.0
     )
 
     score = 100.0 * (0.5 * coverage + 0.3 * balance_total + 0.2 * balance_weekend)
@@ -481,6 +496,54 @@ def schedule_quality(
         "total_range": total_range,
         "weekend_range": weekend_range,
     }
+
+
+def quality_diagnosis(df: pd.DataFrame, data: InputData, quality: Dict[str, float]) -> list:
+    """Plain-language reasons a quality score is low, with what to change.
+
+    Reads the solve metadata on ``df.attrs``, the score components, and the
+    configuration's structural warnings, and turns them into actionable
+    sentences ("the solver stopped early — raise the time limit", "min_gap
+    caps each resident at N shifts", ...). Empty when nothing needs saying.
+    """
+    # Lazy import: validation imports the optimiser (and this module sits
+    # below both), so importing it at module level would create a cycle.
+    from .validation import config_warnings
+
+    reasons: list = []
+    attrs = getattr(df, "attrs", {}) or {}
+    status = attrs.get("solver_status")
+    wall = attrs.get("wall_time_sec")
+    limit = attrs.get("time_limit_sec")
+    if status == "FEASIBLE" and wall is not None and limit and wall >= 0.9 * limit:
+        reasons.append(
+            f"The solver used its whole {limit:.0f}s budget without proving the "
+            "fairest schedule — the spread is very likely NOT the best achievable. "
+            "Raise the solver time limit in ⑤ Review & run and regenerate; on "
+            "shared hosting the same limit buys less search than on a fast machine."
+        )
+
+    structural = [
+        w for w in config_warnings(data)
+        if "min_gap" in w or "Structural workload" in w or "very tight" in w
+        or "unfilled" in w.lower()
+    ]
+    if quality.get("unfilled"):
+        reasons.append(
+            f"{quality['unfilled']:.0f} slot(s) are unfilled, which costs coverage "
+            "(half the score). "
+            + ("The capacity advisories below explain why. "
+               if structural else
+               "Check caps, blackouts, exemptions, and roster size.")
+        )
+    if quality.get("balance_total", 1.0) < 0.9 and status == "OPTIMAL":
+        reasons.append(
+            "The total-point spread is proven unavoidable with the current "
+            "rules — a hard rule (min_gap, caps, blackouts, availability) is "
+            "forcing it, not the optimiser."
+        )
+    reasons.extend(structural)
+    return reasons
 
 
 def _eligible_pool(data: InputData, shift: ShiftTemplate) -> set:
