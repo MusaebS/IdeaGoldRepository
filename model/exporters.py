@@ -252,9 +252,9 @@ def fairness_print_sections(
     would be entirely empty/zero (NF duty on a roster without night float,
     Pref match when nobody has preferences) are dropped.
     """
-    if fairness.empty:
-        return []
     records = fairness.to_dict("records")
+    if not records:
+        return []
     count_cols = [
         c for c in fairness.columns
         if c.endswith(" n") and not c.endswith(" n cum")

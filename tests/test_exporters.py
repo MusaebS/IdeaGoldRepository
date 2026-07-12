@@ -193,8 +193,9 @@ def test_schedule_print_view_merges_dates_and_labels_unfilled():
     from model.exporters import schedule_print_view
 
     df, data = _df_and_data()
-    df.loc[1, "D"] = None  # a genuine gap
-    columns, rows, weekend_rows = schedule_print_view(df, data)
+    records = df.to_dict("records")
+    records[1]["D"] = None  # a genuine gap
+    columns, rows, weekend_rows = schedule_print_view(pd.DataFrame(records), data)
     assert columns[0] == "Date" and "Day" not in columns
     assert rows[0]["Date"].startswith(("Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri"))
     assert rows[1]["D"] == "Unfilled"  # explicit, not a blank cell
@@ -244,7 +245,10 @@ def test_annotation_footnotes_number_only_noted_residents():
     fairness = build_fairness_frame(points, data, df)
     markers, lines = annotation_footnotes(fairness)
     assert markers == {"Alice": 1}
-    assert lines == [f"1. Alice — {fairness.set_index('Resident').loc['Alice', 'Notes']}"]
+    alice_notes = next(
+        r["Notes"] for r in fairness.to_dict("records") if r["Resident"] == "Alice"
+    )
+    assert lines == [f"1. Alice — {alice_notes}"]
 
 
 def test_report_header_and_legend():
@@ -269,15 +273,18 @@ def test_build_cumulative_frame_segments():
     df, data = _df_and_data()
     points = calculate_points(df, data)
     prior = {"Alice": {"total": 5.0, "weekend": 2.0}}
-    frame = build_cumulative_frame(points, prior, data)
-    alice = frame[frame["Resident"] == "Alice"]
-    assert set(alice["Segment"]) == {"Prior blocks", "This block"}
-    prior_row = alice[alice["Segment"] == "Prior blocks"].iloc[0]
+    rows = build_cumulative_frame(points, prior, data).to_dict("records")
+    alice = [r for r in rows if r["Resident"] == "Alice"]
+    assert {r["Segment"] for r in alice} == {"Prior blocks", "This block"}
+    prior_row = next(r for r in alice if r["Segment"] == "Prior blocks")
     assert prior_row["Points"] == 5.0
     assert prior_row["Cumulative"] == 5.0 + points["Alice"]["total"]
     # Bob has no history: prior segment is zero, not missing.
-    bob_prior = frame[(frame["Resident"] == "Bob") & (frame["Segment"] == "Prior blocks")]
-    assert len(bob_prior) == 1 and bob_prior.iloc[0]["Points"] == 0.0
+    bob_prior = [
+        r for r in rows
+        if r["Resident"] == "Bob" and r["Segment"] == "Prior blocks"
+    ]
+    assert len(bob_prior) == 1 and bob_prior[0]["Points"] == 0.0
 
 
 def _with_gap(df):
