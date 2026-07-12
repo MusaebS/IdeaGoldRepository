@@ -143,8 +143,8 @@ def report(name, metrics, expects, notes=()):
             print(f"      !! {violation}")
 
 
-def solve(data, env="dev"):
-    return build_schedule(data, env=env)
+def solve(data, env="dev", time_limit_sec=None):
+    return build_schedule(data, env=env, time_limit_sec=time_limit_sec)
 
 
 # --- scenarios ---------------------------------------------------------------
@@ -538,13 +538,20 @@ def spec_scale(seeds=(0, 1, 2)):
             nf_juniors=nf_j, nf_seniors=nf_s, leaves=[], rotators=[],
             min_gap=1, nf_block_length=5, seed=seed,
         )
-        # At spec scale the solve is time-limited (FEASIBLE), so total-dev is a
-        # budget artefact, not an unfairness — the guarantees that must hold are
-        # full coverage and no hard-rule violations. Per-label targets are gated
-        # off above LABEL_TARGET_MAX_CELLS so they can't starve the primary
-        # balance here. Deviation is printed for information.
-        report(f"spec-scale 45x28x10 seed {seed} (info)", measure(solve(data, env="dev"), data),
-               {"unfilled": 0})
+        # At spec scale the solve is time-limited, so total-dev is a budget
+        # artefact, not an unfairness — the guarantees that must hold are
+        # full coverage and no hard-rule violations. Per-label targets are
+        # gated off above LABEL_TARGET_MAX_CELLS so they can't starve the
+        # primary balance here. Deviation is printed for information. The 30 s
+        # budget (vs dev's 10 s) gives CP-SAT room to reach a zero-unfilled
+        # incumbent on every seed; the exact trajectory shifts with model
+        # changes (e.g. role-aware targets), and coverage still dominates the
+        # objective, so a too-small budget fails on search time, not fairness.
+        report(
+            f"spec-scale 45x28x10 seed {seed} (info)",
+            measure(solve(data, time_limit_sec=30), data),
+            {"unfilled": 0},
+        )
 
 
 def main() -> int:
