@@ -566,6 +566,18 @@ CI runs ruff, mypy, and pytest on Python 3.11/3.12 — plus a stub-only job with
 no pandas/OR-Tools installed to guard the graceful-degradation path.
 
 ## Changelog
+- **Reporting overhaul: per-role fairness views, cumulative ledger charts, and
+  a redesigned report.** The Fairness workspace now shows Juniors and Seniors
+  as separate tabs with sorted, role-coloured workload charts (dashed
+  fair-share target line) and — when a ledger is loaded — stacked
+  prior + this-block cumulative charts; the ledger panel gained a standings
+  chart. Long rule annotations moved out of the tables into an expander
+  (screen) and numbered footnotes (PDF), with compact date ranges. The PDF
+  became a real report: title block with solver status and quality, colour
+  legend, friendly dates with weekend-shaded rows, explicit Unfilled/Closed
+  markers, per-role fairness tables with footnote markers, and page footers.
+  Excel gained frozen panes, styled headers, real date formats, sensible
+  column widths, and a Per-call audit sheet.
 - **Shift-type fairness at department scale, honest quality score, and a
   "why isn't quality higher?" diagnosis.** The per-shift-type balancing gate
   rose 6k → 20k cells (re-measured under role-aware targets: the label tier

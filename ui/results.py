@@ -1,12 +1,14 @@
 """Results rendering: metrics, styled grid, fairness summary, downloads."""
 from __future__ import annotations
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
 from model.coloring import COLOR_MODES, DEFAULT_PALETTE, schedule_cell_colors, theme_palette
 from model.exporters import (
     build_assignment_frame,
+    build_cumulative_frame,
     build_fairness_frame,
     schedule_to_excel_bytes,
     schedule_to_pdf_bytes,
@@ -478,8 +480,106 @@ def _render_schedule_workspace(df, data) -> tuple:
     return final_df, color_mode, palette
 
 
+_ROLE_HUES = {"Junior": "#5ab478", "Senior": "#966edc"}  # coloring.DEFAULT_PALETTE
+
+
+def _workload_chart(role_frame, role: str, target: float | None):
+    """Horizontal grouped bars (Total + Weekend) sorted by load, target rule."""
+    long = role_frame.melt(
+        id_vars=["Resident"],
+        value_vars=["Total", "Weekend"],
+        var_name="Kind",
+        value_name="Points",
+    )
+    order = (
+        role_frame.sort_values("Total", ascending=False)["Resident"].tolist()
+    )
+    base_hue = _ROLE_HUES.get(role, "#5ab478")
+    chart = (
+        alt.Chart(long)
+        .mark_bar()
+        .encode(
+            y=alt.Y("Resident:N", sort=order, title=None),
+            x=alt.X("Points:Q", title="Points"),
+            yOffset="Kind:N",
+            color=alt.Color(
+                "Kind:N",
+                scale=alt.Scale(domain=["Total", "Weekend"],
+                                range=[base_hue, "#c9a227"]),
+                legend=alt.Legend(title=None, orient="top"),
+            ),
+            tooltip=["Resident", "Kind", "Points"],
+        )
+        .properties(height=max(120, 16 * len(role_frame)))
+    )
+    if target:
+        rule = (
+            alt.Chart(pd.DataFrame({"target": [target]}))
+            .mark_rule(color="#7A5800", strokeDash=[4, 3])
+            .encode(x="target:Q")
+        )
+        chart = chart + rule
+    return chart
+
+
+def _cumulative_chart(cum_frame, role: str):
+    """Stacked bars: prior-block standing (grey) + this block (role hue)."""
+    order = (
+        cum_frame.drop_duplicates("Resident")
+        .sort_values("Cumulative", ascending=False)["Resident"].tolist()
+    )
+    return (
+        alt.Chart(cum_frame)
+        .mark_bar()
+        .encode(
+            y=alt.Y("Resident:N", sort=order, title=None),
+            x=alt.X("sum(Points):Q", title="Cumulative points (prior + this block)"),
+            color=alt.Color(
+                "Segment:N",
+                scale=alt.Scale(domain=["Prior blocks", "This block"],
+                                range=["#b9b2a4", _ROLE_HUES.get(role, "#5ab478")]),
+                legend=alt.Legend(title=None, orient="top"),
+            ),
+            order=alt.Order("Segment:N", sort="ascending"),
+            tooltip=["Resident", "Segment", "Points", "Cumulative"],
+        )
+        .properties(height=max(120, 16 * cum_frame["Resident"].nunique()))
+    )
+
+
+def _render_role_fairness(role: str, fair_frame, points, data, df, prior_ledger) -> None:
+    """One role's summary lines, table, workload chart, and cumulative chart."""
+    members = data.juniors if role == "Junior" else data.seniors
+    role_points = {p: v for p, v in points.items() if p in members}
+    role_frame = fair_frame[fair_frame["Role"] == role]
+    if not len(role_frame) or not role_points:
+        return
+    for line in fairness_range_lines(role_points):
+        st.write(line)
+    display = role_frame.drop(
+        columns=[c for c in ("Role", "Notes") if c in role_frame.columns]
+    )
+    st.dataframe(display, width="stretch", hide_index=True)
+    target_map = (df.attrs.get("target_total_map") or {}) if hasattr(df, "attrs") else {}
+    role_targets = [target_map[p] for p in members if p in target_map]
+    target = sum(role_targets) / len(role_targets) if role_targets else None
+    st.caption("Workload by resident — dashed line marks the fair-share target.")
+    st.altair_chart(
+        _workload_chart(role_frame, role, target), use_container_width=True
+    )
+    if prior_ledger:
+        cum_frame = build_cumulative_frame(role_points, prior_ledger, data)
+        if len(cum_frame):
+            st.caption(
+                "Cumulative standing: grey = carried in from the uploaded "
+                "ledger, coloured = earned this block. Even bar ends mean the "
+                "history is levelling out."
+            )
+            st.altair_chart(_cumulative_chart(cum_frame, role), use_container_width=True)
+
+
 def _render_fairness_workspace(df, data, points, prior_ledger) -> None:
-    """Render workload ranges, resident-level detail, and fairness download."""
+    """Render per-role workload ranges, detail tables, charts, and downloads."""
     render_section_header(
         "Fairness review",
         "Compare regular workload, cumulative history, and night-float duty before publishing.",
@@ -495,35 +595,56 @@ def _render_fairness_workspace(df, data, points, prior_ledger) -> None:
         )
         return
 
-    st.subheader("Fairness summary")
-    for line in ranges:
-        st.write(line)
     fair_frame = build_fairness_frame(points, data, df, prior_ledger)
-    if len(fair_frame):
-        st.caption(
-            "Per resident: calls and points per shift type, targets and "
-            "deviations, cumulative history (with a ledger), and load notes."
-        )
-        st.dataframe(fair_frame, width="stretch")
-        st.download_button(
-            "Download fairness table (CSV)",
-            fair_frame.to_csv(index=False),
-            file_name="fairness_table.csv",
-            mime="text/csv",
-        )
-        chart_df = fair_frame[["Resident", "Total", "Weekend"]].set_index("Resident")
-        st.caption("Regular workload by resident (points)")
-        st.bar_chart(chart_df, stack=False)
-        nf_duty = {
-            name: int(info.get("night_float", 0))
-            for name, info in points.items()
-            if info.get("night_float", 0)
-        }
-        if nf_duty:
+    if not len(fair_frame):
+        return
+    st.caption(
+        "Fairness is balanced within each role (juniors and seniors work "
+        "different shift pools). Per resident: calls and points per shift "
+        "type, targets and deviations, and cumulative history with a ledger."
+    )
+    roles = [r for r in ("Junior", "Senior") if (fair_frame["Role"] == r).any()]
+    if len(roles) == 2:
+        role_tabs = st.tabs([
+            f"Juniors ({int((fair_frame['Role'] == 'Junior').sum())})",
+            f"Seniors ({int((fair_frame['Role'] == 'Senior').sum())})",
+        ])
+        for tab, role in zip(role_tabs, ("Junior", "Senior")):
+            with tab:
+                _render_role_fairness(role, fair_frame, points, data, df, prior_ledger)
+    else:
+        _render_role_fairness(roles[0], fair_frame, points, data, df, prior_ledger)
+
+    noted = fair_frame[fair_frame.get("Notes", pd.Series(dtype=object)).notna()] \
+        if "Notes" in fair_frame.columns else fair_frame.iloc[0:0]
+    if len(noted):
+        with st.expander(f"Load annotations ({len(noted)} resident(s))"):
             st.caption(
-                "Night-float duty (days, outside regular fairness): "
-                + " · ".join(f"{p} {d}" for p, d in sorted(nf_duty.items()))
+                "Rules that shaped these residents' fair share — kept out of "
+                "the tables above so they stay readable. The same notes appear "
+                "as numbered footnotes in the PDF report."
             )
+            st.dataframe(
+                noted[["Resident", "Role", "Notes"]],
+                width="stretch",
+                hide_index=True,
+            )
+    st.download_button(
+        "Download fairness table (CSV)",
+        fair_frame.to_csv(index=False),
+        file_name="fairness_table.csv",
+        mime="text/csv",
+    )
+    nf_duty = {
+        name: int(info.get("night_float", 0))
+        for name, info in points.items()
+        if info.get("night_float", 0)
+    }
+    if nf_duty:
+        st.caption(
+            "Night-float duty (days, outside regular fairness): "
+            + " · ".join(f"{p} {d}" for p, d in sorted(nf_duty.items()))
+        )
 
 
 def _render_audit_workspace(df, data) -> None:

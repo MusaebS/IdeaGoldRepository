@@ -16,7 +16,12 @@ from .data_models import (
     normalized_reductions,
 )
 from .points import classify_slot, slot_points
-from .utils import effective_points, is_weekend, weekend_holiday_dates
+from .utils import (
+    compact_date_range,
+    effective_points,
+    is_weekend,
+    weekend_holiday_dates,
+)
 
 __all__ = [
     "ResidentPoints",
@@ -81,7 +86,10 @@ def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, ResidentPoi
                 # Closed cell: the shift is stood down — no resident, no points.
                 continue
             person = row.get(sh.label)
-            if person in (None, "Unfilled"):
+            if person in (None, "Unfilled") or not isinstance(person, str):
+                # None, the explicit Unfilled marker, or a NaN a hand-built /
+                # re-imported frame may carry (pandas coerces None to NaN in
+                # string columns) — all mean "no resident".
                 continue
             info = summary.setdefault(person, _empty_points())
             if (day_key, sh.label) in nf_cells:
@@ -116,8 +124,8 @@ def calculate_label_counts(df: pd.DataFrame, data: InputData) -> Dict[str, Dict[
             if (day_key, sh.label) in reserved:
                 continue  # NF overlay or closed cell — not a regular call
             person = row.get(sh.label)
-            if person in (None, "Unfilled"):
-                continue
+            if person in (None, "Unfilled") or not isinstance(person, str):
+                continue  # no resident (incl. NaN from re-imported frames)
             per = counts.setdefault(person, {})
             per[sh.label] = per.get(sh.label, 0) + 1
     return counts
@@ -230,7 +238,9 @@ def load_annotation_notes(person: str, data: InputData) -> List[str]:
         )
         if person not in covered:
             continue
-        note = f"[blackout {b.group or 'ad-hoc'} {b.start.isoformat()}→{b.end.isoformat()}"
+        # Compact date range (e.g. "12–17 Jul") — the full ISO form made these
+        # tokens so long they wrecked the fairness table and PDF layout.
+        note = f"[blackout {b.group or 'ad-hoc'} {compact_date_range(b.start, b.end)}"
         if b.night_before:
             note += " +night-before"
         if not b.compensated:
@@ -247,7 +257,7 @@ def load_annotation_notes(person: str, data: InputData) -> List[str]:
         mode = "same-total" if red.keep_total else "repay-later"
         notes.append(
             f"[reduced {', '.join(sorted(red.labels))} ×{red.factor:.2f} "
-            f"{red.start.isoformat()}→{red.end.isoformat()} {mode}]"
+            f"{compact_date_range(red.start, red.end)} {mode}]"
         )
     prefer_bits = []
     labels = (data.preferred_shifts or {}).get(person)

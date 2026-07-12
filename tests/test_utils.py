@@ -161,3 +161,22 @@ def test_weekend_holiday_dates_only_flagged():
 def test_weekend_holiday_dates_empty_cases():
     assert weekend_holiday_dates(_data(holidays=None)) == set()
     assert weekend_holiday_dates(_data(holidays=[])) == set()
+
+
+# --- report date helpers ------------------------------------------------------
+
+def test_friendly_date_formats_and_passthrough():
+    from model.utils import friendly_date
+
+    assert friendly_date(date(2023, 1, 7)) == "Sat 07 Jan"
+    assert friendly_date(None) == ""
+    assert friendly_date("already text") == "already text"
+
+
+def test_compact_date_range_variants():
+    from model.utils import compact_date_range
+
+    assert compact_date_range(date(2026, 7, 12), date(2026, 7, 17)) == "12–17 Jul"
+    assert compact_date_range(date(2026, 7, 28), date(2026, 8, 2)) == "28 Jul–02 Aug"
+    assert compact_date_range(date(2026, 7, 12), date(2026, 7, 12)) == "12 Jul"
+    assert compact_date_range(date(2025, 12, 30), date(2026, 1, 2)) == "30 Dec 25–02 Jan 26"

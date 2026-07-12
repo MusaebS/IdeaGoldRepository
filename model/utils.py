@@ -5,7 +5,13 @@ from typing import Iterable
 
 from .data_models import ShiftTemplate
 
-__all__ = ["is_weekend", "effective_points", "weekend_holiday_dates"]
+__all__ = [
+    "is_weekend",
+    "effective_points",
+    "weekend_holiday_dates",
+    "friendly_date",
+    "compact_date_range",
+]
 
 DEFAULT_WEEKEND_DAYS = (5, 6)  # Saturday, Sunday
 
@@ -62,3 +68,29 @@ def weekend_holiday_dates(data) -> set:
     """Return the set of holiday dates that should count toward weekend balance."""
     holidays = getattr(data, "holidays", None)
     return {h_date for h_date, _bonus, weekend in (holidays or []) if weekend}
+
+
+def friendly_date(day) -> str:
+    """A short human date for reports: ``Sat 07 Jan``.
+
+    Non-date values (already-formatted strings, None) pass through unchanged
+    so display copies of the schedule stay safe to format twice.
+    """
+    if hasattr(day, "strftime"):
+        return day.strftime("%a %d %b")
+    return "" if day is None else str(day)
+
+
+def compact_date_range(start: date, end: date) -> str:
+    """A short date range for annotations: ``12–17 Jul`` / ``28 Jul–02 Aug``.
+
+    Spans across years keep both years (``30 Dec 25–02 Jan 26``). Used instead
+    of double ISO stamps so notes stay narrow enough for tables and PDFs.
+    """
+    if start == end:
+        return start.strftime("%d %b")
+    if start.year != end.year:
+        return f"{start.strftime('%d %b %y')}–{end.strftime('%d %b %y')}"
+    if start.month != end.month:
+        return f"{start.strftime('%d %b')}–{end.strftime('%d %b')}"
+    return f"{start.strftime('%d')}–{end.strftime('%d %b')}"
