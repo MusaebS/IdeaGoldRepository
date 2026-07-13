@@ -109,27 +109,53 @@ def test_test_mode_generate_produces_schedule(monkeypatch):
     assert any("Schedule generated" in s.value for s in at.success)
 
 
-def test_feasible_at_time_limit_shows_prominent_warning():
+def test_feasible_still_improving_warns_and_suggests_more_time():
+    # Last improvement landed in the final stretch of a maxed-out run -> the
+    # solver had not settled, so a warning tells the user to raise the limit.
     df, data = _result_fixture()
     df.attrs["solver_status"] = "FEASIBLE"
     df.attrs["wall_time_sec"] = 59.8
+    df.attrs["time_limit_sec"] = 60
+    df.attrs["last_improvement_sec"] = 58.0
+    at = _at()
+    at.run()
+    _seed_result(at, df, data)
+    at.run()
+    assert not at.exception
+    assert any("Still improving" in w.value for w in at.warning)
+    # Suggests a concrete larger limit (60 * 1.5, rounded up to a tidy value).
+    assert any("90s" in w.value for w in at.warning)
+
+
+def test_feasible_converged_reports_more_time_wont_help():
+    # Improvements went quiet long before the limit -> converged: shown as info,
+    # not a warning to raise the limit.
+    df, data = _result_fixture()
+    df.attrs["solver_status"] = "FEASIBLE"
+    df.attrs["wall_time_sec"] = 59.8
+    df.attrs["time_limit_sec"] = 60
+    df.attrs["last_improvement_sec"] = 8.0
+    at = _at()
+    at.run()
+    _seed_result(at, df, data)
+    at.run()
+    assert not at.exception
+    assert any("Converged" in m.value for m in at.info)
+    assert not any("Still improving" in w.value for w in at.warning)
+
+
+def test_optimal_solve_reports_proven_optimal():
+    df, data = _result_fixture()
+    df.attrs["solver_status"] = "OPTIMAL"
+    df.attrs["wall_time_sec"] = 2.0
     df.attrs["time_limit_sec"] = 60
     at = _at()
     at.run()
     _seed_result(at, df, data)
     at.run()
     assert not at.exception
-    assert any("stopped at its 60s time limit" in w.value for w in at.warning)
-    # An OPTIMAL solve shows no such warning.
-    df2, data2 = _result_fixture()
-    df2.attrs["solver_status"] = "OPTIMAL"
-    df2.attrs["wall_time_sec"] = 2.0
-    df2.attrs["time_limit_sec"] = 60
-    at2 = _at()
-    at2.run()
-    _seed_result(at2, df2, data2)
-    at2.run()
-    assert not any("time limit" in w.value for w in at2.warning)
+    assert any("Proven optimal" in s.value for s in at.success)
+    assert not any("Still improving" in w.value for w in at.warning)
 
 
 def test_seeded_results_survive_rerun():

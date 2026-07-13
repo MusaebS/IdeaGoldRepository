@@ -24,6 +24,7 @@ from model.fairness import (
     quality_diagnosis,
 )
 from model.ledger import LedgerPolicy, block_adjustments, ledger_to_json, update_ledger
+from model.solve_report import convergence_verdict
 from model.validation import validate_schedule
 
 from ui.editors import custom_columns_editor
@@ -139,17 +140,21 @@ def _render_solver_caption(df, data) -> None:
     status = df.attrs.get("solver_status") if hasattr(df, "attrs") else None
     wall = df.attrs.get("wall_time_sec") if hasattr(df, "attrs") else None
     limit = df.attrs.get("time_limit_sec") if hasattr(df, "attrs") else None
-    # A FEASIBLE solve that used (nearly) its whole budget stopped searching,
-    # not because the schedule was as fair as possible — say so loudly, since
-    # this is exactly how "someone got 0 shifts while slots went unfilled"
-    # results happen on big rosters with the default 60 s budget.
-    if status == "FEASIBLE" and wall is not None and limit and wall >= 0.9 * limit:
+    last_impr = df.attrs.get("last_improvement_sec") if hasattr(df, "attrs") else None
+    # Turn the raw status/timings into a plain verdict on whether more solver
+    # time would help. This replaces guess-and-check ("try 400s, then 500s"):
+    # "still improving" says raise the limit (and to what); "converged" / proven
+    # optimal says more time won't help, so stop re-running.
+    verdict = convergence_verdict(status, wall, limit, last_impr)
+    if verdict.level == "improving":
         st.warning(
-            f"The solver stopped at its {limit:.0f}s time limit before proving "
-            "the fairest schedule — the spread may be more uneven than "
-            "necessary. Raise the solver time limit in ⑤ Review & run (e.g. "
-            "300 s) or reduce the problem size, then regenerate."
+            f"⏱️ **{verdict.headline}.** {verdict.detail} You can set it in the "
+            "⑤ Review & run tab, then regenerate."
         )
+    elif verdict.level == "optimal":
+        st.success(f"✅ **{verdict.headline}.** {verdict.detail}")
+    elif verdict.level == "converged":
+        st.info(f"✅ **{verdict.headline}.** {verdict.detail}")
     if status:
         # The applied min_gap is shown so a relax-and-retry solve can never
         # silently differ from what the user thinks was used.

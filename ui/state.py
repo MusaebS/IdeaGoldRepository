@@ -31,6 +31,7 @@ class Keys:
     WEEKEND_LABELS = "weekend_labels"
     WEEKEND_MULTIPLIER = "weekend_multiplier"
     TIME_LIMIT = "solver_time_limit"     # seconds; 0 = auto (env/size based)
+    HOST_BENCHMARK = "host_benchmark"    # cached BenchmarkResult for this server
     LEAVES = "leaves"
     ROTATORS = "rotators"
     CAPS = "caps"
@@ -106,11 +107,12 @@ def _defaults() -> dict:
         Keys.END_DATE: date.today() + timedelta(days=27),
         Keys.MIN_GAP: 1,
         Keys.SEED: 0,
-        Keys.WEEKEND_LABELS: ["Sat", "Sun"],
+        Keys.WEEKEND_LABELS: ["Fri", "Sat"],
         # New sessions default weekend shifts to double points (the strongest
         # way to keep weekend load even); old saved configs load as 1.0.
         Keys.WEEKEND_MULTIPLIER: 2.0,
         Keys.TIME_LIMIT: 0,
+        Keys.HOST_BENCHMARK: None,
         Keys.LEAVES: [],
         Keys.ROTATORS: [],
         Keys.CAPS: {},
