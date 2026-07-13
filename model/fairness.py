@@ -50,10 +50,15 @@ class ResidentPoints(TypedDict):
     weekend: float
     night_float: float  # NF duty *days* (informational), not regular points
     labels: Dict[str, float]
+    total_calls: int    # number of regular shifts worked (count, not points)
+    weekend_calls: int  # number of those shifts falling on a weekend
 
 
 def _empty_points() -> ResidentPoints:
-    return {"total": 0.0, "weekend": 0.0, "labels": {}, "night_float": 0.0}
+    return {
+        "total": 0.0, "weekend": 0.0, "labels": {}, "night_float": 0.0,
+        "total_calls": 0, "weekend_calls": 0,
+    }
 
 
 def _nf_cell_keys(df) -> set:
@@ -101,9 +106,11 @@ def calculate_points(df: pd.DataFrame, data: InputData) -> Dict[str, ResidentPoi
             # optimises against, so reporting can never drift from it.
             slot = classify_slot(day, sh, data, weekend_dates)
             info["total"] += slot.points
+            info["total_calls"] += 1
             info["labels"][sh.label] = info["labels"].get(sh.label, 0.0) + slot.points
             if slot.weekend:
                 info["weekend"] += slot.points
+                info["weekend_calls"] += 1
     return summary
 
 

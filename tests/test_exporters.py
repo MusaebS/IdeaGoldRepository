@@ -84,8 +84,11 @@ def test_build_fairness_frame():
     by_name = {row["Resident"]: row for row in frame.to_dict("records")}
     assert by_name["Alice"]["Role"] == "Junior"
     assert by_name["Bob"]["Role"] == "Senior"
-    assert by_name["Alice"]["Total"] == 2.0      # D 1.0 x 2 days
-    assert by_name["Bob"]["Total"] == 4.0        # N 2.0 x 2 days (NF-eligible but uncovered = regular)
+    assert by_name["Alice"]["Total points"] == 2.0   # D 1.0 x 2 days
+    assert by_name["Bob"]["Total points"] == 4.0     # N 2.0 x 2 days (NF-eligible but uncovered = regular)
+    assert by_name["Alice"]["Shifts"] == 2           # two D calls
+    assert by_name["Bob"]["Shifts"] == 2             # two N calls
+    assert by_name["Alice"]["Weekend shifts"] == 2   # both days are Sat/Sun
     assert by_name["Bob"]["NF duty (days)"] == 0  # no NF coverage configured
     assert "D" in frame.columns and "N" in frame.columns
 
@@ -234,7 +237,9 @@ def test_fairness_print_sections_split_by_role_and_curated():
     assert titles == ["Juniors", "Seniors"]
     junior_cols = sections[0][1]
     assert "Notes" not in junior_cols and "Role" not in junior_cols
-    assert "Resident" in junior_cols and "Total" in junior_cols
+    assert "Resident" in junior_cols and "Total points" in junior_cols
+    # Plain shift counts print alongside the points.
+    assert "Shifts" in junior_cols and "Weekend shifts" in junior_cols
     # Per-label COUNT columns print; raw per-label point columns stay in CSV.
     assert "D n" in junior_cols and "D" not in junior_cols
     # NF duty is dropped when nobody has any.

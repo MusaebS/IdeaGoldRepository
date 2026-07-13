@@ -89,6 +89,34 @@ def test_role_mode_distinguishes_senior_from_junior():
     assert colors[(1, "N")] == senior
 
 
+def test_role_weekend_mode_juniors_paler_and_weekends_darker():
+    df, data = _sample()
+    # Force one shared hue so "paleness" reflects the blend ratio alone,
+    # independent of the two role hues' intrinsic brightness.
+    same_hue = {"junior": "#3366cc", "senior": "#3366cc"}
+    colors = schedule_cell_colors(df, data, "role_weekend", palette=same_hue)
+
+    def _sum(hexstr):
+        h = hexstr.lstrip("#")
+        return int(h[0:2], 16) + int(h[2:4], 16) + int(h[4:6], 16)
+
+    junior_weekend = colors[(0, "D")]   # Alice, Junior, Saturday
+    senior_weekend = colors[(0, "N")]   # Bob, Senior, Saturday
+    senior_weekday = colors[(1, "N")]   # Bob, Senior, Monday
+    # Same hue: juniors read paler (closer to white -> larger channel sum).
+    assert _sum(junior_weekend) > _sum(senior_weekend)
+    # Weekend cells are a darker shade of the same role hue than weekdays.
+    assert _sum(senior_weekend) < _sum(senior_weekday)
+
+
+def test_role_weekend_mode_respects_palette_override():
+    df, data = _sample()
+    default = schedule_cell_colors(df, data, "role_weekend")
+    custom = schedule_cell_colors(df, data, "role_weekend", palette={"junior": "#ff0000"})
+    assert custom[(0, "D")] != default[(0, "D")]   # junior shift recoloured
+    assert custom[(0, "N")] == default[(0, "N")]   # senior shift unchanged
+
+
 def test_points_mode_higher_points_more_intense():
     df, data = _sample()
     colors = schedule_cell_colors(df, data, "points")
