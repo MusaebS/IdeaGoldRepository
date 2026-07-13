@@ -95,3 +95,44 @@ def test_avoid_pair_annotated_in_log():
     assert load_annotation_notes("A", data) == ["[avoids: B]"]
     assert load_annotation_notes("B", data) == ["[avoids: A]"]
     assert load_annotation_notes("C", data) == []
+
+
+def test_avoid_pair_both_covering_night_float_is_feasible():
+    # Two avoid-pair residents each covering a DIFFERENT night-float shift on
+    # the same dates is valid (each NF cell has exactly one coverer). Their
+    # co-presence on NF duty is fixed by the overlay and can't be scheduled
+    # away, so the avoid-pair constraint must not make the whole model
+    # infeasible — it clamps at zero regular shifts instead of a negative RHS.
+    pytest.importorskip("ortools")
+    from datetime import timedelta
+
+    from model.data_models import NightFloatAssignment, NightFloatCoverage
+    from model.optimiser import build_schedule
+
+    start = date(2023, 1, 2)
+    data = _data(
+        start_date=start,
+        end_date=start + timedelta(days=13),
+        shifts=[
+            ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+            ShiftTemplate(label="NF1", role="Junior", night_float=True, thu_weekend=False, points=2.0),
+            ShiftTemplate(label="NF2", role="Junior", night_float=True, thu_weekend=False, points=2.0),
+        ],
+        juniors=["A", "B", "C", "D", "E"],
+        nf_juniors=["A", "B"],
+        avoid_pairs=[("A", "B")],
+        nf_coverage={
+            "NF1": NightFloatCoverage("NF1", weekdays=(0, 1, 2, 3, 4, 5, 6)),
+            "NF2": NightFloatCoverage("NF2", weekdays=(0, 1, 2, 3, 4, 5, 6)),
+        },
+        nf_assignments=[
+            NightFloatAssignment("A", start, start + timedelta(days=13), ("NF1",), 1),
+            NightFloatAssignment("B", start, start + timedelta(days=13), ("NF2",), 1),
+        ],
+    )
+    df = build_schedule(data, env="test")  # must not raise INFEASIBLE
+    assert df.attrs.get("solver_status") in {"OPTIMAL", "FEASIBLE"}
+    # A and B still never share a regular shift on any day.
+    for row in df.to_dict("records"):
+        regular = [row.get(s.label) for s in data.shifts if not s.night_float]
+        assert not ({"A", "B"} <= set(regular))

@@ -131,7 +131,6 @@ def block_adjustments(prior, data: InputData) -> Dict[str, Dict[str, float]]:
     }
     if not participants:
         return out
-    n = len(participants)
 
     for p, extra in (data.extra_points or {}).items():
         if p in out and extra > 0:
@@ -142,52 +141,15 @@ def block_adjustments(prior, data: InputData) -> Dict[str, Dict[str, float]]:
     nf_cells, _gaps, _leaves = resolve_night_float(data)
     reserved = set(nf_cells) | resolve_closures(data)
     slots = [s for s in slot_points(data) if (s.day, s.shift.label) not in reserved]
-    p_tot = sum(s.points for s in slots)
-    p_wk = sum(s.points for s in slots if s.weekend)
-
     weights = availability_weights(data)
-    weight_sum = sum(weights.get(p, 0.0) for p in participants)
 
-    # Penalty scale: resolve_targets lowers everyone's non-penalty share by
-    # f = (P - E)/P so the raised targets still reconcile; the excused-total
-    # credit must be measured on the same scaled share.
-    extra_sum = sum(v["penalty"] for v in out.values())
-    f = (p_tot - extra_sum) / p_tot if p_tot > 0 and 0 < extra_sum < p_tot else 1.0
-
-    if weight_sum > 0:
-        for p in participants:
-            # gap = this block's fair-share shortfall the excusal caused:
-            # an equal 1/n share minus the availability-weighted share.
-            gap = 1.0 / n - weights.get(p, 0.0) / weight_sum
-            out[p]["excused_total"] = f * p_tot * gap
-            out[p]["excused_weekend"] = p_wk * gap
-
-        # Excused caps ("do not compensate later"): a resident capped below their
-        # fair share whose shortfall is *not* to be repaid is credited it here,
-        # and the residents who absorb the freed load are debited it in
-        # proportion to their weight — so the ledger records everyone at fair
-        # standing and no one catches up (the same shape as a perk). A
-        # "compensate later" cap (the default) sets no flag here, so its
-        # shortfall stays uncredited and cumulative balancing makes it up.
-        fair = {p: p_tot * weights.get(p, 0.0) / weight_sum for p in participants}
-        excused = data.max_total_excused or {}
-        caps = data.max_total or {}
-        capped = [
-            p for p in participants
-            if excused.get(p) and caps.get(p) is not None and caps[p] < fair[p]
-        ]
-        receivers = [p for p in participants if p not in capped]
-        recv_weight = sum(weights.get(p, 0.0) for p in receivers)
-        for p in capped:
-            shortfall = f * (fair[p] - caps[p])
-            out[p]["excused_total"] += shortfall
-            if recv_weight > 0:
-                for r in receivers:
-                    out[r]["excused_total"] -= shortfall * weights.get(r, 0.0) / recv_weight
-    # Re-resolve excusal credits inside the role pool that can actually absorb
-    # the work. The calculations above are retained for backward-readable audit
-    # history, but these role-aware values are authoritative: a junior excusal
-    # must never debit seniors who cannot work junior shifts (or vice versa).
+    # Excused credits are resolved inside each role pool — the residents who can
+    # actually absorb the work — so a junior excusal never debits seniors who
+    # cannot work junior shifts (or vice versa). Credits sum to zero within the
+    # role, a pure redistribution. A role whose members carry no availability
+    # weight has no one to balance among, so its members take no excusal credit
+    # (they are already fully excused). ``penalty`` above is per-person and
+    # role-independent, so it is left untouched here.
     for role, members in (
         ("Junior", list(data.juniors)),
         ("Senior", list(data.seniors)),

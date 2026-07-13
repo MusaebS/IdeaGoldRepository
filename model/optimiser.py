@@ -385,9 +385,15 @@ class SchedulerSolver:
         settled, preventing equal totals from hiding an avoidable 4-vs-0
         weekend split. It compares signed deviations from each resident's own
         weekend target, so availability reductions and ledger repayment remain
-        respected. Pairwise lower bounds model ``max - min`` without a hard cap,
-        so an unavoidable spread never makes the schedule infeasible or leaves
-        a fillable call uncovered.
+        respected.
+
+        The spread of the signed residuals (``max − min``) is modelled with two
+        auxiliary variables and ``2·n`` linear bounds per role rather than the
+        ``n²`` pairwise bounds a naive max-minus-min needs — identical
+        semantics, far cheaper for the solver on large rosters (40 juniors:
+        ~80 constraints instead of ~1600), which matters because the guardrail
+        runs at every scale. It never caps the spread, so an unavoidable split
+        never makes the schedule infeasible or leaves a fillable call uncovered.
         """
         person_idx = {p: i for i, p in enumerate(self.people[:-1])}
         max_val = self._max_points()
@@ -404,17 +410,22 @@ class SchedulerSolver:
                 )
                 for idx in indexes
             }
-            target_span = max(targets.values()) - min(targets.values())
+            max_target = max(targets.values())
+            target_span = max_target - min(targets.values())
+            # residual[i] = weekend_pts[i] − target[i] ∈ [−max_target, max_val].
+            # hi ≥ every residual and lo ≤ every residual; minimising hi − lo in
+            # the objective drives them to max/min, so ``spread`` equals the
+            # true residual range.
+            hi = self.model.NewIntVar(-max_target, max_val, f"weekend_hi_{role.lower()}")
+            lo = self.model.NewIntVar(-max_target, max_val, f"weekend_lo_{role.lower()}")
+            for idx in indexes:
+                residual = self.weekend_pts[idx] - targets[idx]
+                self.model.Add(hi >= residual)
+                self.model.Add(lo <= residual)
             spread = self.model.NewIntVar(
                 0, max_val + target_span, f"weekend_spread_{role.lower()}"
             )
-            for left in indexes:
-                for right in indexes:
-                    self.model.Add(
-                        spread
-                        >= self.weekend_pts[left] - targets[left]
-                        - self.weekend_pts[right] + targets[right]
-                    )
+            self.model.Add(spread == hi - lo)
             self.weekend_spread.append(spread)
 
     def add_cap_constraints(self) -> None:
@@ -508,13 +519,20 @@ class SchedulerSolver:
             if a_idx is None or b_idx is None or a_idx == b_idx:
                 continue
             for d_idx, day in enumerate(self.days):
+                # If one of the pair already covers night float that day, the
+                # other must not take a regular shift (they'd still be present
+                # together). When *both* cover NF that day (different NF labels,
+                # each validly single-covered), the co-presence is fixed by the
+                # overlay and can't be scheduled away — clamp at 0 rather than
+                # letting the RHS go negative, which would make a valid roster
+                # spuriously infeasible.
                 fixed_nf = int(pair[0] in nf_on_day.get(day, ())) + int(
                     pair[1] in nf_on_day.get(day, ())
                 )
                 self.model.Add(
                     sum(self.vars[(a_idx, d_idx, s)] for s in range(n_shifts))
                     + sum(self.vars[(b_idx, d_idx, s)] for s in range(n_shifts))
-                    <= 1 - fixed_nf
+                    <= max(0, 1 - fixed_nf)
                 )
 
     def _blocked_day_indices(self) -> Dict[int, set]:

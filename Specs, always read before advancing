@@ -249,6 +249,26 @@ Implementation Progress (2026-07, round 6 — weekend concentration + integrity)
   distinguish actual standing from the policy-adjusted ledger saved for the next
   block.
 
+Implementation Progress (2026-07, round 6 review fixes)
+- **Weekend guardrail made O(n):** the residual-spread guardrail now models
+  `max − min` with two auxiliary variables and `2·n` bounds per role instead
+  of `n²` pairwise bounds (identical semantics — a `hi ≥ residual`/`lo ≤ residual`
+  pair, `spread = hi − lo`). The guardrail stays ON at every roster size (it is
+  a fairness feature, not gated for speed); the cheaper encoding keeps
+  department-scale coverage solid, and at a generous solver budget the
+  within-role total range converges to ~1 across seeds.
+- **Avoid-pair × night float:** the same-day separation RHS is clamped at
+  `max(0, 1 − fixed_nf)`. Two avoid-pair residents each covering a *different*
+  NF label on the same day (each cell singly covered — a valid config) is no
+  longer forced infeasible by a negative right-hand side; their unavoidable
+  NF co-presence is accepted rather than crashing the solve.
+- **Ledger cleanup:** `block_adjustments` drops the dead global excusal pass
+  that the role-aware pass overwrote; a role with no availability weight now
+  correctly takes no excusal credit (nothing to balance) rather than falling
+  back to a cross-role debit. Ledger tests unchanged.
+- Audit `spec_scale` budget raised 30→60 s to match the (deliberately) heavier
+  guardrail model; all scenarios pass.
+
 7 Outstanding / Future Work
 Half-period night-float coverers (a coverer working part of their period on NF and part on regular/leave) are supported via flexible assignment windows; sub-day interval control is future work.
 
