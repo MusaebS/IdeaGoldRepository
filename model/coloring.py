@@ -19,8 +19,9 @@ __all__ = [
     "theme_palette",
 ]
 
-# UI label -> internal mode.
+# UI label -> internal mode. The first entry is the on-screen default.
 COLOR_MODES = {
+    "Role + weekend": "role_weekend",
     "Weekend + points": "auto",
     "Weekend only": "weekend",
     "Point value": "points",
@@ -126,7 +127,17 @@ def schedule_cell_colors(
                 continue
             weekend = is_weekend(day, shift, data.weekend_days, weekend_dates)
             ratio = effective_points(day, shift, data) / max_pts
-            if mode == "role":
+            if mode == "role_weekend":
+                # Role hue chooses the colour; juniors read paler than seniors
+                # and weekend cells are a darker shade of the same role hue.
+                # The junior/senior palette pickers still drive the two hues.
+                hue = senior_hue if shift.role == "Senior" else junior_hue
+                if shift.role == "Senior":
+                    blend = 0.70 if weekend else 0.45
+                else:
+                    blend = 0.48 if weekend else 0.25
+                colors[(i, shift.label)] = _blend(hue, blend)
+            elif mode == "role":
                 colors[(i, shift.label)] = _blend(
                     senior_hue if shift.role == "Senior" else junior_hue, 0.35
                 )

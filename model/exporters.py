@@ -235,8 +235,14 @@ def build_fairness_frame(
         row = {
             "Resident": name,
             "Role": role,
-            "Total": info.get("total", 0.0),
-            "Weekend": info.get("weekend", 0.0),
+            # Points (weighted: a weekend / heavier shift is worth more than 1).
+            "Total points": info.get("total", 0.0),
+            "Weekend points": info.get("weekend", 0.0),
+            # Plain shift counts (how many calls), alongside the points so the
+            # two are never confused: e.g. 7 points can be 7 day shifts or a
+            # smaller number of heavier weekend shifts.
+            "Shifts": int(info.get("total_calls", 0)),
+            "Weekend shifts": int(info.get("weekend_calls", 0)),
             # NF duty is a day count (coverage overlay), outside regular fairness.
             "NF duty (days)": int(info.get("night_float", 0.0)),
         }
@@ -588,8 +594,9 @@ def schedule_print_view(df, data: InputData) -> Tuple[List[str], List[dict], set
 # columns and the Notes column are deliberately left to the CSV/Excel: counts
 # read better on paper, and notes become numbered footnotes below the table.
 _PRINT_LEAD_COLS = (
-    "Resident", "Total", "Total target", "Total dev",
-    "Weekend", "Weekend target", "Weekend dev",
+    "Resident", "Total points", "Total target", "Total dev",
+    "Weekend points", "Weekend target", "Weekend dev",
+    "Shifts", "Weekend shifts",
     "Prior total", "Cumulative total",
 )
 _PRINT_TAIL_COLS = ("NF duty (days)", "Pref match")
@@ -704,6 +711,9 @@ def legend_entries(color_mode: str, palette=None) -> List[Tuple[str | None, str]
     if color_mode == "role":
         entries.append((pal["senior"], "Senior shift"))
         entries.append((pal["junior"], "Junior shift"))
+    if color_mode == "role_weekend":
+        entries.append((pal["senior"], "Senior shift (paler = weekday, darker = weekend)"))
+        entries.append((pal["junior"], "Junior shift (paler than senior; darker = weekend)"))
     entries.append((pal["unfilled"], "Unfilled slot (no resident)"))
     entries.append((None, "Closed = shift stood down (not demand)"))
     return entries

@@ -508,12 +508,12 @@ def _workload_chart(role_frame, role: str, target: float | None):
     """Horizontal grouped bars (Total + Weekend) sorted by load, target rule."""
     long = role_frame.melt(
         id_vars=["Resident"],
-        value_vars=["Total", "Weekend"],
+        value_vars=["Total points", "Weekend points"],
         var_name="Kind",
         value_name="Points",
     )
     order = (
-        role_frame.sort_values("Total", ascending=False)["Resident"].tolist()
+        role_frame.sort_values("Total points", ascending=False)["Resident"].tolist()
     )
     base_hue = _ROLE_HUES.get(role, "#5ab478")
     chart = (
@@ -525,7 +525,7 @@ def _workload_chart(role_frame, role: str, target: float | None):
             yOffset="Kind:N",
             color=alt.Color(
                 "Kind:N",
-                scale=alt.Scale(domain=["Total", "Weekend"],
+                scale=alt.Scale(domain=["Total points", "Weekend points"],
                                 range=[base_hue, "#c9a227"]),
                 legend=alt.Legend(title=None, orient="top"),
             ),

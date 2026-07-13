@@ -61,12 +61,16 @@ def test_calculate_points():
             "weekend": 3.0,
             "labels": {"D": 1.0, "N": 2.0},
             "night_float": 0.0,
+            "total_calls": 2,
+            "weekend_calls": 2,
         },
         "Bob": {
             "total": 3.0,
             "weekend": 3.0,
             "labels": {"D": 1.0, "N": 2.0},
             "night_float": 0.0,
+            "total_calls": 2,
+            "weekend_calls": 2,
         },
     }
 
