@@ -489,7 +489,8 @@ def test_cumulative_frame_distinguishes_actual_and_policy_adjusted_standing():
 def test_first_block_policy_adjustment_is_visible_without_prior_ledger():
     df, data = _df_and_data(extra_points={"Alice": 2.0})
     frame = build_fairness_frame(calculate_points(df, data), data, df)
-    alice = frame.set_index("Resident").loc["Alice"]
+    # Iterate records (not .set_index/.loc) so the no-pandas stub CI job runs it.
+    alice = next(r for r in frame.to_dict("records") if r["Resident"] == "Alice")
     assert "Cumulative total" in frame.columns
     assert "Policy-adjusted cumulative total" in frame.columns
     assert alice["Policy-adjusted cumulative total"] == pytest.approx(
@@ -528,11 +529,19 @@ def test_report_header_marks_manual_edits_as_not_solver_certified():
 
 
 def test_pdf_safe_fallback_and_nan_omission():
-    from model.exporters import _fmt, _pdf_safe_text, _register_pdf_fonts
+    from model.exporters import _fmt, _pdf_safe_text
 
+    # These helpers are dependency-free and must work in the stub CI job.
     assert _fmt(float("nan")) == ""
     rendered = _pdf_safe_text("محمد")
     assert "محمد" not in rendered and "U+0645" in rendered
+
+
+def test_register_pdf_fonts_unicode_shaping():
+    # Font registration imports reportlab; only exercise it where installed.
+    pytest.importorskip("reportlab")
+    from model.exporters import _pdf_safe_text, _register_pdf_fonts
+
     _normal, _bold, unicode_supported = _register_pdf_fonts()
     if unicode_supported:
         assert "U+" not in _pdf_safe_text("محمد", unicode_font=True)
