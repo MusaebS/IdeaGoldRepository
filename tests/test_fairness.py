@@ -500,3 +500,117 @@ def test_calculate_label_counts():
     assert counts["Alice"] == {"D": 1, "N": 1}
     assert counts["Bob"] == {"D": 1, "N": 1}
     assert counts["Cara"] == {}  # rostered but never assigned
+
+
+def test_schedule_quality_uses_individual_targets_not_raw_equality():
+    shift = ShiftTemplate("S", "Junior", False, False, 1.0)
+    data = InputData(
+        start_date=date(2023, 1, 2), end_date=date(2023, 1, 7), shifts=[shift],
+        juniors=["A", "B"], seniors=[], nf_juniors=[], nf_seniors=[],
+        leaves=[], rotators=[], min_gap=0,
+    )
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 2), "S": "A"},
+        {"Date": date(2023, 1, 3), "S": "A"},
+        {"Date": date(2023, 1, 4), "S": "A"},
+        {"Date": date(2023, 1, 5), "S": "A"},
+        {"Date": date(2023, 1, 6), "S": "B"},
+        {"Date": date(2023, 1, 7), "S": "B"},
+    ])
+    df.attrs["target_total_map"] = {"A": 4.0, "B": 2.0}
+    df.attrs["target_weekend"] = {"A": 1.0, "B": 0.0}
+    quality = schedule_quality(df, data)
+    assert quality["total_range"] == 2.0  # useful raw diagnostic remains
+    assert quality["total_deviation_range"] == 0.0
+    assert quality["balance_total"] == 1.0
+
+
+def test_schedule_quality_flags_four_vs_zero_weekends_even_with_equal_totals():
+    shift = ShiftTemplate("S", "Junior", False, False, 1.0)
+    data = InputData(
+        start_date=date(2023, 1, 7), end_date=date(2023, 1, 12), shifts=[shift],
+        juniors=["A", "B"], seniors=[], nf_juniors=[], nf_seniors=[],
+        leaves=[], rotators=[], min_gap=0, weekend_multiplier=2.0,
+    )
+    # A carries two doubled weekend calls (4 points); B carries four weekday
+    # calls (4 points). Raw totals are equal, but weekend burden is 4 vs 0.
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 7), "S": "A"},
+        {"Date": date(2023, 1, 8), "S": "A"},
+        {"Date": date(2023, 1, 9), "S": "B"},
+        {"Date": date(2023, 1, 10), "S": "B"},
+        {"Date": date(2023, 1, 11), "S": "B"},
+        {"Date": date(2023, 1, 12), "S": "B"},
+    ])
+    df.attrs["target_total_map"] = {"A": 4.0, "B": 4.0}
+    df.attrs["target_weekend"] = {"A": 2.0, "B": 2.0}
+    quality = schedule_quality(df, data)
+    assert quality["total_range"] == 0.0
+    assert quality["weekend_range"] == 4.0
+    assert quality["weekend_deviation_range"] == 4.0
+    assert quality["weekend_atomic_allowance"] == 2.0
+    assert quality["balance_weekend"] < 1.0
+    assert quality["score"] < 100.0
+
+
+def test_schedule_quality_atomic_allowance_excludes_reserved_heavy_slots():
+    data = InputData(
+        start_date=date(2023, 1, 2),
+        end_date=date(2023, 1, 3),
+        shifts=[
+            ShiftTemplate("Light", "Junior", False, False, 1.0),
+            ShiftTemplate("Heavy", "Junior", False, False, 10.0),
+        ],
+        juniors=["A", "B"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+    )
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 2), "Light": "A", "Heavy": "Closed"},
+        {"Date": date(2023, 1, 3), "Light": "A", "Heavy": "Closed"},
+    ])
+    df.attrs["closed_cells"] = {
+        "2023-01-02": ["Heavy"],
+        "2023-01-03": ["Heavy"],
+    }
+    df.attrs["target_total_map"] = {"A": 1.0, "B": 1.0}
+    quality = schedule_quality(df, data)
+    assert quality["total_atomic_allowance"] == 1.0
+    assert quality["balance_total"] < 1.0
+    assert quality["score"] < 100.0
+
+
+def test_fairness_log_uses_solver_resolved_label_targets_from_attrs():
+    shift = ShiftTemplate("S", "Junior", False, False, 1.0)
+    data = InputData(
+        start_date=date(2023, 1, 2), end_date=date(2023, 1, 2), shifts=[shift],
+        juniors=["A"], seniors=[], nf_juniors=[], nf_seniors=[],
+        leaves=[], rotators=[], min_gap=0,
+    )
+    df = pd.DataFrame([{"Date": date(2023, 1, 2), "S": "A"}])
+    df.attrs["target_label"] = {("A", "S"): 2.0}
+    assert "S 1.0 (dev -1.0)" in _resident_line(format_fairness_log(df, data), "A")
+
+
+def test_preference_satisfaction_ignores_closed_and_nf_overlay_cells():
+    from model.fairness import preference_satisfaction
+
+    shift = ShiftTemplate("N", "Junior", True, False, 1.0)
+    data = InputData(
+        start_date=date(2023, 1, 2), end_date=date(2023, 1, 4), shifts=[shift],
+        juniors=["A"], seniors=[], nf_juniors=["A"], nf_seniors=[],
+        leaves=[], rotators=[], min_gap=0,
+        preferred_shifts={"A": ["N"]},
+    )
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 2), "N": "A"},
+        {"Date": date(2023, 1, 3), "N": "Closed"},
+        {"Date": date(2023, 1, 4), "N": "A"},
+    ])
+    df.attrs["nf_cells"] = {"2023-01-02": {"N": "A"}}
+    df.attrs["closed_cells"] = {"2023-01-03": ["N"]}
+    assert preference_satisfaction(df, data) == {"A": (1, 1)}

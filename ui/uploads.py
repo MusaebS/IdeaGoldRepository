@@ -23,6 +23,7 @@ def consume_upload_once(
     signature_key: str,
     *,
     state: MutableMapping[str, object],
+    force: bool = False,
 ) -> bytes | None:
     """Return bytes once for each distinct uploaded file.
 
@@ -42,7 +43,7 @@ def consume_upload_once(
         raise TypeError("uploaded.getvalue() must return bytes-like data")
     blob = bytes(raw)
     signature = hashlib.sha256(blob).hexdigest()
-    if state.get(signature_key) == signature:
+    if state.get(signature_key) == signature and not force:
         return None
 
     # Set first: a parser failure in the caller must not retry forever.

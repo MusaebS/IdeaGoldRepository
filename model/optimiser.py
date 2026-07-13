@@ -145,7 +145,7 @@ from .night_float import (
     resolve_night_float,
 )
 from .points import POINT_SCALE, SlotPoints, block_days, classify_slot, scaled, slot_points
-from .reductions import eligible_for_shift, reduction_caps
+from .reductions import eligible_for_shift, reduction_caps, reduction_target_relief
 from .utils import weekend_holiday_dates
 from .weights import availability_weights
 
@@ -165,23 +165,36 @@ def objective_weights(
     eligibility — all hard constraints) ``Unfilled`` still absorbs it, so this
     never causes infeasibility.
 
-    **Fairness ladder** (below coverage): overall spread (``max_dev``), then
-    total, weekend, night-float, and per-label deviations.
+    **Fairness ladder** (below coverage): overall total deviation, total
+    deviation sum, maximum signed weekend-target spread, weekend deviation sum,
+    and per-label deviations. The weekend guardrail is soft and target-relative.
 
     **Preferences** are the lowest tier (weight 1). Every fairness weight is
     multiplied by ``K = 2·D·S + 1`` so the preference reward (in
     ``[-2·D·S, 0]``) can never buy a single scaled point of any deviation;
     they only order exact fairness ties. ``K = 1`` when no preferences are set.
 
-    Returns ``(W_MAXDEV, W_TOTAL, W_WEEKEND, W_NIGHTS, W_LABEL, W_UNFILLED)``.
+    Returns ``(W_MAXDEV, W_TOTAL, W_WEEKEND, W_WEEKEND_GUARD, W_LABEL,
+    W_UNFILLED)``. The fourth position keeps its legacy tuple position.
     """
     scale = 2 * n_days * n_shifts + 1 if has_prefs else 1
-    w_maxdev, w_total, w_weekend, w_nights, w_label = (
-        10**9 * scale, 10**6 * scale, 10**3 * scale, 10**2 * scale, 10 * scale,
+    # The total tiers carry four more decimal orders than the weekend
+    # guardrail at the summed-deviation level (and three between max-vs-sum
+    # total tiers). This preserves total-first ordering across the supported
+    # department-scale envelope even when a block contains many weekend calls.
+    w_maxdev, w_total, w_weekend, w_weekend_guard, w_label = (
+        10**11 * scale, 10**8 * scale, 10**3 * scale, 10**4 * scale, 10 * scale,
     )
-    fair_sum = w_maxdev + w_total + w_weekend + w_nights + w_label
+    fair_sum = w_maxdev + w_total + w_weekend + w_weekend_guard + w_label
     w_unfilled = max(1, max_slot_points_scaled) * fair_sum + 1
-    return (w_maxdev, w_total, w_weekend, w_nights, w_label, w_unfilled)
+    return (
+        w_maxdev,
+        w_total,
+        w_weekend,
+        w_weekend_guard,
+        w_label,
+        w_unfilled,
+    )
 
 
 class SchedulerSolver:
@@ -236,6 +249,7 @@ class SchedulerSolver:
         self.dev_label: Dict[Tuple[int, str], CpVar] = {}
         self.dev_total: Dict[int, CpVar] = {}
         self.dev_weekend: Dict[int, CpVar] = {}
+        self.weekend_spread: List[CpVar] = []
         self.max_dev: CpVar | None = None
         self.build_variables()
         self.compute_points()
@@ -257,6 +271,7 @@ class SchedulerSolver:
             pass
         self.add_constraints()
         self.add_deviation_constraints()
+        self.add_weekend_guardrail()
         self.add_cap_constraints()
         self.add_extra_point_constraints()
         self.add_reduction_constraints()
@@ -362,6 +377,57 @@ class SchedulerSolver:
                     self.model.Add(var >= target - lp)
                     self.dev_label[(p_idx, label)] = var
 
+    def add_weekend_guardrail(self) -> None:
+        """Softly minimise the maximum weekend spread inside each role pool.
+
+        Total-point fairness remains the stronger tier and coverage remains
+        dominant. This guardrail only orders schedules after total fairness has
+        settled, preventing equal totals from hiding an avoidable 4-vs-0
+        weekend split. It compares signed deviations from each resident's own
+        weekend target, so availability reductions and ledger repayment remain
+        respected.
+
+        The spread of the signed residuals (``max − min``) is modelled with two
+        auxiliary variables and ``2·n`` linear bounds per role rather than the
+        ``n²`` pairwise bounds a naive max-minus-min needs — identical
+        semantics, far cheaper for the solver on large rosters (40 juniors:
+        ~80 constraints instead of ~1600), which matters because the guardrail
+        runs at every scale. It never caps the spread, so an unavoidable split
+        never makes the schedule infeasible or leaves a fillable call uncovered.
+        """
+        person_idx = {p: i for i, p in enumerate(self.people[:-1])}
+        max_val = self._max_points()
+        for role, members in (
+            ("Junior", self.data.juniors),
+            ("Senior", self.data.seniors),
+        ):
+            indexes = [person_idx[p] for p in members if p in person_idx]
+            if len(indexes) < 2:
+                continue
+            targets = {
+                idx: scaled(
+                    (self.data.target_weekend or {}).get(self.people[idx], 0.0)
+                )
+                for idx in indexes
+            }
+            max_target = max(targets.values())
+            target_span = max_target - min(targets.values())
+            # residual[i] = weekend_pts[i] − target[i] ∈ [−max_target, max_val].
+            # hi ≥ every residual and lo ≤ every residual; minimising hi − lo in
+            # the objective drives them to max/min, so ``spread`` equals the
+            # true residual range.
+            hi = self.model.NewIntVar(-max_target, max_val, f"weekend_hi_{role.lower()}")
+            lo = self.model.NewIntVar(-max_target, max_val, f"weekend_lo_{role.lower()}")
+            for idx in indexes:
+                residual = self.weekend_pts[idx] - targets[idx]
+                self.model.Add(hi >= residual)
+                self.model.Add(lo <= residual)
+            spread = self.model.NewIntVar(
+                0, max_val + target_span, f"weekend_spread_{role.lower()}"
+            )
+            self.model.Add(spread == hi - lo)
+            self.weekend_spread.append(spread)
+
     def add_cap_constraints(self) -> None:
         """Hard per-resident ceiling on total regular points.
 
@@ -444,16 +510,29 @@ class SchedulerSolver:
             return
         person_idx = {p: i for i, p in enumerate(self.people[:-1])}
         n_shifts = len(self.shifts)
+        nf_on_day: Dict[object, set[str]] = {}
+        for (day, _label), coverer in self.nf_cells.items():
+            nf_on_day.setdefault(day, set()).add(coverer)
         for pair in pairs:
             a_idx = person_idx.get(pair[0])
             b_idx = person_idx.get(pair[1])
             if a_idx is None or b_idx is None or a_idx == b_idx:
                 continue
-            for d_idx in range(len(self.days)):
+            for d_idx, day in enumerate(self.days):
+                # If one of the pair already covers night float that day, the
+                # other must not take a regular shift (they'd still be present
+                # together). When *both* cover NF that day (different NF labels,
+                # each validly single-covered), the co-presence is fixed by the
+                # overlay and can't be scheduled away — clamp at 0 rather than
+                # letting the RHS go negative, which would make a valid roster
+                # spuriously infeasible.
+                fixed_nf = int(pair[0] in nf_on_day.get(day, ())) + int(
+                    pair[1] in nf_on_day.get(day, ())
+                )
                 self.model.Add(
                     sum(self.vars[(a_idx, d_idx, s)] for s in range(n_shifts))
                     + sum(self.vars[(b_idx, d_idx, s)] for s in range(n_shifts))
-                    <= 1
+                    <= max(0, 1 - fixed_nf)
                 )
 
     def _blocked_day_indices(self) -> Dict[int, set]:
@@ -644,21 +723,30 @@ class SchedulerSolver:
         ]
 
         terms = []
-        # Lexicographic-style weights: overall-points spread first, then total,
-        # weekend, night-float, per-label deviations, and finally unfilled
-        # slots. When soft preferences exist, objective_weights rescales the
+        # Lexicographic-style weights: coverage, overall total fairness, maximum
+        # signed weekend residual spread, weekend L1 deviation, per-label mix,
+        # then preferences. When soft preferences exist, objective_weights rescales the
         # whole ladder so the preference rewards (weight 1) sit strictly below
         # everything — they only order exact fairness ties.
         rewards = self._preference_rewards()
         self.pref_rewards = rewards
         max_slot = max((scaled(slot.points) for slot in self.slots.values()), default=1)
-        W_MAXDEV, W_TOTAL, W_WEEKEND, W_NIGHTS, W_LABEL, W_UNFILLED = objective_weights(
-            len(self.days), len(self.shifts), bool(rewards), max_slot
-        )
+        (
+            W_MAXDEV,
+            W_TOTAL,
+            W_WEEKEND,
+            W_WEEKEND_GUARD,
+            W_LABEL,
+            W_UNFILLED,
+        ) = objective_weights(len(self.days), len(self.shifts), bool(rewards), max_slot)
         if self.max_dev is not None:
             terms.append(W_MAXDEV * self.max_dev)
         if self.dev_total:
             terms.append(W_TOTAL * sum(self.dev_total.values()))
+        if self.weekend_spread:
+            # Max signed weekend deviation is the guardrail tier: below total
+            # fairness, above the sum of individual weekend deviations.
+            terms.append(W_WEEKEND_GUARD * sum(self.weekend_spread))
         if self.dev_weekend:
             terms.append(W_WEEKEND * sum(self.dev_weekend.values()))
         if self.dev_label:
@@ -863,9 +951,9 @@ def _apply_reduction_targets(
         return target_total_map, target_night_float
 
     if target_total_map:
-        totals_delta: Dict[str, float] = {}
-        for cap in caps:
-            totals_delta[cap.person] = totals_delta.get(cap.person, 0.0) + cap.reduce_total
+        # Duplicate/overlapping rows never lower the same person's target twice
+        # for the same regular work.
+        totals_delta = reduction_target_relief(data)
         target_total_map = dict(target_total_map)
         for members in role_members.values():
             sub = {p: totals_delta[p] for p in members if p in totals_delta}
@@ -963,13 +1051,13 @@ def _auto_label_targets(
 
     label_points: Dict[str, float] = {}
     for slot in slot_points(data):
-        if slot.shift.night_float or (slot.day, slot.shift.label) in excluded:
+        if (slot.day, slot.shift.label) in excluded:
             continue
         label_points[slot.shift.label] = label_points.get(slot.shift.label, 0.0) + slot.points
 
     targets: Dict[Tuple[str, str], float] = {}
     for shift in data.shifts:
-        if shift.night_float or shift.label not in label_points:
+        if shift.label not in label_points:
             continue
         pool = [p for p in participants if eligible_for_shift(p, shift, data)]
         pool_weight = sum(availability.get(p, 0.0) for p in pool)
@@ -1208,7 +1296,11 @@ def build_schedule(
     target_weekend = solve_data.target_weekend
     target_night_float = solve_data.target_night_float
     using_stub = not ORTOOLS_AVAILABLE
-    solver = SchedulerSolver(solve_data, nf_cells=nf_cells, closed_cells=closed_cells)
+    solver = SchedulerSolver(
+        solve_data,
+        nf_cells=nf_cells,
+        closed_cells=closed_cells,
+    )
     env = (env or os.environ.get("ENV", "prod")).lower()
     limit: float = (
         float(time_limit_sec)
@@ -1223,6 +1315,7 @@ def build_schedule(
     df.attrs["target_weekend"] = target_weekend
     df.attrs["target_night_float"] = target_night_float
     df.attrs["target_label"] = solve_data.target_label
+    df.attrs["label_carryover"] = bool(label_carryover)
     if using_stub:
         df.attrs["solver_warning"] = (
             "OR-Tools not installed; using fallback output with unfilled shifts."

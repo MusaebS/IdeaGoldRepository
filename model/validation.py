@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import math
 from typing import List
 
 try:
@@ -21,14 +22,21 @@ from .data_models import (
     normalized_perks,
     normalized_reductions,
 )
-from .closures import reserved_cell_keys
-from .night_float import resolve_night_float
-from .optimiser import respects_min_gap
+from .closures import closed_cells_from_attr, resolve_closures
+from .night_float import nf_cells_from_attr, nf_leave_windows, resolve_night_float
 from .points import classify_slot, slot_points
 from .reductions import reduction_caps
 from .utils import weekend_holiday_dates
 
 __all__ = ["validate_input", "config_warnings", "validate_schedule"]
+
+
+def _finite_number(value) -> bool:
+    """True for values that can safely enter point arithmetic / CP-SAT."""
+    try:
+        return not isinstance(value, bool) and math.isfinite(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def config_warnings(data: InputData) -> List[str]:
@@ -38,8 +46,8 @@ def config_warnings(data: InputData) -> List[str]:
     configuration will probably leave slots unfilled or be hard to satisfy, shown
     so the user can fix the roster before wondering why coverage is poor:
 
-    * a night-float shift whose eligible pool is empty (its nights cannot be
-      covered, and with multi-night blocks this can make the model infeasible);
+    * night-float coverage patterns with no assigned overlay coverer (those
+      cells fall back to the regular role roster);
     * more shifts of a role on a single day than there are residents of that role
       (a resident works at most one shift per day, so the surplus is unfillable);
     * block-level capacity facts (see :func:`_capacity_warnings`): min_gap
@@ -223,12 +231,10 @@ def _preference_warnings(data: InputData) -> List[str]:
             if shift is None:
                 continue  # unknown labels are validate_input errors
             pool = set(data.juniors if shift.role == "Junior" else data.seniors)
-            if shift.night_float:
-                pool &= set(data.nf_juniors if shift.role == "Junior" else data.nf_seniors)
             if name not in pool or label in exempt.get(name, ()):
                 out.append(
                     f"'{name}' prefers '{label}' but can never work it (role, "
-                    "night-float eligibility, or exemption); the preference "
+                    "or exemption); the preference "
                     "has no effect."
                 )
     return out
@@ -272,8 +278,6 @@ def _reduction_warnings(data: InputData) -> List[str]:
         if not caps:
             continue
         pool = set(data.juniors if shift.role == "Junior" else data.seniors)
-        if shift.night_float:
-            pool &= set(data.nf_juniors if shift.role == "Junior" else data.nf_seniors)
         pool = {p for p in pool if shift.label not in (data.exempt_shifts or {}).get(p, ())}
         if not pool:
             continue
@@ -419,10 +423,8 @@ def _exemption_perk_warnings(data: InputData) -> List[str]:
 
     for shift in data.shifts:
         pool = set(data.juniors if shift.role == "Junior" else data.seniors)
-        if shift.night_float:
-            pool &= set(data.nf_juniors if shift.role == "Junior" else data.nf_seniors)
         if not pool:
-            continue  # empty-pool cases are covered by the NF advisory above
+            continue
         remaining = {p for p in pool if shift.label not in exempt.get(p, ())}
         if not remaining:
             out.append(
@@ -454,7 +456,12 @@ def _exemption_perk_warnings(data: InputData) -> List[str]:
                     f"'{shift.label}'; remove one of the two."
                 )
 
-    for perk in normalized_perks(data.perks):
+    try:
+        perks = list(normalized_perks(data.perks))
+    except (TypeError, ValueError, IndexError) as exc:
+        out.append(f"A perk entry has an invalid numeric load factor ({exc}).")
+        perks = []
+    for perk in perks:
         start = perk.start or data.start_date
         end = perk.end or data.end_date
         if end < data.start_date or start > data.end_date:
@@ -563,6 +570,15 @@ def validate_input(data: InputData) -> List[str]:
 
     seen_labels = set()
     for sh in data.shifts:
+        if sh.role not in {"Junior", "Senior"}:
+            issues.append(
+                f"Shift '{sh.label}' has invalid role '{sh.role}' "
+                "(expected Junior or Senior)."
+            )
+        if not _finite_number(sh.points) or float(sh.points) < 0:
+            issues.append(
+                f"Shift '{sh.label}' points must be a finite non-negative number."
+            )
         if sh.label in seen_labels:
             issues.append(
                 f"Duplicate shift label '{sh.label}': labels must be unique "
@@ -612,39 +628,59 @@ def validate_input(data: InputData) -> List[str]:
                     f"starts ({start})."
                 )
 
-    if data.min_gap < 0:
+    if not _finite_number(data.min_gap) or float(data.min_gap) < 0:
         issues.append("Minimum gap cannot be negative.")
-    if data.nf_block_length < 1:
+    if not _finite_number(data.nf_block_length) or float(data.nf_block_length) < 1:
         issues.append("Night-float block length must be at least 1.")
+
+    if (
+        not _finite_number(data.weekend_multiplier)
+        or float(data.weekend_multiplier) <= 0
+    ):
+        issues.append("Weekend point multiplier must be a finite number greater than 0.")
+    for weekday in data.weekend_days or []:
+        if not isinstance(weekday, int) or isinstance(weekday, bool) or not 0 <= weekday <= 6:
+            issues.append(
+                f"Weekend day {weekday!r} is invalid (expected 0=Mon .. 6=Sun)."
+            )
 
     for label, caps in (("total", data.max_total), ("night-float", data.max_nights)):
         for name, value in (caps or {}).items():
             if name not in roster:
                 issues.append(f"Max {label} cap references unknown resident '{name}'.")
-            if value < 0:
+            if not _finite_number(value) or float(value) < 0:
                 issues.append(f"Max {label} cap for '{name}' cannot be negative.")
 
     for name, value in (data.extra_points or {}).items():
         if name not in roster:
             issues.append(f"Extra points reference unknown resident '{name}'.")
-        if value < 0:
+        if not _finite_number(value) or float(value) < 0:
             issues.append(f"Extra points for '{name}' cannot be negative.")
 
     shift_labels = {s.label for s in data.shifts}
-    for (label, weekday), _pts in (data.weekday_points or {}).items():
+    for (label, weekday), override_points in (data.weekday_points or {}).items():
         if label not in shift_labels:
             issues.append(f"Weekday point override references unknown shift '{label}'.")
-        if not 0 <= weekday <= 6:
+        if not isinstance(weekday, int) or isinstance(weekday, bool) or not 0 <= weekday <= 6:
             issues.append(
                 f"Weekday point override for '{label}' has an invalid weekday "
                 f"{weekday} (expected 0=Mon .. 6=Sun)."
             )
+        if not _finite_number(override_points) or float(override_points) < 0:
+            issues.append(
+                f"Weekday point override for '{label}' must be a finite "
+                "non-negative number."
+            )
+
+    for holiday_date, bonus, _counts_weekend in (data.holidays or []):
+        if not _finite_number(bonus):
+            issues.append(f"Holiday {holiday_date} bonus must be a finite number.")
 
     group_factors = data.group_factors or {}
     for group, factor in group_factors.items():
-        if not 0 < factor <= 2.0:
+        if not _finite_number(factor) or not 0 < float(factor) <= 2.0:
             issues.append(
-                f"Group '{group}' load factor must be > 0 and ≤ 2 (got {factor:g})."
+                f"Group '{group}' load factor must be > 0 and ≤ 2 (got {factor!r})."
             )
     for name, group in (data.resident_groups or {}).items():
         if name not in roster:
@@ -655,13 +691,18 @@ def validate_input(data: InputData) -> List[str]:
                 "group and its load factor first."
             )
 
-    for perk in normalized_perks(data.perks):
+    try:
+        perks = list(normalized_perks(data.perks))
+    except (TypeError, ValueError, IndexError) as exc:
+        issues.append(f"Perk entries must contain a valid numeric load factor ({exc}).")
+        perks = []
+    for perk in perks:
         if perk.name not in roster:
             issues.append(f"Perk references unknown resident '{perk.name}'.")
-        if not 0 < perk.factor <= 2.0:
+        if not _finite_number(perk.factor) or not 0 < float(perk.factor) <= 2.0:
             issues.append(
                 f"Perk load factor for '{perk.name}' must be > 0 and ≤ 2 "
-                f"(got {perk.factor:g})."
+                f"(got {perk.factor!r})."
             )
         if perk.start is not None and perk.end is not None and perk.end < perk.start:
             issues.append(
@@ -707,12 +748,19 @@ def validate_input(data: InputData) -> List[str]:
                 f"Blackout window for {who} ends ({b.end}) before it starts ({b.start})."
             )
 
-    for red in normalized_reductions(data.reductions):
+    try:
+        reductions = list(normalized_reductions(data.reductions))
+    except (TypeError, ValueError, IndexError) as exc:
+        issues.append(
+            f"Reduction entries must contain a valid numeric factor and fields ({exc})."
+        )
+        reductions = []
+    for red in reductions:
         who = f"group '{red.group}'" if red.group is not None else "ad-hoc members"
-        if not 0.0 <= red.factor <= 1.0:
+        if not _finite_number(red.factor) or not 0.0 <= float(red.factor) <= 1.0:
             issues.append(
                 f"Reduction factor for {who} must be between 0 and 1 "
-                f"(got {red.factor:g})."
+                f"(got {red.factor!r})."
             )
         if not red.labels:
             issues.append(f"Reduction for {who} names no shift types.")
@@ -779,7 +827,12 @@ def validate_input(data: InputData) -> List[str]:
                 )
     nf_pool = set(data.nf_juniors) | set(data.nf_seniors)
     nf_label_role = {s.label: s.role for s in data.shifts if s.night_float}
-    for a in normalized_nf_assignments(data.nf_assignments, default_rest=data.nf_rest_days):
+    assignments = list(
+        normalized_nf_assignments(
+            data.nf_assignments, default_rest=data.nf_rest_days
+        )
+    )
+    for a in assignments:
         coverer_role = (
             "Junior" if a.name in juniors else "Senior" if a.name in seniors else None
         )
@@ -810,6 +863,36 @@ def validate_input(data: InputData) -> List[str]:
                     "coverer can only cover their own role's shifts."
                 )
 
+    # Two assignments that own any of the same role/label/date cells are
+    # ambiguous. The resolver is deterministic, but silently choosing the first
+    # coverer would block both residents from regular work and distort targets.
+    role_of = {p: "Junior" for p in data.juniors}
+    role_of.update({p: "Senior" for p in data.seniors})
+    labels_by_role = {
+        role: {label for label, label_role in nf_label_role.items() if label_role == role}
+        for role in ("Junior", "Senior")
+    }
+    for index, left in enumerate(assignments):
+        left_role = role_of.get(left.name)
+        if left_role is None:
+            continue
+        left_labels = set(left.labels) or labels_by_role[left_role]
+        for right in assignments[index + 1:]:
+            right_role = role_of.get(right.name)
+            if right_role != left_role:
+                continue
+            right_labels = set(right.labels) or labels_by_role[right_role]
+            overlap_labels = left_labels & right_labels
+            overlap_start = max(left.start, right.start)
+            overlap_end = min(left.end, right.end)
+            if overlap_labels and overlap_start <= overlap_end:
+                overlap_label_text = ", ".join(sorted(overlap_labels))
+                issues.append(
+                    f"Night-float assignments for '{left.name}' and "
+                    f"'{right.name}' overlap on {overlap_start}–{overlap_end} "
+                    f"for {overlap_label_text}; each NF cell must have exactly one coverer."
+                )
+
     for c in normalized_closures(data.closures):
         if c.label not in shift_labels:
             issues.append(
@@ -827,6 +910,18 @@ def validate_input(data: InputData) -> List[str]:
                     "(expected 0=Mon .. 6=Sun)."
                 )
 
+    # Overrides, holiday bonuses and the weekend multiplier combine into the
+    # actual solver value. Even individually valid inputs must not produce a
+    # negative or non-finite slot value.
+    if data.end_date >= data.start_date and data.shifts:
+        for slot in slot_points(data):
+            if not _finite_number(slot.points) or slot.points < 0:
+                issues.append(
+                    f"Effective points for '{slot.shift.label}' on {slot.day} "
+                    "must be finite and non-negative."
+                )
+                break
+
     return issues
 
 
@@ -834,9 +929,10 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
     """Return human-readable constraint violations for a schedule.
 
     Intended for revalidating a schedule after manual edits. An empty list means
-    the schedule satisfies every hard rule the solver enforces: role and
-    night-float eligibility, leaves, rotator windows, one shift per person per
-    day, the minimum gap, and night-float block length.
+    the schedule satisfies the solver's hard rules: authoritative NF/closure
+    cells, role and exemptions, leave/NF-rest/rotator windows, one shift per
+    person per day, avoid pairs, reductions, total caps, mandatory extra-point
+    floors, and the minimum gap.
     """
     issues: List[str] = []
     juniors = set(data.juniors)
@@ -849,19 +945,62 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
     night_before = blackout_night_before_dates(data.blackouts, data.named_groups)
     # Reserved cells (night-float overlay + closed) are not regular assignments —
     # the regular rules below don't apply to them.
-    reserved = reserved_cell_keys(df)
+    leave_windows = list(normalized_leaves(data.leaves))
+    nf_windows = list(nf_leave_windows(data))
+    expected_nf, _nf_gaps, _nf_leaves = resolve_night_float(data)
+    expected_closed = resolve_closures(data)
+    expected_nf_attr = {
+        (day.isoformat(), label): person
+        for (day, label), person in expected_nf.items()
+    }
+    expected_closed_attr = {
+        (day.isoformat(), label) for day, label in expected_closed
+    }
+    attrs = getattr(df, "attrs", {}) or {}
+    if "nf_cells" in attrs and nf_cells_from_attr(df) != expected_nf_attr:
+        issues.append(
+            "Night-float cell metadata is stale or inconsistent with the current "
+            "configuration; regenerate or reapply the schedule."
+        )
+    if "closed_cells" in attrs and closed_cells_from_attr(df) != expected_closed_attr:
+        issues.append(
+            "Closed-cell metadata is stale or inconsistent with the current "
+            "configuration; regenerate or reapply the schedule."
+        )
+    regular_days: dict[str, List] = {}
+    actual_total = {p: 0.0 for p in list(data.juniors) + list(data.seniors)}
+    weekend_dates = weekend_holiday_dates(data)
 
     for row in df.to_dict("records"):
         day = row.get("Date")
-        day_key = day.isoformat() if hasattr(day, "isoformat") else day
         assigned_today: List[str] = []
+        on_call_today: set[str] = set()
         for shift in data.shifts:
-            if (day_key, shift.label) in reserved:
-                continue  # NF overlay or closed cell — skip regular-rule checks
             person = row.get(shift.label)
+            expected_coverer = expected_nf.get((day, shift.label))
+            if expected_coverer is not None:
+                on_call_today.add(expected_coverer)
+                if person != expected_coverer:
+                    issues.append(
+                        f"{day}: night-float cell '{shift.label}' must be covered "
+                        f"by {expected_coverer}, not {person or 'blank'}"
+                    )
+                continue
+            if (day, shift.label) in expected_closed:
+                if person != "Closed":
+                    issues.append(
+                        f"{day}: closed cell '{shift.label}' must remain Closed"
+                    )
+                continue
             if person in (None, "Unfilled"):
                 continue
             assigned_today.append(person)
+            on_call_today.add(person)
+            regular_days.setdefault(person, []).append(day)
+            if person in actual_total:
+                actual_total[person] += classify_slot(
+                    day, shift, data, weekend_dates
+                ).points
 
             if shift.role == "Junior" and person not in juniors:
                 issues.append(f"{day}: {person} on '{shift.label}' is not a Junior")
@@ -873,10 +1012,16 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
                     f"{day}: {person} on '{shift.label}' is exempt from this shift"
                 )
 
-            for nm, ls, le, _comp in normalized_leaves(data.leaves):
+            for nm, ls, le, _comp in leave_windows:
                 if nm == person and ls <= day <= le:
                     issues.append(
                         f"{day}: {person} on '{shift.label}' is on leave ({ls} to {le})"
+                    )
+            for nm, ls, le, _comp in nf_windows:
+                if nm == person and ls <= day <= le:
+                    issues.append(
+                        f"{day}: {person} on '{shift.label}' is on night-float "
+                        f"duty/rest ({ls} to {le})"
                     )
 
             for bs, be, _comp in blackout_windows.get(person, ()):
@@ -903,7 +1048,7 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
 
         for pair in (data.avoid_pairs or []):
             first, second = pair[0], pair[1]
-            if first != second and first in assigned_today and second in assigned_today:
+            if first != second and first in on_call_today and second in on_call_today:
                 issues.append(
                     f"{day}: {first} and {second} are both on call (avoid pair)"
                 )
@@ -920,7 +1065,11 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
             if day is None or not cap.start <= day <= cap.end:
                 continue
             for label in cap.labels:
-                if row.get(label) == cap.person:
+                if (
+                    (day, label) not in expected_nf
+                    and (day, label) not in expected_closed
+                    and row.get(label) == cap.person
+                ):
                     actual += classify_slot(day, shift_by_label[label], data, weekend_dates).points
         if actual > cap.cap_points + 1e-6:
             labels = ", ".join(sorted(cap.labels))
@@ -929,6 +1078,35 @@ def validate_schedule(df: "pd.DataFrame", data: InputData) -> List[str]:
                 f"{labels} in {cap.start}–{cap.end} (cap {cap.cap_points:.1f})"
             )
 
-    if not respects_min_gap(df, data.min_gap, data.shifts):
-        issues.append(f"Minimum gap of {data.min_gap} day(s) is violated")
+    for person, total_cap in (data.max_total or {}).items():
+        if actual_total.get(person, 0.0) > float(total_cap) + 1e-6:
+            issues.append(
+                f"{person} carries {actual_total[person]:.1f} total points "
+                f"(max-total cap {float(total_cap):.1f})"
+            )
+
+    target_map = (
+        (getattr(df, "attrs", {}) or {}).get("target_total_map")
+        or data.target_total_map
+        or {}
+    )
+    for person, extra in (data.extra_points or {}).items():
+        if float(extra) <= 0 or person not in target_map:
+            continue
+        floor = float(target_map[person])
+        if actual_total.get(person, 0.0) + 1e-6 < floor:
+            issues.append(
+                f"{person} carries {actual_total.get(person, 0.0):.1f} total "
+                f"points, below mandatory extra-points floor {floor:.1f}"
+            )
+
+    if data.min_gap > 0:
+        for days in regular_days.values():
+            ordered = sorted(set(days))
+            if any(
+                (right - left).days <= data.min_gap
+                for left, right in zip(ordered, ordered[1:])
+            ):
+                issues.append(f"Minimum gap of {data.min_gap} day(s) is violated")
+                break
     return issues

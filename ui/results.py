@@ -12,6 +12,7 @@ from model.exporters import (
     build_fairness_frame,
     schedule_to_excel_bytes,
     schedule_to_pdf_bytes,
+    spreadsheet_safe_frame,
 )
 from model.fairness import (
     assignment_rationale,
@@ -216,14 +217,25 @@ def _ledger_policy_notes(policy, prior_ledger, data) -> list:
     return notes
 
 
+def _current_ledger_policy() -> LedgerPolicy:
+    """Return the ledger policy selected for this result/export session."""
+    return LedgerPolicy(
+        no_refund_penalties=st.session_state.get(Keys.LEDGER_NO_REFUND, True),
+        no_catchup_excused=st.session_state.get(Keys.LEDGER_NO_CATCHUP, True),
+    )
+
+
 def _render_downloads(final_df, df, data, points, color_mode, palette, prior_ledger) -> None:
     st.subheader("Downloads")
     log_text = format_fairness_log(df, data, points=points)
+    policy = _current_ledger_policy()
     export_sig = (
         st.session_state[Keys.RESULT_VERSION],
         color_mode,
         tuple(sorted(palette.items())),
         tuple(final_df.columns),
+        policy.no_refund_penalties,
+        policy.no_catchup_excused,
         tuple(
             (name, tuple(sorted(vals.items())))
             for name, vals in sorted(st.session_state[Keys.EXTRA_VALS].items())
@@ -232,7 +244,7 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
     dcols = st.columns(3)
     dcols[0].download_button(
         "Download CSV (schedule)",
-        final_df.to_csv(index=False),
+        spreadsheet_safe_frame(final_df).to_csv(index=False),
         file_name="schedule.csv",
         mime="text/csv",
         width="stretch",
@@ -243,6 +255,8 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
             lambda: schedule_to_excel_bytes(
                 final_df, data, points=points, color_mode=color_mode, palette=palette,
                 prior_ledger=prior_ledger,
+                authoritative_df=df,
+                ledger_policy=policy,
             ),
         )
         dcols[1].download_button(
@@ -262,6 +276,8 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
             lambda: schedule_to_pdf_bytes(
                 final_df, data, points=points, color_mode=color_mode, palette=palette,
                 prior_ledger=prior_ledger,
+                authoritative_df=df,
+                ledger_policy=policy,
             ),
         )
         dcols[2].download_button(
@@ -282,10 +298,6 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
         file_name="fairness_log.txt",
         width="stretch",
     )
-    policy = LedgerPolicy(
-        no_refund_penalties=st.session_state.get(Keys.LEDGER_NO_REFUND, True),
-        no_catchup_excused=st.session_state.get(Keys.LEDGER_NO_CATCHUP, True),
-    )
     dcols2[1].download_button(
         "Download updated ledger (for next block)",
         ledger_to_json(update_ledger(prior_ledger, df, data, policy=policy)),
@@ -294,8 +306,8 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
         width="stretch",
     )
     st.caption(
-        "Keep the ledger — it's the cumulative fairness record. Streamlit Cloud "
-        "doesn't store anything between sessions, so re-upload it under "
+        "Keep the ledger — it's the cumulative fairness record. The app does "
+        "not durably store it between sessions, so re-upload it under "
         "History → Fairness ledger next block to keep months fair."
     )
     notes = _ledger_policy_notes(policy, prior_ledger, data)
@@ -310,16 +322,12 @@ def _shift_cell_options(data, shift, df=None) -> list:
 
     Role-eligible residents (minus exemptions), plus any night-float coverer that
     appears in this column's overlay cells (so their value stays valid), plus the
-    two non-resident markers every cell may be set to:
+    non-resident marker a regular open-demand cell may be set to:
 
     * ``"Unfilled"`` — a coverage gap (someone should be here but isn't): counted
       against coverage, its points reported as unfilled, flagged red.
-    * ``"Closed"`` — the slot is not staffed / unavailable (a resident shortage,
-      a shift that does not run that day): removed from demand entirely, never
-      counted as unfilled, and left out of points and fairness.
-
-    Both are always offered so an editor can mark any slot either way; the
-    recompute in ``normalize_edited_schedule`` makes the choice take effect.
+    Configured closure and NF-overlay cells are protected; demand-changing
+    closures must be configured before running the optimiser.
     """
     from model.night_float import nf_cells_from_attr
 
@@ -329,7 +337,7 @@ def _shift_cell_options(data, shift, df=None) -> list:
     for (_day, lbl), name in nf_cells_from_attr(df).items():
         if lbl == shift.label and name not in options:
             options.append(name)
-    return options + ["Unfilled", "Closed"]
+    return options + ["Unfilled"]
 
 
 def _render_manual_edit(df, result_data) -> None:
@@ -338,10 +346,10 @@ def _render_manual_edit(df, result_data) -> None:
             "Change assignments below, review the live preview, then click "
             "**Apply edits** to make them the schedule — fairness, the log, and "
             "every download will follow. Nothing changes until you apply. "
-            "Set a cell to **Unfilled** for a coverage gap (counts against "
-            "coverage) or **Closed** to stand the slot down as unavailable "
-            "(removed from demand — not counted as unfilled, and outside points "
-            "and fairness)."
+            "Set a regular cell to **Unfilled** for a coverage gap. Configured "
+            "closures and night-float overlay cells are protected because they "
+            "define demand before optimisation; change those policies and "
+            "regenerate instead."
         )
         # Dropdown cells restricted to role/NF-eligible residents stop typos at
         # the source; constraint issues (min-gap etc.) are still surfaced below.
@@ -371,9 +379,22 @@ def _render_manual_edit(df, result_data) -> None:
         st.caption(f"Edited schedule quality: {edited_quality['score']} / 100")
 
         bcols = st.columns(2)
-        if bcols[0].button("Apply edits", type="primary", key="apply_edits"):
-            apply_manual_edits(edited)
-            st.rerun()
+        if bcols[0].button(
+            "Apply edits",
+            type="primary",
+            key="apply_edits",
+            disabled=bool(issues),
+            help=(
+                "Fix every listed constraint issue before applying."
+                if issues else "Apply this validated schedule."
+            ),
+        ):
+            try:
+                apply_manual_edits(edited)
+            except ValueError as exc:  # defensive: revalidate inside the mutation too
+                st.error(str(exc))
+            else:
+                st.rerun()
         if st.session_state[Keys.MANUALLY_EDITED]:
             if bcols[1].button("Revert to solver result", key="revert_edits"):
                 revert_manual_edits()
@@ -547,7 +568,9 @@ def _cumulative_chart(cum_frame, role: str):
     )
 
 
-def _render_role_fairness(role: str, fair_frame, points, data, df, prior_ledger) -> None:
+def _render_role_fairness(
+    role: str, fair_frame, points, data, df, prior_ledger, ledger_policy
+) -> None:
     """One role's summary lines, table, workload chart, and cumulative chart."""
     members = data.juniors if role == "Junior" else data.seniors
     role_points = {p: v for p, v in points.items() if p in members}
@@ -568,7 +591,9 @@ def _render_role_fairness(role: str, fair_frame, points, data, df, prior_ledger)
         _workload_chart(role_frame, role, target), use_container_width=True
     )
     if prior_ledger:
-        cum_frame = build_cumulative_frame(role_points, prior_ledger, data)
+        cum_frame = build_cumulative_frame(
+            role_points, prior_ledger, data, ledger_policy=ledger_policy
+        )
         if len(cum_frame):
             st.caption(
                 "Cumulative standing: grey = carried in from the uploaded "
@@ -595,7 +620,10 @@ def _render_fairness_workspace(df, data, points, prior_ledger) -> None:
         )
         return
 
-    fair_frame = build_fairness_frame(points, data, df, prior_ledger)
+    ledger_policy = _current_ledger_policy()
+    fair_frame = build_fairness_frame(
+        points, data, df, prior_ledger, ledger_policy=ledger_policy
+    )
     if not len(fair_frame):
         return
     st.caption(
@@ -611,9 +639,13 @@ def _render_fairness_workspace(df, data, points, prior_ledger) -> None:
         ])
         for tab, role in zip(role_tabs, ("Junior", "Senior")):
             with tab:
-                _render_role_fairness(role, fair_frame, points, data, df, prior_ledger)
+                _render_role_fairness(
+                    role, fair_frame, points, data, df, prior_ledger, ledger_policy
+                )
     else:
-        _render_role_fairness(roles[0], fair_frame, points, data, df, prior_ledger)
+        _render_role_fairness(
+            roles[0], fair_frame, points, data, df, prior_ledger, ledger_policy
+        )
 
     noted = fair_frame[fair_frame.get("Notes", pd.Series(dtype=object)).notna()] \
         if "Notes" in fair_frame.columns else fair_frame.iloc[0:0]
@@ -631,7 +663,7 @@ def _render_fairness_workspace(df, data, points, prior_ledger) -> None:
             )
     st.download_button(
         "Download fairness table (CSV)",
-        fair_frame.to_csv(index=False),
+        spreadsheet_safe_frame(fair_frame).to_csv(index=False),
         file_name="fairness_table.csv",
         mime="text/csv",
     )
@@ -664,7 +696,7 @@ def _render_audit_workspace(df, data) -> None:
         st.dataframe(call_frame, width="stretch")
         st.download_button(
             "Download per-call CSV",
-            call_frame.to_csv(index=False),
+            spreadsheet_safe_frame(call_frame).to_csv(index=False),
             file_name="per_call_detail.csv",
             mime="text/csv",
         )
@@ -702,6 +734,14 @@ def render_results() -> None:
     df = st.session_state[Keys.RESULT_DF]
     data = st.session_state[Keys.RESULT_DATA]
     prior_ledger = st.session_state.get(Keys.RESULT_PRIOR_LEDGER)
+    result_fp = st.session_state.get(Keys.RESULT_CONFIG_FINGERPRINT)
+    current_fp = st.session_state.get(Keys.CURRENT_CONFIG_FINGERPRINT)
+    if result_fp and current_fp and result_fp != current_fp:
+        st.warning(
+            "Configuration changed after this schedule was generated. These "
+            "results still reflect the saved solve; generate again before "
+            "publishing or carrying its ledger forward."
+        )
     points = calculate_points(df, data)
     quality = schedule_quality(df, data, points=points)
 

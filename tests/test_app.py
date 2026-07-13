@@ -252,28 +252,27 @@ def test_edited_schedule_flows_into_fairness_log():
     assert "(target 1.0" in alice
 
 
-def test_manual_edit_closed_cell_is_stood_down_not_unfilled():
+def test_manual_edit_cannot_manufacture_a_closed_cell():
     from model.fairness import calculate_points, format_fairness_log
     from ui.state import normalize_edited_schedule
 
     base, data = _result_fixture()
     edited = base.copy()
     edited.attrs = {}
-    edited.loc[0, "D"] = "Closed"  # manually stand the first slot down
+    edited.loc[0, "D"] = "Closed"  # injected outside the selectbox options
 
     cleaned = normalize_edited_schedule(edited, base)
-    # Recorded on attrs so every calculation excludes it (not a phantom resident).
-    assert cleaned.attrs["closed_cells"] == {"2023-01-02": ["D"]}
+    assert cleaned.loc[0, "D"] == "Unfilled"
+    assert cleaned.attrs["closed_cells"] == {}
     pts = calculate_points(cleaned, data)
     assert "Closed" not in pts
-    assert pts["Alice"]["total"] == 0.0  # Alice's slot is now closed
+    assert pts["Alice"]["total"] == 0.0
     assert pts["Bob"]["total"] == 1.0
     health = format_fairness_log(cleaned, data).splitlines()[0]
-    assert "1 closed" in health
-    assert "0 unfilled" in health  # a closure is not a coverage gap
+    assert "1 unfilled" in health
 
 
-def test_manual_edit_can_reopen_a_closed_cell():
+def test_manual_edit_cannot_reopen_a_configured_closed_cell():
     from dataclasses import replace
     from model.data_models import ShiftClosure
     from model.fairness import calculate_points
@@ -284,14 +283,50 @@ def test_manual_edit_can_reopen_a_closed_cell():
     base = base.copy()
     base.loc[0, "D"] = "Closed"
     base.attrs["closed_cells"] = {"2023-01-02": ["D"]}
-    # The editor reassigns Alice to the previously-closed cell.
+    # A crafted editor payload tries to assign the previously-closed cell.
     edited = base.copy()
     edited.attrs = dict(base.attrs)
     edited.loc[0, "D"] = "Alice"
 
     cleaned = normalize_edited_schedule(edited, base)
-    assert cleaned.attrs["closed_cells"] == {}  # re-opened
-    assert calculate_points(cleaned, data)["Alice"]["total"] == 1.0
+    assert cleaned.loc[0, "D"] == "Closed"
+    assert cleaned.attrs["closed_cells"] == {"2023-01-02": ["D"]}
+    assert calculate_points(cleaned, data)["Alice"]["total"] == 0.0
+
+
+def test_manual_edit_cannot_change_nf_overlay_cell():
+    from model.night_float import nf_cells_to_attr
+    from ui.state import normalize_edited_schedule
+
+    base, _ = _result_fixture()
+    base = base.copy()
+    base.attrs["nf_cells"] = nf_cells_to_attr({(date(2023, 1, 2), "D"): "Alice"})
+    edited = base.copy()
+    edited.loc[0, "D"] = "Unfilled"
+
+    cleaned = normalize_edited_schedule(edited, base)
+    assert cleaned.loc[0, "D"] == "Alice"
+    assert cleaned.attrs["nf_cells"] == {"2023-01-02": {"D": "Alice"}}
+
+
+def test_apply_manual_edits_refuses_constraint_violations(monkeypatch):
+    from types import SimpleNamespace
+    import ui.state as state_module
+
+    base, data = _result_fixture()
+    invalid = base.copy()
+    invalid.loc[0, "D"] = "Not a resident"
+    state = {
+        "result_df": base,
+        "result_data": data,
+        "result_version": 1,
+    }
+    monkeypatch.setattr(state_module, "st", SimpleNamespace(session_state=state))
+
+    with pytest.raises(ValueError, match="not a Junior"):
+        state_module.apply_manual_edits(invalid)
+    assert state["result_df"] is base
+    assert state["result_version"] == 1
 
 
 # --- seniority groups / perks / exemptions -----------------------------------
@@ -326,9 +361,8 @@ def test_shift_cell_options_exclude_exempt():
     shift = data.shifts[0]
     options = _shift_cell_options(data, shift)
     assert "Alice" not in options
-    # Both non-resident markers are always offered so any cell can be set unfilled
-    # (a coverage gap) or closed (unavailable / not staffed).
-    assert options == ["Bob", "Unfilled", "Closed"]
+    # Demand can only be changed before solving; manual edits may leave a gap.
+    assert options == ["Bob", "Unfilled"]
 
 
 def test_ledger_policy_toggles_default_on():
@@ -620,6 +654,18 @@ def test_populate_editors_from_config_round_trips_into_session():
     assert len(state["reductions"]) == 1
 
 
+def test_imported_avoid_pairs_require_reconfirmation():
+    from ui.config_tabs import populate_editors_from_config
+
+    _, data = _result_fixture()
+    data.avoid_pairs = [("Alice", "Bob")]
+    state: dict = {}
+    populate_editors_from_config(data, state=state)
+    assert state["avoid_pairs"] == [("Alice", "Bob")]
+    assert state["avoid_unlocked"] is False
+    assert state["avoid_reconfirm_required"] is True
+
+
 def test_pending_config_applies_before_widgets_render():
     # The real upload flow: the History handler stashes the parsed config and
     # reruns; apply_pending_updates() must fill the ALREADY-INSTANTIATED Setup
@@ -652,6 +698,39 @@ def test_pending_config_applies_before_widgets_render():
     assert at.date_input(key="start_date").value == date(2026, 4, 6)
     assert at.number_input(key="min_gap").value == 3
     assert at.number_input(key="seed").value == 9
+
+
+def test_pending_config_failure_is_atomic():
+    data = InputData(
+        start_date=date(2026, 4, 6),
+        end_date=date(2026, 4, 12),
+        shifts=[ShiftTemplate("D", "Junior", False, False, 1.0)],
+        juniors=["Replacement"],
+        seniors=[],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        weekend_days=[9],  # triggers while building the isolated replacement
+    )
+    at = _at().run()
+    at.session_state["juniors"] = ["Original"]
+    at.session_state["pending_config"] = (data, None)
+    at.run()
+    assert any("Could not apply" in error.value for error in at.error)
+    assert at.session_state["juniors"] == ["Original"]
+
+
+def test_results_warn_when_configuration_changed_after_solve():
+    df, data = _result_fixture()
+    at = _at().run()
+    _seed_result(at, df, data)
+    at.session_state["result_config_fingerprint"] = "saved-result"
+    at.run()
+    assert any(
+        "Configuration changed after this schedule" in warning.value
+        for warning in at.warning
+    )
 
 
 def test_pending_state_updates_min_gap_slider():

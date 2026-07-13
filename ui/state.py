@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+import hashlib
+import json
 
 import streamlit as st
 
@@ -46,6 +48,7 @@ class Keys:
     PREFERRED_DAY_TYPE = "preferred_day_type"
     AVOID_PAIRS = "avoid_pairs"
     AVOID_UNLOCKED = "avoid_unlocked"
+    AVOID_RECONFIRM_REQUIRED = "avoid_reconfirm_required"
     NF_COVERAGE = "nf_coverage"          # {label: NightFloatCoverage}
     NF_ASSIGNMENTS = "nf_assignments"    # [NightFloatAssignment]
     NF_REST_DAYS = "nf_rest_days"
@@ -76,6 +79,8 @@ class Keys:
     RESULT_DATA = "result_data"
     RESULT_PRIOR_LEDGER = "result_prior_ledger"
     RESULT_VERSION = "result_version"
+    RESULT_CONFIG_FINGERPRINT = "result_config_fingerprint"
+    CURRENT_CONFIG_FINGERPRINT = "current_config_fingerprint"
     MANUALLY_EDITED = "manually_edited"
     SCHEDULE_EDITOR = "schedule_editor"
 
@@ -123,6 +128,7 @@ def _defaults() -> dict:
         Keys.PREFERRED_DAY_TYPE: {},
         Keys.AVOID_PAIRS: [],
         Keys.AVOID_UNLOCKED: False,
+        Keys.AVOID_RECONFIRM_REQUIRED: False,
         Keys.NF_COVERAGE: {},
         Keys.NF_ASSIGNMENTS: [],
         Keys.NF_REST_DAYS: 1,
@@ -146,6 +152,8 @@ def _defaults() -> dict:
         Keys.RESULT_DATA: None,
         Keys.RESULT_PRIOR_LEDGER: None,
         Keys.RESULT_VERSION: 0,
+        Keys.RESULT_CONFIG_FINGERPRINT: None,
+        Keys.CURRENT_CONFIG_FINGERPRINT: None,
         Keys.MANUALLY_EDITED: False,
         Keys.EXTRA_COLS: [],
         Keys.EXTRA_VALS: {},
@@ -167,6 +175,28 @@ def init_session_state() -> None:
 def bump_result_version() -> None:
     """Invalidate result-derived caches (the export cache keys off this)."""
     st.session_state[Keys.RESULT_VERSION] += 1
+
+
+def config_fingerprint(data, prior_ledger=None, *, label_carryover: bool = True) -> str:
+    """Return a stable fingerprint of the solver-relevant configuration.
+
+    Solver-derived targets are excluded by ``input_data_to_json``. The digest
+    covers inputs, prior ledger contents, and label-carryover policy, but does
+    not change when a result adds resolved targets to its ``InputData``.
+    """
+    from model.config_io import input_data_to_json
+
+    from model.ledger import ledger_to_json
+
+    parsed = {
+        "config": json.loads(input_data_to_json(data)),
+        "prior_ledger": (
+            json.loads(ledger_to_json(prior_ledger)) if prior_ledger else None
+        ),
+        "label_carryover": bool(label_carryover),
+    }
+    payload = json.dumps(parsed, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def flash(message: str) -> None:
@@ -198,6 +228,11 @@ def set_result(df, data, prior_ledger) -> None:
     st.session_state[Keys.SOLVER_DF] = df
     st.session_state[Keys.RESULT_DATA] = data
     st.session_state[Keys.RESULT_PRIOR_LEDGER] = prior_ledger
+    st.session_state[Keys.RESULT_CONFIG_FINGERPRINT] = config_fingerprint(
+        data,
+        prior_ledger,
+        label_carryover=st.session_state.get(Keys.LEDGER_LABEL_CARRYOVER, True),
+    )
     st.session_state[Keys.MANUALLY_EDITED] = False
     bump_result_version()
 
@@ -230,11 +265,9 @@ def _normalize_cell(value) -> str:
 def _recompute_closed_cells(df) -> None:
     """Rebuild ``df.attrs['closed_cells']`` from the grid's ``"Closed"`` cells.
 
-    A manual edit may open a previously-closed slot (assign a resident) or close
-    a new one, so the closed set is derived fresh from the cells rather than
-    inherited — this is what makes a manually chosen ``"Closed"`` behave exactly
-    like a configured closure (out of demand, points, fairness; not an unfilled
-    gap) instead of a phantom resident named "Closed".
+    Configured closures are restored from the authoritative base schedule before
+    this runs. Rebuilding the attribute keeps the visible grid and metadata in
+    agreement without allowing a manual edit to redefine demand.
     """
     from model.closures import closed_cells_to_attr
 
@@ -258,10 +291,11 @@ def normalize_edited_schedule(edited, base):
       editor so their values are unchanged by construction, but the Arrow
       round-trip turns dates into Timestamps, which would break holiday /
       weekend matching downstream.
-    - Blank or cleared shift cells become ``"Unfilled"``.
-    - ``base.attrs`` (solver targets) are carried over, then ``closed_cells`` is
-      recomputed from the edited grid so a cell set to ``"Closed"`` is treated as
-      unavailable in every calculation (and clearing it re-opens the slot).
+    - Blank or cleared shift cells become ``"Unfilled"``. A manually injected
+      ``"Closed"`` marker on open demand also becomes unfilled; closures are a
+      pre-solve policy and cannot be manufactured after solving.
+    - ``base.attrs`` (solver targets) are carried over; configured closure and
+      NF-overlay cells are restored from the authoritative base schedule.
     """
     out = edited.copy()
     for col in ("Date", "Day"):
@@ -271,7 +305,28 @@ def normalize_edited_schedule(edited, base):
         if col in ("Date", "Day"):
             continue
         out[col] = [_normalize_cell(v) for v in out[col]]
+        out[col] = ["Unfilled" if value == "Closed" else value for value in out[col]]
     out = with_attrs(out, base)
+    for col in out.columns:
+        if col in ("Date", "Day") or col not in base.columns:
+            continue
+        for row_idx, value in enumerate(base[col]):
+            if value == "Closed":
+                out.at[out.index[row_idx], col] = "Closed"
+    # Night-float overlay cells are solver-resolved coverage, not regular
+    # assignments. Streamlit cannot disable individual data-editor cells, so
+    # restore those cells authoritatively after its Arrow round-trip. This
+    # prevents a manual edit from turning an NF duty into an unfilled/regular
+    # slot while stale ``nf_cells`` metadata still excludes it from reporting.
+    from model.night_float import nf_cells_from_attr
+
+    nf_cells = nf_cells_from_attr(base)
+    if nf_cells and "Date" in out.columns:
+        for row_idx, day in enumerate(out["Date"]):
+            day_key = day.isoformat() if hasattr(day, "isoformat") else str(day)
+            for (nf_day, label), coverer in nf_cells.items():
+                if nf_day == day_key and label in out.columns:
+                    out.at[out.index[row_idx], label] = coverer
     _recompute_closed_cells(out)
     return out
 
@@ -280,6 +335,13 @@ def apply_manual_edits(edited) -> None:
     """Make an edited schedule the live result (fairness/exports follow it)."""
     base = st.session_state[Keys.RESULT_DF]
     cleaned = normalize_edited_schedule(edited, base)
+    from model.validation import validate_schedule
+
+    issues = validate_schedule(cleaned, st.session_state[Keys.RESULT_DATA])
+    if issues:
+        raise ValueError(
+            "Manual edits violate schedule constraints: " + "; ".join(issues)
+        )
     cleaned.attrs["manually_edited"] = True
     st.session_state[Keys.RESULT_DF] = cleaned
     st.session_state[Keys.MANUALLY_EDITED] = True

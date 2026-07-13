@@ -76,6 +76,32 @@ def _all_week():
     return NightFloatCoverage("NF", weekdays=(0, 1, 2, 3, 4, 5, 6))
 
 
+def test_avoid_pair_includes_night_float_overlay_duty():
+    pytest.importorskip("ortools")
+    from model.optimiser import build_schedule
+
+    day = date(2023, 1, 2)
+    data = _data(
+        start_date=day,
+        end_date=day,
+        shifts=[_nf_shift(), _reg_shift()],
+        juniors=["A", "B", "C"],
+        nf_juniors=["A"],
+        nf_coverage={"NF": _all_week()},
+        nf_assignments=[NightFloatAssignment("A", day, day, ("NF",), 0)],
+        avoid_pairs=[("A", "B")],
+    )
+    df = build_schedule(data, env="test")
+    assert df.iloc[0]["NF"] == "A"
+    assert df.iloc[0]["D"] == "C"
+    assert validate_schedule(df, data) == []
+
+    invalid = df.copy()
+    invalid.iloc[0, invalid.columns.get_loc("D")] = "B"
+    invalid.attrs = dict(df.attrs)
+    assert any("avoid pair" in issue for issue in validate_schedule(invalid, data))
+
+
 # --- coverage predicate + date-aware night-call ------------------------------
 
 def test_nf_covered_weekday_include_exclude():
@@ -301,6 +327,30 @@ def test_night_float_warnings():
         nf_assignments=[NightFloatAssignment("A", date(2023, 1, 2), date(2023, 1, 2), (), 0)],
     ))
     assert any("no assigned coverer and fall back to regular" in w for w in warnings)
+
+
+def test_overlapping_night_float_assignments_are_rejected():
+    data = _data(
+        juniors=["A", "B"],
+        nf_juniors=["A", "B"],
+        nf_coverage={"NF": _all_week()},
+        nf_assignments=[
+            NightFloatAssignment("A", date(2023, 1, 2), date(2023, 1, 4), (), 0),
+            NightFloatAssignment("B", date(2023, 1, 4), date(2023, 1, 5), ("NF",), 0),
+        ],
+    )
+    issues = validate_input(data)
+    assert any("assignments for 'A' and 'B' overlap" in issue for issue in issues)
+
+
+def test_uncovered_nf_label_gets_regular_per_label_targets():
+    from model.optimiser import resolve_targets
+
+    data = _data(juniors=["A", "B"], nf_juniors=["A"])
+    resolved = resolve_targets(data)
+    # No coverage pattern: all four 2-point calls are regular and both juniors
+    # participate in per-label fairness, even though only A is NF-overlay eligible.
+    assert resolved.target_label == pytest.approx({("A", "NF"): 4.0, ("B", "NF"): 4.0})
 
 
 def test_validate_schedule_flags_regular_night_before_on_uncovered_nf_night():

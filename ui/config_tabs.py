@@ -15,7 +15,13 @@ from model.availability import (
     read_availability_xlsx,
     rows_to_leaves,
 )
-from model.config_io import display_from_json, input_data_to_json, input_data_from_json
+from model.config_io import (
+    config_compatibility_warnings,
+    display_from_json,
+    input_data_to_json,
+    input_data_from_json,
+)
+from model.coloring import DEFAULT_PALETTE
 from model.data_models import (
     InputData,
     normalized_blackouts,
@@ -50,7 +56,7 @@ from ui.editors import (
 )
 from ui.diagnostics import render_diagnostics
 from ui.ledger_panel import render_ledger_panel
-from ui.state import Keys, flash, restore_display_state, set_result
+from ui.state import Keys, config_fingerprint, flash, restore_display_state, set_result
 from ui.theme import card_container, render_section_header, render_status
 from ui.uploads import consume_upload_once
 
@@ -116,6 +122,10 @@ def populate_editors_from_config(data: InputData, state=None) -> None:
     }
     ss[Keys.PREFERRED_DAY_TYPE] = dict(data.preferred_day_type or {})
     ss[Keys.AVOID_PAIRS] = [tuple(pair) for pair in (data.avoid_pairs or [])]
+    # Restricted rules imported from a file are not silently activated. They
+    # remain visible in the editor until an authorised user reconfirms them.
+    ss[Keys.AVOID_UNLOCKED] = False
+    ss[Keys.AVOID_RECONFIRM_REQUIRED] = bool(data.avoid_pairs)
     ss[Keys.NF_COVERAGE] = dict(data.nf_coverage or {})
     ss[Keys.NF_ASSIGNMENTS] = list(data.nf_assignments or [])
     ss[Keys.NF_REST_DAYS] = int(data.nf_rest_days)
@@ -191,7 +201,12 @@ def _active_config_maps() -> dict:
     }
     avoid_pairs = []
     seen_pairs = set()
-    for pair in st.session_state[Keys.AVOID_PAIRS]:
+    configured_avoid_pairs = (
+        []
+        if st.session_state.get(Keys.AVOID_RECONFIRM_REQUIRED, False)
+        else st.session_state[Keys.AVOID_PAIRS]
+    )
+    for pair in configured_avoid_pairs:
         first, second = pair[0], pair[1]
         unordered = frozenset((first, second))
         if (
@@ -576,7 +591,7 @@ def _render_history_workspace(session_config: InputData) -> dict | None:
     render_section_header(
         "Move safely between blocks",
         "Save the complete setup, restore it later, and carry cumulative fairness "
-        "forward without keeping resident data on the app server.",
+        "forward without durable server storage of resident data.",
         eyebrow="Step 4 · History & files",
     )
     tab_config, tab_ledger = st.tabs(["Configuration file", "Fairness ledger"])
@@ -594,7 +609,15 @@ def _render_history_workspace(session_config: InputData) -> dict | None:
             )
             st.caption("Includes the display setup: colours, custom columns, column order.")
             uploaded_config = st.file_uploader(
-                "Load config (JSON) — fills in all the tabs for review", type="json"
+                "Load config (JSON) — fills in all the tabs for review",
+                type="json",
+                key="config_upload",
+            )
+            reload_clicked = st.button(
+                "Apply / reload selected config",
+                key="config_reload",
+                disabled=uploaded_config is None,
+                help="Intentionally restore the same file again after making edits.",
             )
             # Import once per uploaded file (the uploader returns the same file
             # on every rerun; the guard stops it clobbering later tab/display edits).
@@ -602,6 +625,7 @@ def _render_history_workspace(session_config: InputData) -> dict | None:
                 uploaded_config,
                 Keys.DISPLAY_RESTORED,
                 state=st.session_state,
+                force=reload_clicked,
             )
             if blob is not None:
                 try:
@@ -611,7 +635,12 @@ def _render_history_workspace(session_config: InputData) -> dict | None:
                     st.error(f"Could not read config: {exc}")
                 else:
                     try:
-                        display = display_from_json(text)
+                        display = display_from_json(
+                            text,
+                            reserved_columns=[
+                                "Date", "Day", *(shift.label for shift in loaded.shifts)
+                            ],
+                        )
                     except Exception:
                         display = None
                     # The Setup widgets already rendered this run, so their
@@ -755,12 +784,31 @@ def apply_pending_updates() -> None:
         return
     loaded, display = pending
     try:
-        populate_editors_from_config(loaded)
+        # Build every replacement value in isolation. If any imported section
+        # is malformed, no live session key has been touched.
+        replacement: dict = {}
+        populate_editors_from_config(loaded, state=replacement)
         if display:
-            restore_display_state(display)
+            restore_display_state(display, state=replacement)
     except Exception as exc:
         st.error(f"Could not apply the uploaded config: {exc}")
     else:
+        # This hook runs before widgets render, so the controlled commit is
+        # both atomic from the user's perspective and legal in Streamlit.
+        if display and display.get("palette"):
+            for key in DEFAULT_PALETTE:
+                st.session_state.pop(f"{Keys.PAL_PREFIX}{key}", None)
+            st.session_state.pop("pal_theme", None)
+        if display and ("extra_cols" in display or "extra_vals" in display):
+            st.session_state.pop("extra_cols_editor", None)
+        # These keyed controls write directly back into NF coverage on render;
+        # clear their old widget values so the imported defaults win once.
+        for key in list(st.session_state):
+            if str(key).startswith(("nfcov_", "nfasg_labels_")):
+                st.session_state.pop(key, None)
+        st.session_state.update(replacement)
+        for warning in config_compatibility_warnings(loaded):
+            st.warning(warning)
         flash(
             f"Loaded config: {len(loaded.shifts)} shift(s), "
             f"{len(loaded.juniors) + len(loaded.seniors)} resident(s) — "
@@ -792,6 +840,11 @@ def render_application() -> None:
     session_config = session_config_from_state()
     with tabs[3]:
         carryover_ledger = _render_history_workspace(session_config)
+    st.session_state[Keys.CURRENT_CONFIG_FINGERPRINT] = config_fingerprint(
+        session_config,
+        carryover_ledger,
+        label_carryover=st.session_state.get(Keys.LEDGER_LABEL_CARRYOVER, True),
+    )
     with tabs[4]:
         _render_review_workspace(session_config, carryover_ledger)
     with tabs[5]:

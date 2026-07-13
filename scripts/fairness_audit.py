@@ -542,14 +542,17 @@ def spec_scale(seeds=(0, 1, 2)):
         # artefact, not an unfairness — the guarantees that must hold are
         # full coverage and no hard-rule violations. Per-label targets are
         # gated off above LABEL_TARGET_MAX_CELLS so they can't starve the
-        # primary balance here. Deviation is printed for information. The 30 s
-        # budget (vs dev's 10 s) gives CP-SAT room to reach a zero-unfilled
-        # incumbent on every seed; the exact trajectory shifts with model
-        # changes (e.g. role-aware targets), and coverage still dominates the
-        # objective, so a too-small budget fails on search time, not fairness.
+        # primary balance here. Deviation is printed for information. The
+        # weekend guardrail adds fairness variables that make this instance
+        # meaningfully harder, so it gets a 60 s budget (vs dev's 10 s): enough
+        # to reliably reach a zero-unfilled incumbent on every seed. Coverage
+        # dominates the objective, so a too-small budget fails on search time,
+        # not fairness — and on a real (slower) host the UI time-limit control
+        # is the lever, with fairness converging to a within-role range of ~1
+        # given a generous budget.
         report(
             f"spec-scale 45x28x10 seed {seed} (info)",
-            measure(solve(data, time_limit_sec=30), data),
+            measure(solve(data, time_limit_sec=60), data),
             {"unfilled": 0},
         )
 

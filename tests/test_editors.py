@@ -5,7 +5,7 @@ import pytest
 pytest.importorskip("pandas")
 pytest.importorskip("streamlit")
 
-from ui.editors import _parse_names, _roster_overlap
+from ui.editors import _parse_names, _roster_overlap, _stable_widget_key
 
 
 def test_parse_names_keeps_exact_matching_as_the_default():
@@ -30,3 +30,11 @@ def test_roster_overlap_canonical_mode_shows_both_display_spellings():
         ["ALICE SMITH", "Cara"],
         normalize=True,
     ) == ["Alice  Smith / ALICE SMITH"]
+
+
+def test_dynamic_widget_keys_are_stable_and_label_safe():
+    assert _stable_widget_key("nf", "Night/Float 🔒") == _stable_widget_key(
+        "nf", "Night/Float 🔒"
+    )
+    assert _stable_widget_key("nf", "A") != _stable_widget_key("nf", "B")
+    assert _stable_widget_key("nf", "Night/Float 🔒").startswith("nf_")
