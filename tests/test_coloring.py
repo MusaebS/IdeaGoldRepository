@@ -133,6 +133,13 @@ def test_empty_palette_entries_fall_back_to_default():
     assert same == base
 
 
+def test_invalid_palette_entries_fall_back_instead_of_crashing():
+    df, data = _sample()
+    assert schedule_cell_colors(df, data, "auto", palette={"weekend": "#oops"}) == (
+        schedule_cell_colors(df, data, "auto")
+    )
+
+
 # --- theme_palette -------------------------------------------------------------
 
 def test_theme_palette_shape_and_format():

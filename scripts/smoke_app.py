@@ -70,6 +70,18 @@ def _run_checks() -> list[str]:
             if not cond:
                 failures.append(msg)
 
+        def open_result_workspace(name: str) -> None:
+            """Open Results and one of its nested workspaces after any rerun."""
+            page.get_by_role("tab", name="⑥ Results").click()
+            page.get_by_role("tab", name=name, exact=True).click()
+
+        def open_customise() -> None:
+            open_result_workspace("Schedule")
+            colour_label = page.get_by_text("Colour cells by")
+            if not colour_label.is_visible():
+                page.get_by_text("Customise the schedule", exact=False).first.click()
+                colour_label.wait_for(timeout=10000)
+
         # --- success path ---
         page = browser.new_page(viewport={"width": 1400, "height": 1600})
         page.goto(URL, wait_until="load", timeout=60000)
@@ -77,17 +89,26 @@ def _run_checks() -> list[str]:
         check(True, "app loads")
         page.get_by_text("Test mode (preload example data)").click()
         page.wait_for_timeout(2500)
+        page.get_by_role("tab", name="⑤ Review & run").click()
         page.locator('button:has-text("Generate schedule")').click()
-        page.wait_for_selector(
-            '[data-testid="stDataFrame"], [data-testid="stDataFrameResizable"]',
-            timeout=120000,
+        # Generation triggers a Streamlit rerun, which recreates the tab set.
+        # Wait for the solve result on Review & run before selecting Results;
+        # clicking Results immediately races the rerun and leaves it hidden.
+        page.get_by_text("Schedule generated (", exact=False).wait_for(
+            timeout=120000
         )
+        open_result_workspace("Overview")
+        page.get_by_text("Schedule quality", exact=True).wait_for(timeout=20000)
+        check(True, "quality metric shown")
+
+        open_result_workspace("Schedule")
+        page.locator(
+            '[data-testid="stDataFrame"]:visible, '
+            '[data-testid="stDataFrameResizable"]:visible'
+        ).first.wait_for(timeout=120000)
         check(True, "Test mode + Generate renders a schedule")
-        try:
-            page.get_by_text("Schedule quality").wait_for(timeout=15000)
-            check(True, "quality metric shown")
-        except Exception:
-            check(False, "quality metric shown")
+
+        open_result_workspace("Export")
         for label in [
             "Download CSV (schedule)",
             "Download Excel (schedule + fairness)",
@@ -99,8 +120,10 @@ def _run_checks() -> list[str]:
                 check(True, f"export button {label!r}")
             except Exception:
                 check(False, f"export button {label!r}")
+
+        open_result_workspace("Fairness")
         try:
-            page.get_by_text("Workload by resident").wait_for(timeout=10000)
+            page.get_by_text("Workload by resident").first.wait_for(timeout=10000)
             check(page.locator('[data-testid="stVegaLiteChart"], [data-testid="stArrowVegaLiteChart"]').count() > 0,
                   "fairness bar chart renders")
         except Exception:
@@ -111,12 +134,16 @@ def _run_checks() -> list[str]:
             check(True, "fairness table with CSV download renders")
         except Exception:
             check(False, "fairness table with CSV download renders")
+
+        open_result_workspace("Audit trail")
         try:
             page.get_by_text("Per-call detail (audit)").first.click()
             page.get_by_role("button", name="Download per-call CSV").wait_for(timeout=10000)
             check(True, "per-call audit expander renders")
         except Exception:
             check(False, "per-call audit expander renders")
+
+        open_result_workspace("Schedule")
         # Open the "Customise" expander to reach the colour + column controls.
         try:
             page.get_by_text("Customise the schedule", exact=False).first.click()
@@ -129,6 +156,7 @@ def _run_checks() -> list[str]:
         try:
             page.get_by_role("button", name="Apply theme shades").click()
             page.wait_for_timeout(2500)
+            open_customise()
             check(page.locator('[data-testid="stDataFrame"], [data-testid="stDataFrameResizable"]').count() > 0
                   and page.locator('[data-testid="stException"]').count() == 0,
                   "theme shades apply without breaking the grid")
@@ -141,6 +169,7 @@ def _run_checks() -> list[str]:
             ).locator("input").fill("On-call team")
             page.get_by_role("button", name="Add column").click()
             page.wait_for_timeout(2500)
+            open_customise()
             check(page.get_by_text("On-call team").count() > 0,
                   "custom cosmetic column added")
         except Exception:
@@ -152,6 +181,7 @@ def _run_checks() -> list[str]:
             ).locator("textarea").fill("Dr Alpha, Dr Beta")
             page.get_by_role("button", name="Fill", exact=True).click()
             page.wait_for_timeout(2500)
+            open_customise()
             check(page.get_by_text("Dr Alpha").count() > 0
                   and page.get_by_text("Dr Beta").count() > 0,
                   "auto-fill pattern populates the column")
@@ -159,8 +189,10 @@ def _run_checks() -> list[str]:
             check(False, "auto-fill pattern populates the column")
         # Toggling a control triggers a Streamlit rerun without re-solving; the
         # schedule must persist (results now render from session_state).
+        open_result_workspace("Export")
         page.get_by_text("Show Fairness Log").click()
         page.wait_for_timeout(2500)
+        open_result_workspace("Export")
         check(page.locator('[data-testid="stDataFrame"], [data-testid="stDataFrameResizable"]').count() > 0,
               "results persist across a rerun")
         # Clicking a download must NOT blank the results (exports are cached).
@@ -175,18 +207,27 @@ def _run_checks() -> list[str]:
         # Manual-edit persistence: Apply flags the schedule as edited (badge +
         # revert button), Revert restores the solver result and clears both.
         try:
+            open_result_workspace("Schedule")
             page.get_by_text("Manual edit & revalidate").click()
             page.get_by_role("button", name="Apply edits").wait_for(timeout=10000)
             page.get_by_role("button", name="Apply edits").click()
-            page.get_by_text("Schedule manually edited").first.wait_for(timeout=15000)
-            check(True, "Apply edits marks the schedule as edited")
-            page.get_by_role("button", name="Revert to solver result").click()
-            page.wait_for_timeout(2500)
-            check(page.get_by_text("Schedule manually edited").count() == 0,
+            revert = page.get_by_role("button", name="Revert to solver result")
+            revert.wait_for(state="attached", timeout=30000)
+            open_result_workspace("Schedule")
+            check(revert.count() > 0, "Apply edits marks the schedule as edited")
+            # Streamlit keeps inactive tab trees in the DOM; force targets the
+            # now-attached control even when Playwright still considers an old
+            # tab wrapper hidden during the transition.
+            revert.click(force=True)
+            revert.wait_for(state="detached", timeout=30000)
+            open_result_workspace("Schedule")
+            check(page.get_by_role("button", name="Revert to solver result").count() == 0,
                   "Revert restores the solver result")
+            open_result_workspace("Export")
             check(page.get_by_role("button", name="Download CSV (schedule)").count() > 0,
                   "exports still available after edit round-trip")
-        except Exception:
+        except Exception as exc:
+            print(f"Manual-edit smoke detail: {exc}")
             check(False, "manual edit apply/revert round-trip")
         check(page.locator('[data-testid="stException"]').count() == 0,
               "no uncaught exception on the page")
@@ -196,6 +237,7 @@ def _run_checks() -> list[str]:
         page = browser.new_page(viewport={"width": 1400, "height": 1000})
         page.goto(URL, wait_until="load", timeout=60000)
         page.wait_for_selector("text=Idea Gold Scheduler", timeout=60000)
+        page.get_by_role("tab", name="⑤ Review & run").click()
         page.locator('button:has-text("Generate schedule")').click()
         page.wait_for_timeout(2000)
         check(page.get_by_text("Fix the configuration before generating").count() > 0,
@@ -212,12 +254,14 @@ def _run_checks() -> list[str]:
         page.wait_for_selector("text=Idea Gold Scheduler", timeout=60000)
         page.get_by_text("Test mode (preload example data)").click()
         page.wait_for_timeout(2500)
-        page.get_by_role("tab", name="Advanced").click()
+        page.get_by_role("tab", name="③ Policies").click()
+        page.get_by_role("tab", name="Fairness controls").click()
         page.wait_for_timeout(1000)
         extra = page.locator('[data-testid="stNumberInput"]').filter(has_text="Extra points")
         extra.locator("input").fill("999")
         extra.locator('xpath=following::button[normalize-space()="Add"][1]').click()
         page.wait_for_timeout(1500)
+        page.get_by_role("tab", name="⑤ Review & run").click()
         page.locator('button:has-text("Generate schedule")').click()
         page.wait_for_timeout(8000)
         check(page.get_by_role("button", name="Retry with min_gap 0").count() > 0,

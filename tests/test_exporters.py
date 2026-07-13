@@ -182,9 +182,13 @@ def test_build_assignment_frame_lists_every_slot():
     assert len(records) == 4  # 2 days x 2 shifts, unfilled included
     sat_n = next(r for r in records if r["Shift"] == "N" and r["Date"] == date(2023, 1, 7))
     assert sat_n["Resident"] == "Bob" and sat_n["Points"] == 2.0
-    assert sat_n["Weekend"] is True and sat_n["Night float"] is True
+    # NF eligibility is a shift property; without an active overlay this is a
+    # regular call that earns points, not night-float duty.
+    assert sat_n["Weekend"] is True and sat_n["Night float"] is False
+    assert sat_n["NF-eligible shift"] is True
+    assert sat_n["Status"] == "Regular assignment"
     sun_n = next(r for r in records if r["Shift"] == "N" and r["Date"] == date(2023, 1, 8))
-    assert sun_n["Resident"] == "Unfilled"
+    assert sun_n["Resident"] == "Unfilled" and sun_n["Points"] == 0.0
 
 
 # --- print views / report helpers ----------------------------------------------
@@ -321,3 +325,214 @@ def test_excel_gains_per_call_sheet_and_unfilled_labels():
     values = [c.value for c in schedule[2]]
     assert values[header.index("D")] == "Unfilled"
     assert schedule.freeze_panes == "B2"
+
+
+def test_per_call_status_and_points_match_regular_fairness_accounting():
+    from model.exporters import build_assignment_frame
+
+    shift = ShiftTemplate(
+        label="N", role="Senior", night_float=True, thu_weekend=False, points=2.0
+    )
+    data = InputData(
+        start_date=date(2023, 1, 2), end_date=date(2023, 1, 5), shifts=[shift],
+        juniors=[], seniors=["Bob"], nf_juniors=[], nf_seniors=["Bob"],
+        leaves=[], rotators=[], min_gap=0,
+    )
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 2), "N": "Bob"},
+        {"Date": date(2023, 1, 3), "N": "Bob"},
+        {"Date": date(2023, 1, 4), "N": "Closed"},
+        {"Date": date(2023, 1, 5), "N": "Unfilled"},
+    ])
+    df.attrs["nf_cells"] = {"2023-01-02": {"N": "Bob"}}
+    df.attrs["closed_cells"] = {"2023-01-04": ["N"]}
+    rows = build_assignment_frame(df, data).to_dict("records")
+    by_day = {row["Date"]: row for row in rows}
+    assert by_day[date(2023, 1, 2)]["Status"] == "Night float overlay"
+    assert by_day[date(2023, 1, 2)]["Points"] == 0.0
+    assert by_day[date(2023, 1, 2)]["Night float"] is True
+    assert by_day[date(2023, 1, 3)]["Status"] == "Regular assignment"
+    assert by_day[date(2023, 1, 3)]["Points"] == 2.0
+    assert by_day[date(2023, 1, 3)]["Night float"] is False
+    assert by_day[date(2023, 1, 4)]["Status"] == "Closed"
+    assert by_day[date(2023, 1, 4)]["Points"] == 0.0
+    assert by_day[date(2023, 1, 5)]["Status"] == "Unfilled"
+    assert by_day[date(2023, 1, 5)]["Points"] == 0.0
+    assert all(row["Nominal points"] == 2.0 for row in rows)
+
+
+def test_fairness_includes_configured_unassigned_labels_and_attr_targets():
+    df, data = _df_and_data()
+    data.shifts.append(ShiftTemplate(
+        label="Unused", role="Junior", night_float=False,
+        thu_weekend=False, points=3.0,
+    ))
+    df.attrs["target_label"] = {("Alice", "Unused"): 2.0}
+    frame = build_fairness_frame(calculate_points(df, data), data, df)
+    alice = next(row for row in frame.to_dict("records") if row["Resident"] == "Alice")
+    assert alice["Unused"] == 0.0 and alice["Unused n"] == 0
+    assert alice["Unused target"] == 2.0 and alice["Unused dev"] == -2.0
+
+
+def test_role_sections_omit_opposite_role_shift_columns():
+    from model.exporters import fairness_print_sections
+
+    shifts = [
+        ShiftTemplate("JD", "Junior", False, False, 1.0),
+        ShiftTemplate("SD", "Senior", False, False, 1.0),
+    ]
+    data = InputData(
+        start_date=date(2023, 1, 2), end_date=date(2023, 1, 2), shifts=shifts,
+        juniors=["J"], seniors=["S"], nf_juniors=[], nf_seniors=[],
+        leaves=[], rotators=[], min_gap=0,
+    )
+    df = pd.DataFrame([{"Date": date(2023, 1, 2), "JD": "J", "SD": "S"}])
+    sections = fairness_print_sections(
+        build_fairness_frame(calculate_points(df, data), data, df), data
+    )
+    by_title = {title: columns for title, columns, _rows in sections}
+    assert "JD n" in by_title["Juniors"] and "SD n" not in by_title["Juniors"]
+    assert "SD n" in by_title["Seniors"] and "JD n" not in by_title["Seniors"]
+
+
+def test_authoritative_frame_drives_hidden_shift_export_accounting():
+    pytest.importorskip("openpyxl")
+    from openpyxl import load_workbook
+
+    source, data = _df_and_data()
+    source.attrs["target_total_map"] = {"Alice": 3.0, "Bob": 3.0}
+    display = source[["Day", "D"]].copy()  # Date and N hidden cosmetically
+    out = schedule_to_excel_bytes(
+        display, data, authoritative_df=source, validation_issues=[]
+    )
+    book = load_workbook(io.BytesIO(out), data_only=False)
+    assert "N" not in [cell.value for cell in book["Schedule"][1]]
+    per_call = list(book["Per-call"].values)
+    headers = list(per_call[0])
+    n_rows = [row for row in per_call[1:] if row[headers.index("Shift")] == "N"]
+    assert {row[headers.index("Resident")] for row in n_rows} == {"Alice", "Bob"}
+    fairness = list(book["Fairness"].values)
+    fair_headers = list(fairness[0])
+    alice = next(row for row in fairness[1:] if row[0] == "Alice")
+    assert alice[fair_headers.index("N")] == 2.0
+
+
+def test_spreadsheet_formula_text_is_neutralised_in_helpers_and_excel():
+    pytest.importorskip("openpyxl")
+    from openpyxl import load_workbook
+    from model.exporters import spreadsheet_safe_text
+
+    for dangerous in ("=2+2", "+cmd", "-cmd", "@SUM(A1:A2)", "\tcmd", "\rcmd"):
+        assert spreadsheet_safe_text(dangerous).startswith("'")
+    assert spreadsheet_safe_text(2.0) == 2.0
+    shift = ShiftTemplate("D", "Junior", False, False, 1.0)
+    data = InputData(
+        start_date=date(2023, 1, 2), end_date=date(2023, 1, 2), shifts=[shift],
+        juniors=["=2+2"], seniors=[], nf_juniors=[], nf_seniors=[],
+        leaves=[], rotators=[], min_gap=0,
+    )
+    df = pd.DataFrame([{"Date": date(2023, 1, 2), "D": "=2+2"}])
+    out = schedule_to_excel_bytes(df, data, validation_issues=[])
+    book = load_workbook(io.BytesIO(out), data_only=False)
+    resident = book["Schedule"]["B2"]
+    assert resident.data_type == "s" and resident.value == "'=2+2"
+
+    dangerous_shift = ShiftTemplate("=2+2", "Junior", False, False, 1.0)
+    header_data = InputData(
+        start_date=date(2023, 1, 2), end_date=date(2023, 1, 2),
+        shifts=[dangerous_shift], juniors=["A"], seniors=[],
+        nf_juniors=[], nf_seniors=[], leaves=[], rotators=[], min_gap=0,
+    )
+    header_df = pd.DataFrame([{"Date": date(2023, 1, 2), "=2+2": "A"}])
+    header_book = load_workbook(
+        io.BytesIO(
+            schedule_to_excel_bytes(header_df, header_data, validation_issues=[])
+        ),
+        data_only=False,
+    )
+    header = header_book["Schedule"]["B1"]
+    assert header.data_type == "s" and header.value == "'=2+2"
+
+
+def test_excel_widths_follow_long_resident_content():
+    pytest.importorskip("openpyxl")
+    from openpyxl import load_workbook
+
+    long_name = "Resident With A Meaningfully Long Display Name"
+    shift = ShiftTemplate("D", "Junior", False, False, 1.0)
+    data = InputData(
+        start_date=date(2023, 1, 2), end_date=date(2023, 1, 2), shifts=[shift],
+        juniors=[long_name], seniors=[], nf_juniors=[], nf_seniors=[],
+        leaves=[], rotators=[], min_gap=0,
+    )
+    df = pd.DataFrame([{"Date": date(2023, 1, 2), "D": long_name}])
+    book = load_workbook(io.BytesIO(schedule_to_excel_bytes(df, data, validation_issues=[])))
+    fair = book["Fairness"]
+    resident_col = next(cell.column_letter for cell in fair[1] if cell.value == "Resident")
+    assert fair.column_dimensions[resident_col].width >= 30
+
+
+def test_cumulative_frame_distinguishes_actual_and_policy_adjusted_standing():
+    from model.exporters import build_cumulative_frame
+
+    df, data = _df_and_data(extra_points={"Alice": 2.0})
+    points = calculate_points(df, data)
+    rows = build_cumulative_frame(
+        points, {"Alice": {"total": 5.0, "weekend": 0.0}}, data
+    ).to_dict("records")
+    alice = next(row for row in rows if row["Resident"] == "Alice")
+    assert alice["Cumulative"] == 5.0 + points["Alice"]["total"]
+    assert alice["Policy-adjusted cumulative"] == alice["Cumulative"] - 2.0
+    assert "Actual points" in alice["Standing basis"]
+
+
+def test_first_block_policy_adjustment_is_visible_without_prior_ledger():
+    df, data = _df_and_data(extra_points={"Alice": 2.0})
+    frame = build_fairness_frame(calculate_points(df, data), data, df)
+    alice = frame.set_index("Resident").loc["Alice"]
+    assert "Cumulative total" in frame.columns
+    assert "Policy-adjusted cumulative total" in frame.columns
+    assert alice["Policy-adjusted cumulative total"] == pytest.approx(
+        alice["Cumulative total"] - 2.0
+    )
+
+
+def test_excel_policy_sheet_contains_exact_config_rows():
+    pytest.importorskip("openpyxl")
+    from openpyxl import load_workbook
+
+    df, data = _df_and_data(extra_points={"Alice": 2.0})
+    df.attrs["label_carryover"] = False
+    out = schedule_to_excel_bytes(df, data, validation_issues=[])
+    book = load_workbook(io.BytesIO(out), data_only=False)
+    rows = {
+        setting: value
+        for setting, value in book["Policy & validation"].iter_rows(
+            min_row=2, values_only=True
+        )
+    }
+    assert rows["Per-shift-type ledger carryover"] == "Disabled"
+    assert '"Alice":2.0' in rows["Config JSON: extra_points"]
+    assert "Config JSON: shifts" in rows
+
+
+def test_report_header_marks_manual_edits_as_not_solver_certified():
+    from model.exporters import report_header_lines
+
+    df, data = _df_and_data()
+    df.attrs["solver_status"] = "OPTIMAL"
+    df.attrs["manually_edited"] = True
+    text = " ".join(report_header_lines(data, df, validation_issues=["bad edit"]))
+    assert "MANUALLY EDITED" in text and "Solver OPTIMAL" not in text
+    assert "1 validation issue" in text
+
+
+def test_pdf_safe_fallback_and_nan_omission():
+    from model.exporters import _fmt, _pdf_safe_text, _register_pdf_fonts
+
+    assert _fmt(float("nan")) == ""
+    rendered = _pdf_safe_text("محمد")
+    assert "محمد" not in rendered and "U+0645" in rendered
+    _normal, _bold, unicode_supported = _register_pdf_fonts()
+    if unicode_supported:
+        assert "U+" not in _pdf_safe_text("محمد", unicode_font=True)

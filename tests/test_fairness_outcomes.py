@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from model.data_models import InputData, ShiftTemplate
 from model.optimiser import LABEL_TARGET_MAX_CELLS, resolve_targets
-from model.fairness import calculate_label_counts
+from model.fairness import calculate_label_counts, calculate_points
 
 MON = date(2026, 1, 5)
 
@@ -85,3 +85,34 @@ def test_preference_holders_keep_free_label_mix():
     # A opted into a preference, so no per-label target pins their mix.
     assert not any(p == "A" for (p, _lbl) in resolved.target_label)
     assert any(p == "B" for (p, _lbl) in resolved.target_label)
+
+
+def test_weekend_guardrail_prevents_avoidable_concentration():
+    pytest.importorskip("ortools")
+    from model.optimiser import build_schedule
+
+    data = _data(
+        [_sh("D")], ["A", "B", "C", "D"], days=28,
+        weekend_multiplier=2.0,
+    )
+    df = build_schedule(data, env="test")
+    points = calculate_points(df, data)
+    assert "Unfilled" not in list(df["D"])
+    assert {points[p]["total"] for p in data.juniors} == {9.0}
+    # Eight weekend calls x2: every resident carries exactly two calls / 4 pts.
+    assert {points[p]["weekend"] for p in data.juniors} == {4.0}
+
+
+def test_weekend_guardrail_never_sacrifices_coverage_when_spread_unavoidable():
+    pytest.importorskip("ortools")
+    from model.optimiser import build_schedule
+
+    data = _data(
+        [_sh("D")], ["A", "B"], days=7,
+        rotators=[("A", MON + timedelta(days=5), MON + timedelta(days=6))],
+    )
+    df = build_schedule(data, env="test")
+    points = calculate_points(df, data)
+    assert "Unfilled" not in list(df["D"])
+    assert points["A"]["weekend"] == 2.0
+    assert points["B"]["weekend"] == 0.0

@@ -9,6 +9,13 @@ The time limit for solving depends on the environment and problem size. Set the 
 Enable the **Test mode** checkbox in the app to load example shifts and participant names automatically.
 The solver supports fractional fairness targets via `InputData.target_total`, `target_label`, and `target_weekend`. Fillable coverage dominates the objective; among maximum-coverage solutions it minimises the largest deviation from these targets before the smaller fairness gaps. This keeps point totals balanced without dropping a coverable slot to make the numbers look tidier.
 
+Weekend fairness also has a separate safeguard inside that hierarchy. After
+total-point fairness, the optimiser minimises the within-role spread of
+`actual weekend points − weekend target` before the summed weekend deviation.
+Thus equal totals cannot excuse an avoidable 4-vs-0 weekend split. The
+guardrail is soft: it never sacrifices coverage, overrides total fairness, or
+breaks a hard scheduling rule.
+
 **Night float is a separate coverage overlay, not a balanced dimension.** It runs *before* the regular scheduler: the dates it covers are assigned to their night-float coverer and removed from regular demand, and each coverer is treated like an *uncompensated* leave for their block (blocked from regular shifts, reduced regular target, no future catch-up). See [Night float](#night-float-a-coverage-overlay) below. Night-float work carries no regular points by default, so it does not enter the total/weekend/per-label balance; the fairness log reports each coverer's night-float **duty days** as an informational figure outside the balance.
 
 If `target_total` or `target_weekend` are not provided, `build_schedule` calculates
@@ -47,7 +54,15 @@ The results page includes a **Download Fairness Log** button. It is built to be 
 - a **Constraint violations** section (it runs `validate_schedule`, so a hand-edited roster's problems surface here too);
 - an explicit list of **unfilled slots**.
 
-A Fairness summary and a per-resident bar chart show the min/max/range in the UI, and the Excel/PDF "Fairness" sheet carries the same `Total dev` column (plus an informational `NF duty (days)`) from the same solver-resolved targets — so the on-screen view, the log, and the exports all agree. The schedule and fairness summary can also be exported as **CSV**, **Excel** (`.xlsx`, schedule + fairness sheets) and **PDF**.
+A Fairness summary and per-resident charts show targets, deviations, and
+cumulative standings in the UI. Exports deliberately separate presentation
+from evidence: the displayed schedule follows cosmetic column choices, while
+fairness, validation, policy, and per-call calculations always use the complete
+authoritative solved (or validated-edited) schedule. Excel contains Schedule,
+Fairness, Per-call, and Policy & validation sheets; the PDF contains the same
+policy/validation evidence. Per-call rows distinguish regular, unfilled,
+closed, and NF-overlay cells and show awarded separately from nominal points.
+CSV/XLSX text is neutralised against spreadsheet-formula execution.
 
 ## Guided workspace
 
@@ -82,6 +97,10 @@ After a solve, Results is split into five focused views:
 All five views come from the same result in session state, so cosmetic changes
 do not rerun the optimiser and manual edits continue to flow through validation,
 fairness reporting, and exports.
+
+If solver-relevant configuration or carryover history changes after generation,
+Results warns that the saved solve is stale and should be regenerated before it
+is published or carried into the next ledger.
 
 ### Optional canonical name matching
 
@@ -151,15 +170,14 @@ instant and no longer momentarily blanks the results while a large Excel/PDF reb
 ## Manual edits (hand-tweaking the schedule)
 
 The **Manual edit & revalidate** panel lets you change any assignment after
-solving. Cells are dropdowns restricted to role/night-float-eligible residents
-(plus *Unfilled*), a live preview shows the constraint issues and quality score
-your changes would cause, and nothing is saved until you click **Apply edits**.
-Once applied, the edited schedule *is* the result: the fairness summary, the
-log, the ledger, and every download reflect it, and a banner reminds you the
-solver output was overridden. **Revert to solver result** restores the pristine
-schedule at any time. Constraint violations introduced by hand (a min-gap
-break, a role mismatch) are flagged on screen and recorded in the fairness log
-rather than silently accepted.
+solving. Ordinary demand cells are dropdowns restricted to role-eligible
+residents plus *Unfilled*. Configured closure and night-float overlay cells are
+authoritative and protected: manual edits cannot create, reopen, or replace
+them. A live preview shows constraint issues and quality; **Apply edits** stays
+disabled until every hard rule passes, and the mutation revalidates defensively.
+Once applied, the edited schedule *is* the result: the fairness summary, log,
+ledger, and every download reflect it. The PDF marks it `MANUALLY EDITED (not
+solver-certified)`. **Revert to solver result** restores the pristine schedule.
 
 ## Configuration validation
 
@@ -168,8 +186,13 @@ It rejects the misconfigurations that otherwise produce confusing or wrong outpu
 a backwards date range, no shifts, duplicate or reserved (`Date`/`Day`) shift labels,
 night-float eligibility for people not in the roster, a name in both the junior and
 senior lists, and leave/rotator windows that reference unknown residents or run
-backwards. The app surfaces these as a list to fix; `build_schedule` raises
-`ValueError` for the same problems.
+backwards. Point policies must be finite and in range; overlapping night-float
+ownership is rejected. JSON imports also reject unsafe scalar types instead of
+silently coercing them, sanitise display columns/colours, and apply the complete
+configuration atomically. The same selected file can be reloaded intentionally.
+Legacy `max_nights`/`nf_block_length` values load with an explicit warning
+because the current overlay does not use them. The app surfaces issues as a list
+to fix; `build_schedule` raises `ValueError` for the same operational problems.
 
 `model.validation.config_warnings` adds *non-blocking* advisories for a valid but
 risky configuration — a night-float shift with no eligible residents, more shifts
@@ -234,7 +257,7 @@ schedule when the solver finishes; under a tight time limit the parallel search 
 still vary. `build_schedule` does not mutate the `InputData` you pass it — the
 resolved fairness targets and solver status are returned on the DataFrame's `attrs`
 (`target_total`, `target_total_map`, `target_weekend`, `solver_status`,
-`wall_time_sec`).
+`target_label`, `time_limit_sec`, `wall_time_sec`).
 
 ## Leaves: compensated or uncompensated
 
@@ -369,13 +392,16 @@ total / weekend dimensions still balance overall load on top.
 ## Fairness table, per-call audit & ledger editor
 
 Beyond the text log, the results page shows a **fairness table**: per resident,
-call *counts* and points per shift type, total/weekend with targets and
-deviations (plus an informational `NF duty (days)`), **prior + cumulative** columns when a carryover ledger is
-loaded (including cumulative per-shift-type call counts), a `Pref match`
+call *counts*, points, targets, and deviations per shift type; total/weekend
+targets and deviations; and an informational `NF duty (days)`. With a carryover
+ledger it shows both actual prior + cumulative values and the policy-adjusted
+standing that will be saved for the next block (including cumulative per-shift-
+type call counts), plus a `Pref match`
 column, and a Notes column with the same annotations as the log — downloadable
 as CSV, and mirrored in the Excel/PDF Fairness sheet. A **Per-call detail
-(audit)** expander lists every (date, shift) slot with its holder, points, and
-weekend/night-float flags — download the CSV each month for future reference.
+(audit)** expander lists every (date, shift) slot with its holder, explicit
+status, awarded and nominal points, and weekend/NF-overlay flags — download the
+CSV each month for future reference.
 
 The carryover ledger is now **editable in-app** (④ History → Fairness ledger): upload
 it, adjust any resident's cumulative numbers after a real-world change, add or
@@ -423,9 +449,10 @@ an advisory warns when the pair are the only two of a role) and it does not
 change anyone's fairness target. Because separating people usually needs
 approval from higher authority, the editor (③ Policies → Preferences & points → *Avoid pairs
 (restricted)*) hides behind an **access code** — a deliberate extra step, not
-a security measure; pairs loaded from a config file stay active and are shown
-as a count even while locked. Both residents' log lines carry an
-`[avoids: …]` note.
+a security measure. Pairs loaded from a config remain visible but inactive; an
+authorised user must unlock the panel, review the names, and click **Confirm
+imported avoid pairs** before they affect a solve. Both residents' log lines
+carry an `[avoids: …]` note.
 
 ## Per-resident caps
 
@@ -470,12 +497,12 @@ flag still adds Thursday for individual shifts on top of this.
 weekend slot worth a multiple of its points (applied after weekday overrides
 and holiday bonuses, in the single `effective_points` source, so the solver,
 targets, fairness table/log, exports, and ledger all agree). New sessions
-default to **×2**: one weekend shift ≈ two weekday shifts, which folds weekend
-fairness into the strongest balancing tier — whoever carries an extra weekend
-automatically does fewer weekday shifts. The trade-offs: totals move in
-coarser steps (a ×2 weekend shift is 2 points) and a saved config without the
-field keeps the old behaviour (×1). It cannot fix a *structural* weekend
-lock — see the min_gap advisory below.
+default to **×2**, making weekend work materially count in the strongest
+total-load tier. A separate target-relative weekend residual-spread guardrail
+then discourages concentrating weekends on one resident when an equally good
+total-point schedule can redistribute them. A saved config without the field
+keeps the old behaviour (×1). Neither mechanism can overcome an eligibility,
+availability, cap, or `min_gap` structural lock — see the advisories below.
 
 ## Pre-solve capacity advisories
 
@@ -496,7 +523,7 @@ setting can overcome, so an uneven result is never a mystery:
 
 ## How fairness is verified
 
-Three guarantees underpin the "is the result actually fair?" question:
+Four guarantees underpin the "is the result actually fair?" question:
 
 - **Coverage before fairness.** The solver never leaves a *fillable* on-call
   slot empty to make point totals look tidier — an uncovered on-call is never
@@ -507,6 +534,10 @@ Three guarantees underpin the "is the result actually fair?" question:
   both roles to a ≤1-point spread). A cross-role difference reflects the
   roster/shift mix — it is reported by the pre-solve advisories, not treated
   as solver unfairness the model could never fix.
+- **No hidden weekend concentration.** After total fairness is settled, the
+  weekend residual-spread guardrail prefers the schedule whose actual-minus-
+  target weekend load is closest together within each role. Equal totals do
+  not make an avoidable 4-vs-0 weekend split acceptable.
 - **Per-shift-type balance.** Equal *total* points is not enough if one
   resident works all the heavy nights and another only day shifts. On top of
   total / weekend balance, each shift type's points are split
@@ -522,8 +553,8 @@ Three guarantees underpin the "is the result actually fair?" question:
   generic points.
 
 `python scripts/fairness_audit.py` solves ~20 scenarios end-to-end (small,
-large, extreme, and every feature) and checks the *outcome*: total / weekend /
-night-float spread, per-shift-type distribution, coverage, hard-rule
+large, extreme, and every feature) and checks the *outcome*: total/weekend
+spread, night-float overlay ownership/rest, per-shift-type distribution, coverage, hard-rule
 violations, multi-block ledger convergence, and preference neutrality. It exits
 non-zero if any scenario fails its stated fairness expectation.
 
@@ -566,6 +597,16 @@ CI runs ruff, mypy, and pytest on Python 3.11/3.12 — plus a stub-only job with
 no pandas/OR-Tools installed to guard the graceful-degradation path.
 
 ## Changelog
+- **Weekend concentration and integrity hardening.** Added a target-relative,
+  within-role weekend residual-spread guardrail below total fairness and above
+  summed weekend deviation; quality now scores target residuals rather than
+  misleading raw equality. Manual edits can no longer redefine configured
+  demand, validation covers the solver's hard rules, exports calculate from the
+  authoritative result and include policy/validation evidence, and config
+  imports are strict and atomic. Reduction targets now normalise duplicate and
+  overlapping windows per cell and per eligible role pool. The automatic
+  optimiser timing function and UI override are deliberately unchanged; no
+  shorter or additional cutoff was introduced.
 - **Reporting overhaul: per-role fairness views, cumulative ledger charts, and
   a redesigned report.** The Fairness workspace now shows Juniors and Seniors
   as separate tabs with sorted, role-coloured workload charts (dashed
@@ -685,7 +726,7 @@ no pandas/OR-Tools installed to guard the graceful-degradation path.
   columns, column order) and restores it on load.
 - Manual edits now persist: an Apply/Revert flow with eligibility-restricted
   dropdown cells; the edited schedule flows into fairness, the log, the ledger
-  and all exports, with a banner and violation flags. (Previously edits were
+  and all exports after hard-rule validation passes. (Previously edits were
   silently discarded.)
 - Split the monolithic `app.py` into a `ui/` package; names de-duplicate on
   entry, dual-role names and duplicate shift labels warn before Generate, and
@@ -698,13 +739,13 @@ no pandas/OR-Tools installed to guard the graceful-degradation path.
 - Reorganised the app UI into tabs (Shifts & people / Dates & rules / Advanced / Save & carryover), with a primary Generate button, summary metrics, and unfilled-slot highlighting.
 - Added per-weekday shift point overrides and holiday bonus dates (optionally weekend-counting), via one `effective_points` value threaded through the solver and fairness.
 - Added mandatory per-resident extra points (`extra_points`, e.g. a penalty): the target is raised and a hard floor enforces it.
-- Fairness log shows targets inline + a points checksum, sorts worst-deviation-first, and folds in constraint violations; Excel/PDF gain matching `Total dev`/`NF dev` columns.
+- Fairness log shows targets inline + a points checksum, sorts worst-deviation-first, and folds in constraint violations; Excel/PDF carry matching total/weekend/per-label deviations plus informational NF duty days.
 - Hardened the fairness log into a verification artifact: a coverage-health header, `[OVER]`/`[UNDER]` outlier flags, and an explicit unfilled-slots list.
 - Added a per-leave compensated/uncompensated toggle (uncompensated leave scales the resident's quota down like a rotator).
 - Added leave/rotator sanity advisories (out-of-range windows, fully-excluded rotators, whole-block leave, redundant leave).
 - Added cumulative carryover fairness via a save/load fairness ledger (`model/ledger.py`, `build_schedule(..., ledger=...)`).
-- Added per-resident hard caps on total and night-float load (`max_total`, `max_nights`).
-- Balanced night-float load as a first-class fairness objective (`target_night_float`), with deviation/range reporting; fairness deviations now read solver-resolved targets from `df.attrs`.
+- Added per-resident hard caps on total load (`max_total`); legacy `max_nights` remains file-compatible but is not used by the later NF overlay model.
+- Historical (superseded): night-float load was once balanced as a fairness objective. The current coverage overlay tracks NF duty days informationally and keeps them outside regular point fairness.
 - Added non-blocking pre-solve configuration warnings (`config_warnings`).
 - Added a configurable weekend definition (`weekend_days`) and a `scripts/benchmark.py` solve-time benchmark.
 - Added pre-solve configuration validation (`validate_input`) surfaced in the app and enforced by `build_schedule`.

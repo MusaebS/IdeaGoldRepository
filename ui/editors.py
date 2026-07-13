@@ -7,6 +7,7 @@ original single-file app so saved links / tests keep working.
 from __future__ import annotations
 
 from datetime import date
+import hashlib
 
 import pandas as pd
 import streamlit as st
@@ -32,6 +33,12 @@ WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 # Sentinel entry in group selectors that reveals an ad-hoc name multiselect.
 ADHOC_CHOICE = "(ad-hoc names…)"
+
+
+def _stable_widget_key(prefix: str, value: object) -> str:
+    """A compact deterministic key safe for arbitrary user-entered labels."""
+    digest = hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}_{digest}"
 
 
 def _summary_table(data: pd.DataFrame) -> None:
@@ -606,7 +613,12 @@ def avoid_pairs_editor(people: list) -> None:
         pairs = st.session_state[Keys.AVOID_PAIRS]
         if not st.session_state[Keys.AVOID_UNLOCKED]:
             if pairs:
-                st.caption(f"{len(pairs)} avoid pair(s) are configured and active.")
+                status = (
+                    "awaiting reconfirmation (inactive)"
+                    if st.session_state.get(Keys.AVOID_RECONFIRM_REQUIRED, False)
+                    else "configured and active"
+                )
+                st.caption(f"{len(pairs)} avoid pair(s): {status}.")
             code = st.text_input("Access code", type="password", key="avoid_code")
             if st.button("Unlock", key="avoid_unlock"):
                 if code == AVOID_UNLOCK_CODE:
@@ -618,6 +630,14 @@ def avoid_pairs_editor(people: list) -> None:
         if len(people) < 2:
             st.caption("Add at least two participants first.")
             return
+        if pairs and st.session_state.get(Keys.AVOID_RECONFIRM_REQUIRED, False):
+            st.warning(
+                "These avoid pairs came from an imported config and are not "
+                "active yet. Confirm them explicitly after reviewing the names."
+            )
+            if st.button("Confirm imported avoid pairs", key="avoid_reconfirm"):
+                st.session_state[Keys.AVOID_RECONFIRM_REQUIRED] = False
+                st.rerun()
         c = st.columns([3, 3, 1], vertical_alignment="bottom")
         with c[0]:
             first = st.selectbox("Resident A", people, key="avoid_a")
@@ -815,16 +835,26 @@ def night_float_editor(
         )
         chosen = st.multiselect(
             f"'{label}' ({nf_shift_roles[label]}) covered on", WEEKDAY_LABELS,
-            default=default_days, key=f"nfcov_{label}",
+            default=default_days, key=_stable_widget_key("nfcov", label),
             help="Weekends are covered only if you select them here; unselected "
             "days are filled by regular shifters.",
         )
-        if chosen:
+        include_dates = current.include_dates if isinstance(current, NightFloatCoverage) else ()
+        exclude_dates = current.exclude_dates if isinstance(current, NightFloatCoverage) else ()
+        if chosen or include_dates or exclude_dates:
             coverage[label] = NightFloatCoverage(
-                label, tuple(WEEKDAY_LABELS.index(d) for d in chosen)
+                label,
+                tuple(WEEKDAY_LABELS.index(d) for d in chosen),
+                tuple(include_dates),
+                tuple(exclude_dates),
             )
         else:
             coverage.pop(label, None)
+        if include_dates or exclude_dates:
+            st.caption(
+                f"Imported date exceptions preserved for '{label}': "
+                f"{len(include_dates)} included, {len(exclude_dates)} excluded."
+            )
 
     st.divider()
     st.session_state[Keys.NF_REST_DAYS] = st.number_input(
@@ -973,7 +1003,7 @@ def roster_editor() -> None:
     with cols[0]:
         st.subheader("Participants")
         normalize_names = st.toggle(
-            "Case-insensitive name matching",
+            "Canonical roster deduplication (case/spacing-insensitive)",
             key=Keys.NORMALIZE_NAMES,
             help=(
                 "Optional. Compares names after Unicode normalization, collapsed "
@@ -1036,8 +1066,17 @@ def custom_columns_editor(base_df) -> None:
     new_name = ac[0].text_input("New column name", key="newcol_name")
     if ac[1].button("Add column", key="newcol_add", width="stretch"):
         name = new_name.strip()
-        if name and name not in base_df.columns and name not in st.session_state[Keys.EXTRA_COLS]:
+        reserved = {
+            str(col).strip().casefold()
+            for col in [*base_df.columns, *st.session_state[Keys.EXTRA_COLS]]
+        }
+        if name and name.casefold() not in reserved:
             st.session_state[Keys.EXTRA_COLS].append(name)
+        elif name:
+            st.warning(
+                f"'{name}' conflicts with Date, Day, a shift, or an existing "
+                "custom column. Choose a unique name."
+            )
     if not st.session_state[Keys.EXTRA_COLS]:
         return
     rc = st.columns([3, 1], vertical_alignment="bottom")

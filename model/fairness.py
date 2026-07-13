@@ -145,10 +145,14 @@ def preference_satisfaction(df: pd.DataFrame, data: InputData) -> Dict[str, tupl
     if not people:
         return {}
     weekend_dates = weekend_holiday_dates(data)
+    reserved = _nf_cell_keys(df) | _closed_cell_keys(df)
     counters: Dict[str, list] = {p: [0, 0] for p in people}
     for row in df.to_dict("records"):
         day = row.get("Date")
+        day_key = day.isoformat() if hasattr(day, "isoformat") else day
         for sh in data.shifts:
+            if (day_key, sh.label) in reserved:
+                continue
             person = row.get(sh.label)
             if person not in counters:
                 continue
@@ -318,6 +322,7 @@ def format_fairness_log(
     target_total = _resolved_target(df, "target_total", data.target_total)
     target_total_map = _resolved_target(df, "target_total_map", data.target_total_map)
     target_weekend = _resolved_target(df, "target_weekend", data.target_weekend)
+    target_label = _resolved_target(df, "target_label", data.target_label)
 
     records = df.to_dict("records")
     shift_by_label = {s.label: s for s in data.shifts}
@@ -401,11 +406,16 @@ def format_fairness_log(
         if target_weekend and person in target_weekend:
             wt = target_weekend[person]
             line += f" (target {wt:.1f}, dev {info['weekend'] - wt:+.1f})"
-        for label in sorted(info['labels']):
-            val = info['labels'][label]
+        person_labels = set(info['labels'])
+        person_labels.update(
+            label for (target_person, label) in (target_label or {})
+            if target_person == person
+        )
+        for label in sorted(person_labels):
+            val = info['labels'].get(label, 0.0)
             line += f", {label} {val:.1f}"
-            if data.target_label and (person, label) in data.target_label:
-                ldev = val - data.target_label[(person, label)]
+            if target_label and (person, label) in target_label:
+                ldev = val - target_label[(person, label)]
                 line += f" (dev {ldev:+.1f})"
         penalty = (data.extra_points or {}).get(person, 0.0)
         penalty_note = f" [+{penalty:g} penalty applied]" if penalty > 0 else ""
@@ -430,9 +440,17 @@ def schedule_quality(
 ) -> Dict[str, float]:
     """Return a 0-100 schedule quality score and its components.
 
-    Blends coverage (fraction of slots filled), total-point balance, and
-    weekend balance. 100 means every slot is filled and the load is perfectly
-    even across residents; lower scores flag unfilled shifts or unfair spread.
+    Blends coverage (fraction of slots filled), total-target balance, and
+    weekend-target balance. Balance is measured on each resident's deviation
+    from the solver-resolved target, not on raw points. This matters when
+    leave, caps, perks, penalties, availability, or carryover intentionally
+    give residents different fair shares.
+
+    Within each role, one role-eligible shift is treated as an unavoidable
+    atomic rounding step. Anything beyond that step lowers the score. Thus a
+    4-vs-0 weekend split around equal targets is still flagged even when total
+    points happen to be equal, while a 1-vs-0 split caused by one indivisible
+    one-point call is not.
     """
     pts = points if points is not None else calculate_points(df, data)
     labels = [s.label for s in data.shifts]
@@ -457,42 +475,81 @@ def schedule_quality(
                 filled += 1
     coverage = filled / total_slots if total_slots else 1.0
 
-    # Balance is measured within each role and the worst role counts: juniors
-    # and seniors work disjoint shift pools, so a cross-role difference is
-    # structural (supply vs demand, flagged by config_warnings), not something
-    # the optimiser could have scheduled away.
-    def _role_range(values: Dict[str, float]) -> float:
+    # Juniors and seniors work disjoint pools, so every range and atomic
+    # allowance is role-specific. The worst role determines the component.
+    role_members = {
+        "Junior": [p for p in data.juniors if p in pts],
+        "Senior": [p for p in data.seniors if p in pts],
+    }
+    all_slots = [
+        slot for slot in slot_points(data)
+        if _key(slot.day, slot.shift.label) not in reserved
+    ]
+
+    target_total = _resolved_target(df, "target_total", data.target_total)
+    target_total_map = _resolved_target(df, "target_total_map", data.target_total_map)
+    target_weekend = _resolved_target(df, "target_weekend", data.target_weekend)
+
+    def _dimension_value(person: str, dimension: str) -> float:
+        return float(
+            pts[person]["total"] if dimension == "total" else pts[person]["weekend"]
+        )
+
+    def _targets_for(members: List[str], dimension: str) -> Dict[str, float]:
+        actual = {p: _dimension_value(p, dimension) for p in members}
+        fallback = sum(actual.values()) / len(actual) if actual else 0.0
+        targets: Dict[str, float] = {}
+        for person in members:
+            target = None
+            if dimension == "total":
+                target = (target_total_map or {}).get(person, target_total)
+            elif target_weekend:
+                target = target_weekend.get(person)
+            targets[person] = fallback if target is None else float(target)
+        return targets
+
+    def _raw_role_range(dimension: str) -> float:
         ranges = []
-        for members in (data.juniors, data.seniors):
-            vals = [values[p] for p in members if p in values]
-            if len(vals) > 1:
-                ranges.append(max(vals) - min(vals))
+        for members in role_members.values():
+            values = [_dimension_value(p, dimension) for p in members]
+            if len(values) > 1:
+                ranges.append(max(values) - min(values))
         return max(ranges) if ranges else 0.0
 
-    totals = [v["total"] for v in pts.values()] or [0.0]
-    weekends = [v["weekend"] for v in pts.values()] or [0.0]
-    total_range = _role_range({p: v["total"] for p, v in pts.items()})
-    weekend_range = _role_range({p: v["weekend"] for p, v in pts.items()})
-    mean_total = sum(totals) / len(totals)
-    mean_weekend = sum(weekends) / len(weekends)
+    def _balance(dimension: str) -> tuple[float, float, float]:
+        role_scores: List[float] = []
+        deviation_ranges: List[float] = []
+        allowances: List[float] = []
+        for role, members in role_members.items():
+            if len(members) < 2:
+                continue
+            targets = _targets_for(members, dimension)
+            deviations = [_dimension_value(p, dimension) - targets[p] for p in members]
+            dev_range = max(deviations) - min(deviations)
+            eligible_slots = [s for s in all_slots if s.shift.role == role]
+            if dimension == "weekend":
+                eligible_slots = [s for s in eligible_slots if s.weekend]
+            allowance = max((s.points for s in eligible_slots), default=0.0)
+            excess = max(0.0, dev_range - allowance)
+            mean_target = sum(abs(targets[p]) for p in members) / len(members)
+            mean_actual = (
+                sum(abs(_dimension_value(p, dimension)) for p in members) / len(members)
+            )
+            scale = max(mean_target, mean_actual, allowance)
+            score = 1.0 if scale <= 0 else 1.0 - min(1.0, excess / scale)
+            role_scores.append(score)
+            deviation_ranges.append(dev_range)
+            allowances.append(allowance)
+        return (
+            min(role_scores) if role_scores else 1.0,
+            max(deviation_ranges) if deviation_ranges else 0.0,
+            max(allowances) if allowances else 0.0,
+        )
 
-    # Integrality allowance: shifts are indivisible, so when the pool doesn't
-    # divide evenly the best possible schedule still differs by one shift —
-    # up to the heaviest slot's points (e.g. 2 with doubled weekends). Only
-    # the spread *beyond* that unavoidable step counts against the score;
-    # a provably optimal schedule should be able to score 100.
-    step_total = 0.0
-    step_weekend = 0.0
-    for slot in slot_points(data):
-        step_total = max(step_total, slot.points)
-        if slot.weekend:
-            step_weekend = max(step_weekend, slot.points)
-    excess_total = max(0.0, total_range - step_total)
-    excess_weekend = max(0.0, weekend_range - step_weekend)
-    balance_total = 1.0 - min(1.0, excess_total / mean_total) if mean_total > 0 else 1.0
-    balance_weekend = (
-        1.0 - min(1.0, excess_weekend / mean_weekend) if mean_weekend > 0 else 1.0
-    )
+    total_range = _raw_role_range("total")
+    weekend_range = _raw_role_range("weekend")
+    balance_total, total_dev_range, total_allowance = _balance("total")
+    balance_weekend, weekend_dev_range, weekend_allowance = _balance("weekend")
 
     score = 100.0 * (0.5 * coverage + 0.3 * balance_total + 0.2 * balance_weekend)
     return {
@@ -505,6 +562,10 @@ def schedule_quality(
         "balance_weekend": round(balance_weekend, 3),
         "total_range": total_range,
         "weekend_range": weekend_range,
+        "total_deviation_range": total_dev_range,
+        "weekend_deviation_range": weekend_dev_range,
+        "total_atomic_allowance": total_allowance,
+        "weekend_atomic_allowance": weekend_allowance,
     }
 
 

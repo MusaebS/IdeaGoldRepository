@@ -21,14 +21,19 @@ used by the solver, validation, and reporting alike).
 from __future__ import annotations
 
 from datetime import date
-from typing import FrozenSet, List, NamedTuple
+from typing import Dict, FrozenSet, List, NamedTuple, Tuple
 
 from .data_models import InputData, ShiftTemplate, normalized_reductions
 from .points import block_days, classify_slot
 from .utils import weekend_holiday_dates
 from .weights import availability_weights
 
-__all__ = ["ReductionCap", "reduction_caps", "eligible_for_shift"]
+__all__ = [
+    "ReductionCap",
+    "reduction_caps",
+    "reduction_target_relief",
+    "eligible_for_shift",
+]
 
 
 class ReductionCap(NamedTuple):
@@ -53,13 +58,14 @@ def eligible_for_shift(person: str, shift: ShiftTemplate, data: InputData) -> bo
     who is in a shift's pool.
     """
     if shift.role == "Junior":
-        pool, nf_pool = data.juniors, data.nf_juniors
+        pool = data.juniors
     else:
-        pool, nf_pool = data.seniors, data.nf_seniors
+        pool = data.seniors
     if person not in pool:
         return False
-    if shift.night_float and person not in nf_pool:
-        return False
+    # ``night_float`` means overlay-eligible, not permanently restricted to the
+    # NF pool. On dates the overlay does not cover, this is an ordinary regular
+    # shift open to the full role roster. NF pools govern overlay assignments.
     return shift.label not in (data.exempt_shifts or {}).get(person, ())
 
 
@@ -86,6 +92,13 @@ def reduction_caps(data: InputData) -> List[ReductionCap]:
     days = block_days(data) if data.end_date >= data.start_date else []
     shift_by_label = {s.label: s for s in data.shifts}
     roster = list(data.juniors) + list(data.seniors)
+    # Reserved overlay/closure cells carry no regular points and cannot be part
+    # of a regular-work reduction. Local imports avoid an import-time cycle.
+    from .closures import resolve_closures
+    from .night_float import resolve_night_float
+
+    nf_cells, _gaps, _leaves = resolve_night_float(data)
+    reserved = set(nf_cells) | resolve_closures(data)
 
     caps: List[ReductionCap] = []
     for red in entries:
@@ -97,35 +110,100 @@ def reduction_caps(data: InputData) -> List[ReductionCap]:
         end = min(red.end, data.end_date)
         if not labels or not members or end < start:
             continue
-        window_points = 0.0
-        window_nf_points = 0.0
-        for day in (d for d in days if start <= d <= end):
-            for lbl in labels:
-                slot = classify_slot(day, shift_by_label[lbl], data, weekend_dates)
-                window_points += slot.points
-                if slot.night_float:
-                    window_nf_points += slot.points
-        pool = [
-            p for p in roster
-            if any(_eligible(p, shift_by_label[lbl], data) for lbl in labels)
-        ]
-        pool_weight = sum(weights.get(p, 0.0) for p in pool)
-        if pool_weight <= 0:
-            continue
         for person in members:
-            if person not in pool:
+            person_labels = frozenset(
+                lbl for lbl in labels
+                if _eligible(person, shift_by_label[lbl], data)
+            )
+            if not person_labels:
                 continue  # cannot work these labels anyway
-            share = window_points * weights.get(person, 0.0) / pool_weight
-            nf_share = window_nf_points * weights.get(person, 0.0) / pool_weight
+            # Resolve the person's share label-by-label. A reduction may name
+            # both Junior and Senior shifts (or labels with different exemption
+            # pools); a single union pool would incorrectly make one role absorb
+            # the other role's work.
+            share = 0.0
+            for lbl in person_labels:
+                label_pool = [
+                    p for p in roster
+                    if _eligible(p, shift_by_label[lbl], data)
+                ]
+                label_pool_weight = sum(weights.get(p, 0.0) for p in label_pool)
+                if label_pool_weight <= 0:
+                    continue
+                label_points = sum(
+                    classify_slot(day, shift_by_label[lbl], data, weekend_dates).points
+                    for day in days
+                    if start <= day <= end and (day, lbl) not in reserved
+                )
+                share += (
+                    label_points
+                    * weights.get(person, 0.0)
+                    / label_pool_weight
+                )
             caps.append(ReductionCap(
                 person=person,
-                labels=labels,
+                labels=person_labels,
                 start=start,
                 end=end,
                 cap_points=red.factor * share,
                 reduce_total=(1.0 - red.factor) * share,
-                reduce_nf=(1.0 - red.factor) * nf_share,
+                reduce_nf=0.0,
                 factor=red.factor,
                 keep_total=red.keep_total,
             ))
-    return caps
+    # Exact duplicate import/UI rows must not add repeated constraints or
+    # repeated target relief. Preserve first-seen order for diagnostics.
+    return list(dict.fromkeys(caps))
+
+
+def reduction_target_relief(data: InputData) -> Dict[str, float]:
+    """Return overlap-normalised relief for ``keep_total=False`` reductions.
+
+    All hard caps remain active, so the tightest applicable cap wins. For target
+    relief, however, a regular ``(date, label)`` cell contributes at most once:
+    the strongest applicable reduction wins. Duplicate and partially
+    overlapping rows therefore cannot lower a resident's total target twice for
+    the same work.
+    """
+    caps = [cap for cap in reduction_caps(data) if not cap.keep_total]
+    if not caps:
+        return {}
+
+    from .closures import resolve_closures
+    from .night_float import resolve_night_float
+
+    nf_cells, _gaps, _leaves = resolve_night_float(data)
+    reserved = set(nf_cells) | resolve_closures(data)
+    weekend_dates = weekend_holiday_dates(data)
+    shift_by_label = {s.label: s for s in data.shifts}
+    days = block_days(data) if data.end_date >= data.start_date else []
+
+    weights = availability_weights(data)
+    roster = list(data.juniors) + list(data.seniors)
+    atom_relief: Dict[Tuple[str, date, str], float] = {}
+    for cap in caps:
+        if cap.reduce_total <= 0:
+            continue
+        for label in cap.labels:
+            label_pool = [
+                person for person in roster
+                if _eligible(person, shift_by_label[label], data)
+            ]
+            label_pool_weight = sum(weights.get(person, 0.0) for person in label_pool)
+            if label_pool_weight <= 0:
+                continue
+            share_fraction = weights.get(cap.person, 0.0) / label_pool_weight
+            for day in days:
+                if not cap.start <= day <= cap.end or (day, label) in reserved:
+                    continue
+                points = classify_slot(
+                    day, shift_by_label[label], data, weekend_dates
+                ).points
+                relief = (1.0 - cap.factor) * share_fraction * points
+                key = (cap.person, day, label)
+                atom_relief[key] = max(atom_relief.get(key, 0.0), relief)
+
+    out: Dict[str, float] = {}
+    for (person, _day, _label), relief in atom_relief.items():
+        out[person] = out.get(person, 0.0) + relief
+    return out

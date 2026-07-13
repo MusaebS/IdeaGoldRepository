@@ -129,9 +129,9 @@ def block_adjustments(prior, data: InputData) -> Dict[str, Dict[str, float]]:
         p: {"penalty": 0.0, "excused_total": 0.0, "excused_weekend": 0.0}
         for p in participants
     }
-    n = len(participants)
-    if n == 0:
+    if not participants:
         return out
+    n = len(participants)
 
     for p, extra in (data.extra_points or {}).items():
         if p in out and extra > 0:
@@ -184,6 +184,53 @@ def block_adjustments(prior, data: InputData) -> Dict[str, Dict[str, float]]:
             if recv_weight > 0:
                 for r in receivers:
                     out[r]["excused_total"] -= shortfall * weights.get(r, 0.0) / recv_weight
+    # Re-resolve excusal credits inside the role pool that can actually absorb
+    # the work. The calculations above are retained for backward-readable audit
+    # history, but these role-aware values are authoritative: a junior excusal
+    # must never debit seniors who cannot work junior shifts (or vice versa).
+    for role, members in (
+        ("Junior", list(data.juniors)),
+        ("Senior", list(data.seniors)),
+    ):
+        if not members:
+            continue
+        role_slots = [s for s in slots if s.shift.role == role]
+        role_total = sum(s.points for s in role_slots)
+        role_weekend = sum(s.points for s in role_slots if s.weekend)
+        role_weight = sum(weights.get(p, 0.0) for p in members)
+        if role_weight <= 0:
+            continue
+        role_extra = sum(out[p]["penalty"] for p in members)
+        role_scale = (
+            (role_total - role_extra) / role_total
+            if role_total > 0 and 0 < role_extra < role_total
+            else 1.0
+        )
+        for p in members:
+            gap = 1.0 / len(members) - weights.get(p, 0.0) / role_weight
+            out[p]["excused_total"] = role_scale * role_total * gap
+            out[p]["excused_weekend"] = role_weekend * gap
+
+        fair = {
+            p: role_total * weights.get(p, 0.0) / role_weight
+            for p in members
+        }
+        excused = data.max_total_excused or {}
+        caps = data.max_total or {}
+        capped = [
+            p for p in members
+            if excused.get(p) and caps.get(p) is not None and caps[p] < fair[p]
+        ]
+        receivers = [p for p in members if p not in capped]
+        receiver_weight = sum(weights.get(p, 0.0) for p in receivers)
+        for p in capped:
+            shortfall = role_scale * (fair[p] - caps[p])
+            out[p]["excused_total"] += shortfall
+            if receiver_weight > 0:
+                for receiver in receivers:
+                    out[receiver]["excused_total"] -= (
+                        shortfall * weights.get(receiver, 0.0) / receiver_weight
+                    )
     return out
 
 

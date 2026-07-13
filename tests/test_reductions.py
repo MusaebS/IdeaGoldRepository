@@ -12,7 +12,15 @@ except Exception:  # pragma: no cover
     from model import optimiser as opt
     pd = opt.pd
 
-from model.data_models import InputData, LoadReduction, ShiftTemplate, normalized_reductions
+from model.data_models import (
+    InputData,
+    LoadReduction,
+    NightFloatAssignment,
+    NightFloatCoverage,
+    ShiftClosure,
+    ShiftTemplate,
+    normalized_reductions,
+)
 from model.ledger import update_ledger
 from model.optimiser import resolve_targets
 from model.reductions import reduction_caps
@@ -67,7 +75,7 @@ def test_reduction_caps_equal_weights():
     assert cap.person == "A" and cap.labels == frozenset({"N"})
     assert cap.cap_points == pytest.approx(1.5)
     assert cap.reduce_total == pytest.approx(1.5)
-    assert cap.reduce_nf == pytest.approx(1.5)
+    assert cap.reduce_nf == pytest.approx(0.0)
 
 
 def test_reduction_caps_availability_weighted_and_group_resolved():
@@ -111,6 +119,90 @@ def test_resolve_targets_reduction_on_uncovered_nf_label():
     assert resolved.target_night_float is None  # NF is no longer a balanced dimension
     assert resolved.target_total_map["A"] == pytest.approx(3.0)
     assert resolved.target_total_map["B"] == pytest.approx(15.0)
+
+
+def test_nf_fallback_reduction_uses_full_regular_role_pool():
+    # B is not NF-overlay eligible, but N has no overlay coverage and therefore
+    # falls back to a regular call open to every junior.
+    reduction = LoadReduction(
+        None, ("B",), ("N",), 0.0, date(2023, 1, 2), date(2023, 1, 7)
+    )
+    data = _nf_data(reductions=[reduction])
+    data.nf_juniors = ["A"]
+    cap = reduction_caps(data)[0]
+    assert cap.person == "B"
+    assert cap.reduce_total == pytest.approx(6.0)
+
+
+def test_overlapping_reductions_relieve_each_cell_only_once():
+    reductions = [
+        LoadReduction(None, ("A",), ("D",), 0.5,
+                      date(2023, 1, 2), date(2023, 1, 5)),
+        LoadReduction(None, ("A",), ("D",), 0.5,
+                      date(2023, 1, 4), date(2023, 1, 7)),
+    ]
+    resolved = resolve_targets(_data(reductions=reductions))
+    # A's base target is 3. Each of six distinct cells contributes 0.25 relief;
+    # Jan 4-5 are not double-counted.
+    assert resolved.target_total_map == pytest.approx({"A": 1.5, "B": 4.5})
+
+
+def test_mixed_role_reduction_uses_each_labels_eligible_role_pool():
+    data = InputData(
+        start_date=date(2023, 1, 2),
+        end_date=date(2023, 1, 3),
+        shifts=[
+            ShiftTemplate("J", "Junior", False, False, 1.0),
+            ShiftTemplate("S", "Senior", False, False, 3.0),
+        ],
+        juniors=["JA", "JB"],
+        seniors=["SA", "SB"],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[],
+        rotators=[],
+        min_gap=0,
+        reductions=[
+            LoadReduction(
+                None,
+                ("JA", "SA"),
+                ("J", "S"),
+                0.0,
+                date(2023, 1, 2),
+                date(2023, 1, 3),
+            )
+        ],
+    )
+
+    caps = {cap.person: cap for cap in reduction_caps(data)}
+    assert caps["JA"].labels == frozenset({"J"})
+    assert caps["JA"].reduce_total == pytest.approx(1.0)
+    assert caps["SA"].labels == frozenset({"S"})
+    assert caps["SA"].reduce_total == pytest.approx(3.0)
+
+    resolved = resolve_targets(data)
+    assert resolved.target_total_map == pytest.approx(
+        {"JA": 0.0, "JB": 2.0, "SA": 0.0, "SB": 6.0}
+    )
+
+
+def test_reduction_caps_exclude_nf_overlay_and_closed_cells():
+    data = _nf_data(
+        nf_coverage={"N": NightFloatCoverage("N", weekdays=tuple(range(7)))},
+        nf_assignments=[
+            NightFloatAssignment("A", date(2023, 1, 2), date(2023, 1, 3), ("N",), 0)
+        ],
+        closures=[ShiftClosure("N", date(2023, 1, 4), date(2023, 1, 4), ())],
+        reductions=[
+            LoadReduction(None, ("B",), ("N",), 0.0,
+                          date(2023, 1, 2), date(2023, 1, 7))
+        ],
+    )
+    cap = reduction_caps(data)[0]
+    # Three of six N cells are outside regular demand; the remaining 3 x 2
+    # points remain. A is also unavailable for two NF-duty days, so the shared
+    # availability weights are A:B = 4:6 and B's reducible share is 3.6.
+    assert cap.reduce_total == pytest.approx(3.6)
 
 
 def test_solver_respects_zero_and_partial_caps():

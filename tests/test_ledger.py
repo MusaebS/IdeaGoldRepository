@@ -435,6 +435,32 @@ def test_invariant_algebra_with_penalty_and_excusal_combined():
     assert updated["A"] == pytest.approx(updated["B"])
 
 
+def test_excusal_adjustments_do_not_cross_role_pools():
+    from model.data_models import Leave
+    from model.ledger import block_adjustments
+
+    data = InputData(
+        start_date=date(2023, 1, 1),
+        end_date=date(2023, 1, 6),
+        shifts=[
+            ShiftTemplate("J", "Junior", False, False, 1.0),
+            ShiftTemplate("S", "Senior", False, False, 1.0),
+        ],
+        juniors=["A", "B"],
+        seniors=["X", "Y"],
+        nf_juniors=[],
+        nf_seniors=[],
+        leaves=[Leave("A", date(2023, 1, 1), date(2023, 1, 3), False)],
+        rotators=[],
+        min_gap=0,
+    )
+    adjusted = block_adjustments(None, data)
+    assert adjusted["A"]["excused_total"] == pytest.approx(1.0)
+    assert adjusted["B"]["excused_total"] == pytest.approx(-1.0)
+    assert adjusted["X"]["excused_total"] == pytest.approx(0.0)
+    assert adjusted["Y"]["excused_total"] == pytest.approx(0.0)
+
+
 def test_adjustments_audit_written_and_stripped_on_load():
     from dataclasses import replace
 

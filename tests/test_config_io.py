@@ -241,3 +241,117 @@ def test_avoid_pairs_round_trip_and_legacy_none():
     assert restored.avoid_pairs == [("A", "C")]
 
     assert input_data_from_json(input_data_to_json(_sample_data())).avoid_pairs is None
+
+
+@pytest.mark.parametrize(
+    "field,value,match",
+    [
+        ("role", "Admin", "Junior.*Senior"),
+        ("points", -1, "non-negative finite"),
+    ],
+)
+def test_import_rejects_unsafe_shift_values(field, value, match):
+    raw = json.loads(input_data_to_json(_sample_data()))
+    raw["shifts"][0][field] = value
+    with pytest.raises(ValueError, match=match):
+        input_data_from_json(json.dumps(raw))
+
+
+def test_import_rejects_invalid_weekend_policy_values():
+    raw = json.loads(input_data_to_json(_sample_data()))
+    raw["weekend_multiplier"] = -2
+    with pytest.raises(ValueError, match="weekend_multiplier"):
+        input_data_from_json(json.dumps(raw))
+
+    raw["weekend_multiplier"] = 2
+    raw["weekend_days"] = [5, 9]
+    with pytest.raises(ValueError, match="invalid weekday 9"):
+        input_data_from_json(json.dumps(raw))
+
+
+def test_zero_point_shift_and_weekday_override_round_trip():
+    data = _sample_data()
+    data.shifts[0] = data.shifts[0].__class__(
+        data.shifts[0].label,
+        data.shifts[0].role,
+        data.shifts[0].night_float,
+        data.shifts[0].thu_weekend,
+        0.0,
+    )
+    data.weekday_points = {(data.shifts[0].label, 0): 0.0}
+    restored = input_data_from_json(input_data_to_json(data))
+    assert restored.shifts[0].points == 0.0
+    assert restored.weekday_points == data.weekday_points
+
+def test_import_does_not_silently_coerce_policy_types():
+    raw = json.loads(input_data_to_json(_sample_data()))
+    raw["shifts"][0]["night_float"] = "false"
+    with pytest.raises(ValueError, match="night_float.*true or false"):
+        input_data_from_json(json.dumps(raw))
+
+    raw = json.loads(input_data_to_json(_sample_data()))
+    raw["min_gap"] = 1.5
+    with pytest.raises(ValueError, match="min_gap must be an integer"):
+        input_data_from_json(json.dumps(raw))
+
+    raw = json.loads(input_data_to_json(_sample_data()))
+    raw["leaves"][0][3] = "false"
+    with pytest.raises(ValueError, match="compensated.*true or false"):
+        input_data_from_json(json.dumps(raw))
+
+    for invalid in (True, 5.5, "5"):
+        raw["weekend_days"] = [invalid]
+        with pytest.raises(ValueError, match="integers 0..6"):
+            input_data_from_json(json.dumps(raw))
+
+
+def test_display_rejects_bad_hex_and_reserved_or_duplicate_custom_columns():
+    from model.config_io import display_from_json
+
+    text = input_data_to_json(
+        _sample_data(),
+        display={
+            "palette": {"points": "#oops", "senior": "#AABBCC"},
+            "extra_cols": ["Date", "day", "NF", "Notes", " notes "],
+            "extra_vals": {"Date": {"x": "bad"}, "Notes": {"x": "ok"}},
+        },
+    )
+    assert display_from_json(text, reserved_columns=["Date", "Day", "NF"]) == {
+        "palette": {"senior": "#AABBCC"},
+        "extra_cols": ["Notes"],
+        "extra_vals": {"Notes": {"x": "ok"}},
+    }
+
+    # Values cannot smuggle a removed/reserved column back into display state.
+    no_safe_columns = input_data_to_json(
+        _sample_data(), display={"extra_cols": ["Date"], "extra_vals": {"Date": {"x": "bad"}}}
+    )
+    assert display_from_json(no_safe_columns, reserved_columns=["Date"]) == {
+        "extra_cols": [],
+        "extra_vals": {},
+    }
+
+
+def test_legacy_noop_fields_emit_compatibility_warnings():
+    from model.config_io import config_compatibility_warnings
+
+    data = replace(_sample_data(), max_nights={"A": 3}, nf_block_length=7)
+    warnings = config_compatibility_warnings(data)
+    assert any("max_nights" in warning for warning in warnings)
+    assert any("nf_block_length" in warning for warning in warnings)
+
+
+def test_nf_coverage_date_exceptions_round_trip():
+    from model.data_models import NightFloatCoverage
+
+    data = _sample_data()
+    data.nf_coverage = {
+        "NF": NightFloatCoverage(
+            "NF",
+            (0, 1),
+            (date(2023, 1, 5),),
+            (date(2023, 1, 9),),
+        )
+    }
+    restored = input_data_from_json(input_data_to_json(data))
+    assert restored.nf_coverage == data.nf_coverage

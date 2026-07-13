@@ -73,5 +73,12 @@ def test_non_bytes_upload_is_rejected_without_mutating_state():
 
     with pytest.raises(TypeError, match="must return bytes-like data"):
         consume_upload_once(FakeUpload("text"), "signature", state=state)
-
     assert state == {}
+
+
+def test_force_intentionally_reloads_the_same_upload():
+    state = {}
+    upload = FakeUpload(b"same file")
+    assert consume_upload_once(upload, "signature", state=state) == b"same file"
+    assert consume_upload_once(upload, "signature", state=state) is None
+    assert consume_upload_once(upload, "signature", state=state, force=True) == b"same file"

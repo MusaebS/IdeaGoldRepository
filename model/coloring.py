@@ -8,12 +8,16 @@ slots are always flagged red. A ``palette`` lets the user recolour each role.
 from __future__ import annotations
 
 import colorsys
+import re
 from typing import Dict, Mapping, Tuple
 
 from .data_models import InputData
 from .utils import effective_points, is_weekend, weekend_holiday_dates
 
-__all__ = ["COLOR_MODES", "DEFAULT_PALETTE", "schedule_cell_colors", "theme_palette"]
+__all__ = [
+    "COLOR_MODES", "DEFAULT_PALETTE", "is_hex_color", "schedule_cell_colors",
+    "theme_palette",
+]
 
 # UI label -> internal mode.
 COLOR_MODES = {
@@ -33,8 +37,17 @@ DEFAULT_PALETTE = {
     "unfilled": "#ffcccc",   # red
 }
 
+_HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def is_hex_color(value: object) -> bool:
+    """Whether ``value`` is a complete six-digit CSS hex colour."""
+    return isinstance(value, str) and _HEX_COLOR.fullmatch(value) is not None
+
 
 def _hex_to_rgb(hexstr: str) -> Tuple[int, int, int]:
+    if not is_hex_color(hexstr):
+        raise ValueError(f"Invalid colour {hexstr!r}; expected #RRGGBB")
     h = hexstr.lstrip("#")
     return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
@@ -85,7 +98,7 @@ def schedule_cell_colors(
     """
     pal = dict(DEFAULT_PALETTE)
     if palette:
-        pal.update({k: v for k, v in palette.items() if v})
+        pal.update({k: v for k, v in palette.items() if k in pal and is_hex_color(v)})
     weekend_hue = _hex_to_rgb(pal["weekend"])
     point_hue = _hex_to_rgb(pal["points"])
     senior_hue = _hex_to_rgb(pal["senior"])

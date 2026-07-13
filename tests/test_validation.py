@@ -223,6 +223,23 @@ def test_negative_extra_points_rejected():
     assert any("cannot be negative" in i for i in validate_input(data))
 
 
+def test_nonfinite_and_out_of_range_point_policy_rejected():
+    data = _data(
+        shifts=[
+            ShiftTemplate("Bad", "Admin", False, False, -1.0),
+        ],
+        weekend_multiplier=float("nan"),
+        weekend_days=[5, 9],
+        weekday_points={("Bad", 1): float("inf")},
+    )
+    issues = validate_input(data)
+    assert any("invalid role 'Admin'" in issue for issue in issues)
+    assert any("finite non-negative" in issue for issue in issues)
+    assert any("Weekend point multiplier" in issue for issue in issues)
+    assert any("Weekend day 9" in issue for issue in issues)
+    assert any("Weekday point override" in issue for issue in issues)
+
+
 def test_warns_extra_points_exceed_cap():
     from model.validation import config_warnings
     data = _data(extra_points={"A": 5.0}, max_total={"A": 3.0})
@@ -265,6 +282,23 @@ def _grp_data(**kw):
 def test_validate_group_factor_out_of_range():
     issues = validate_input(_grp_data(group_factors={"R2": 2.5}))
     assert any("load factor must be > 0" in i for i in issues)
+
+
+def test_malformed_numeric_policies_return_issues_instead_of_crashing():
+    issues = validate_input(_grp_data(group_factors={"R2": "bad"}))
+    assert any("load factor" in issue and "bad" in issue for issue in issues)
+
+    issues = validate_input(_grp_data(perks=[("A", "bad")]))
+    assert any("Perk entries" in issue for issue in issues)
+
+    issues = validate_input(
+        _grp_data(
+            reductions=[
+                (None, ("A",), ("S",), "bad", date(2023, 1, 2), date(2023, 1, 3))
+            ]
+        )
+    )
+    assert any("Reduction entries" in issue for issue in issues)
     issues = validate_input(_grp_data(group_factors={"R2": 0.0}))
     assert any("load factor must be > 0" in i for i in issues)
 
@@ -337,6 +371,43 @@ def test_validate_schedule_flags_exempt_assignment():
     ])
     issues = validate_schedule(df, data)
     assert any("exempt from this shift" in i for i in issues)
+
+
+def test_validate_schedule_uses_authoritative_nf_cells_and_rest():
+    from model.data_models import NightFloatAssignment, NightFloatCoverage
+
+    data = _data(
+        shifts=[
+            ShiftTemplate("D", "Junior", False, False, 1.0),
+            ShiftTemplate("NF", "Junior", True, False, 2.0),
+        ],
+        nf_juniors=["A"],
+        nf_coverage={"NF": NightFloatCoverage("NF", weekdays=tuple(range(7)))},
+        nf_assignments=[
+            NightFloatAssignment("A", date(2023, 1, 1), date(2023, 1, 1), (), 0)
+        ],
+    )
+    df = pd.DataFrame([{"Date": date(2023, 1, 1), "D": "A", "NF": "Unfilled"}])
+    # Simulate stale metadata surviving a manual edit of the visible NF cell.
+    df.attrs["nf_cells"] = {"2023-01-01": {"NF": "A"}}
+    issues = validate_schedule(df, data)
+    assert any("must be covered by A" in issue for issue in issues)
+    assert any("night-float duty/rest" in issue for issue in issues)
+
+
+def test_validate_schedule_checks_total_cap_and_extra_floor():
+    data = _data(
+        max_total={"A": 1.0},
+        extra_points={"B": 1.0},
+    )
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 1), "D": "A"},
+        {"Date": date(2023, 1, 2), "D": "A"},
+    ])
+    df.attrs["target_total_map"] = {"A": 1.0, "B": 2.0}
+    issues = validate_schedule(df, data)
+    assert any("max-total cap" in issue for issue in issues)
+    assert any("mandatory extra-points floor" in issue for issue in issues)
 
 
 def test_validate_named_groups_rules():

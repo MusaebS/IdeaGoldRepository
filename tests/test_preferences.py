@@ -38,21 +38,21 @@ def _data(**over):
 
 def test_objective_weights_k_gating_and_domination():
     # The five fairness weights keep the legacy ladder when no preferences.
-    w_maxdev, w_total, w_weekend, w_nights, w_label, w_unfilled = objective_weights(
+    w_maxdev, w_total, w_weekend, w_guard, w_label, w_unfilled = objective_weights(
         28, 10, False, max_slot_points_scaled=200
     )
-    assert (w_maxdev, w_total, w_weekend, w_nights, w_label) == (
-        10**9, 10**6, 10**3, 10**2, 10,
+    assert (w_maxdev, w_total, w_weekend, w_guard, w_label) == (
+        10**11, 10**8, 10**3, 10**4, 10,
     )
     # Coverage dominates fairness: one unfilled slot outweighs the largest
     # deviation swing it could buy (its points × the summed deviation weights).
-    fair_sum = w_maxdev + w_total + w_weekend + w_nights + w_label
+    fair_sum = w_maxdev + w_total + w_weekend + w_guard + w_label
     assert w_unfilled == 200 * fair_sum + 1 > fair_sum
     # With preferences the fairness ladder is rescaled by K = 2·D·S + 1 so the
     # preference reward (in [-2·D·S, 0]) can never buy a scaled deviation point.
     k = 2 * 28 * 10 + 1
     pref = objective_weights(28, 10, True, max_slot_points_scaled=1)
-    assert pref[:5] == (10**9 * k, 10**6 * k, 10**3 * k, 10**2 * k, 10 * k)
+    assert pref[:5] == (10**11 * k, 10**8 * k, 10**3 * k, 10**4 * k, 10 * k)
     assert 10 * k > 2 * 28 * 10
 
 

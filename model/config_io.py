@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 from datetime import date
 from typing import List
 
@@ -25,7 +27,162 @@ from .data_models import (
     normalized_rotators,
 )
 
-__all__ = ["input_data_to_json", "input_data_from_json", "display_from_json"]
+__all__ = [
+    "input_data_to_json",
+    "input_data_from_json",
+    "display_from_json",
+    "config_compatibility_warnings",
+]
+
+
+_HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _finite_number(
+    value, field: str, *, positive: bool = False, nonnegative: bool = False
+) -> float:
+    """Parse a finite JSON number with a useful configuration error."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a number") from exc
+    if (
+        not math.isfinite(parsed)
+        or (positive and parsed <= 0)
+        or (nonnegative and parsed < 0)
+    ):
+        requirement = (
+            "a positive finite number"
+            if positive
+            else "a non-negative finite number" if nonnegative else "finite"
+        )
+        raise ValueError(f"{field} must be {requirement}")
+    return parsed
+
+
+def _integer(value, field: str, *, minimum: int | None = None) -> int:
+    """Parse an integer without silently truncating floats or accepting bools."""
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be an integer")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{field} must be an integer") from exc
+    if not math.isfinite(parsed) or not parsed.is_integer():
+        raise ValueError(f"{field} must be an integer")
+    integer = int(parsed)
+    if minimum is not None and integer < minimum:
+        raise ValueError(f"{field} must be at least {minimum}")
+    return integer
+
+
+def _require_bool(value, field: str) -> None:
+    if not isinstance(value, bool):
+        raise ValueError(f"{field} must be true or false")
+
+
+def _validate_raw_config(raw) -> None:
+    """Reject unsafe scalar/schema values before building ``InputData``.
+
+    Cross-field operational validation remains in ``model.validation`` so an
+    incomplete but structurally safe file can still be loaded and repaired in
+    the UI. This boundary catches values that otherwise crash much later.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("Config root must be a JSON object")
+    shifts = raw.get("shifts", [])
+    if not isinstance(shifts, list):
+        raise ValueError("shifts must be a list")
+    seen_labels: set[str] = set()
+    for index, shift in enumerate(shifts):
+        if not isinstance(shift, dict):
+            raise ValueError(f"shifts[{index}] must be an object")
+        label = str(shift.get("label", "")).strip()
+        if not label:
+            raise ValueError(f"shifts[{index}].label must not be empty")
+        key = label.casefold()
+        if key in seen_labels:
+            raise ValueError(f"Duplicate shift label '{label}'")
+        seen_labels.add(key)
+        role = shift.get("role")
+        if role not in ("Junior", "Senior"):
+            raise ValueError(
+                f"shifts[{index}].role must be 'Junior' or 'Senior', not {role!r}"
+            )
+        _finite_number(
+            shift.get("points", 1.0),
+            f"shifts[{index}].points",
+            nonnegative=True,
+        )
+        for bool_field in ("night_float", "thu_weekend"):
+            if bool_field in shift:
+                _require_bool(shift[bool_field], f"shifts[{index}].{bool_field}")
+
+    _finite_number(raw.get("weekend_multiplier", 1.0), "weekend_multiplier", positive=True)
+    weekend_days = raw.get("weekend_days")
+    if weekend_days is not None:
+        if not isinstance(weekend_days, list):
+            raise ValueError("weekend_days must be a list")
+        parsed_days = []
+        for value in weekend_days:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError("weekend_days values must be integers 0..6")
+            day = value
+            if not 0 <= day <= 6:
+                raise ValueError(f"weekend_days contains invalid weekday {day}; expected 0..6")
+            parsed_days.append(day)
+        if len(set(parsed_days)) != len(parsed_days):
+            raise ValueError("weekend_days must not contain duplicates")
+
+    _integer(raw.get("min_gap", 1), "min_gap", minimum=0)
+    for index, entry in enumerate(raw.get("weekday_points") or []):
+        if not isinstance(entry, (list, tuple)) or len(entry) != 3:
+            raise ValueError(f"weekday_points[{index}] must be [shift, weekday, points]")
+        weekday = _integer(entry[1], f"weekday_points[{index}].weekday")
+        if not 0 <= weekday <= 6:
+            raise ValueError(f"weekday_points[{index}] has invalid weekday {weekday}")
+        _finite_number(
+            entry[2], f"weekday_points[{index}].points", nonnegative=True
+        )
+
+    for name, value in (raw.get("max_total_excused") or {}).items():
+        _require_bool(value, f"max_total_excused[{name!r}]")
+    for index, entry in enumerate(raw.get("leaves") or []):
+        if not isinstance(entry, (list, tuple)) or len(entry) not in (3, 4):
+            raise ValueError(f"leaves[{index}] must have 3 or 4 values")
+        if len(entry) == 4:
+            _require_bool(entry[3], f"leaves[{index}].compensated")
+    for index, entry in enumerate(raw.get("holidays") or []):
+        if not isinstance(entry, (list, tuple)) or len(entry) != 3:
+            raise ValueError(f"holidays[{index}] must have 3 values")
+        _require_bool(entry[2], f"holidays[{index}].counts_as_weekend")
+    for index, entry in enumerate(raw.get("blackouts") or []):
+        if not isinstance(entry, (list, tuple)) or len(entry) not in (4, 5, 6):
+            raise ValueError(f"blackouts[{index}] must have 4 to 6 values")
+        for position, field in ((4, "night_before"), (5, "compensated")):
+            if len(entry) > position:
+                _require_bool(entry[position], f"blackouts[{index}].{field}")
+    for index, entry in enumerate(raw.get("reductions") or []):
+        if not isinstance(entry, (list, tuple)) or len(entry) not in (6, 7):
+            raise ValueError(f"reductions[{index}] must have 6 or 7 values")
+        if len(entry) == 7:
+            _require_bool(entry[6], f"reductions[{index}].keep_total")
+
+
+def config_compatibility_warnings(data: InputData) -> list[str]:
+    """Warnings for legacy fields retained in JSON but no longer operational."""
+    warnings: list[str] = []
+    if data.max_nights:
+        warnings.append(
+            "Legacy 'max_nights' values were loaded but are not used by the "
+            "night-float overlay. Configure NF coverage/assignments instead."
+        )
+    if data.nf_block_length != 5:
+        warnings.append(
+            "Legacy 'nf_block_length' was loaded but is not used by the current "
+            "date-range night-float overlay."
+        )
+    return warnings
 
 
 def _windows_to_json(windows) -> List[list]:
@@ -191,7 +348,7 @@ def input_data_to_json(data: InputData, display: dict | None = None) -> str:
     return json.dumps(payload, indent=2)
 
 
-def display_from_json(text: str) -> dict | None:
+def display_from_json(text: str, reserved_columns=()) -> dict | None:
     """Extract and sanitise the cosmetic ``"display"`` section of a config.
 
     Returns ``None`` for configs without one (or anything malformed) — the
@@ -212,19 +369,30 @@ def display_from_json(text: str) -> dict | None:
         cleaned = {
             str(k): str(v)
             for k, v in palette.items()
-            if k in DEFAULT_PALETTE and isinstance(v, str) and v.startswith("#")
+            if k in DEFAULT_PALETTE and isinstance(v, str) and _HEX_COLOR.fullmatch(v)
         }
         if cleaned:
             out["palette"] = cleaned
     cols = display.get("extra_cols")
     if isinstance(cols, list):
-        out["extra_cols"] = [str(c) for c in cols]
+        reserved = {str(c).strip().casefold() for c in reserved_columns}
+        cleaned_cols = []
+        seen = set(reserved)
+        for value in cols:
+            col = str(value).strip()
+            key = col.casefold()
+            if not col or key in seen:
+                continue
+            seen.add(key)
+            cleaned_cols.append(col)
+        out["extra_cols"] = cleaned_cols
     vals = display.get("extra_vals")
     if isinstance(vals, dict):
+        allowed = set(out.get("extra_cols", ()))
         out["extra_vals"] = {
             str(col): {str(d): str(v) for d, v in per_day.items()}
             for col, per_day in vals.items()
-            if isinstance(per_day, dict)
+            if isinstance(per_day, dict) and str(col) in allowed
         }
     order = display.get("col_order")
     if isinstance(order, list):
@@ -236,12 +404,13 @@ def input_data_from_json(text: str) -> InputData:
     """Rebuild an :class:`InputData` from a JSON string produced by
     :func:`input_data_to_json`."""
     raw = json.loads(text)
+    _validate_raw_config(raw)
     shifts = [
         ShiftTemplate(
             label=s["label"],
             role=s["role"],
-            night_float=bool(s["night_float"]),
-            thu_weekend=bool(s["thu_weekend"]),
+            night_float=bool(s.get("night_float", False)),
+            thu_weekend=bool(s.get("thu_weekend", False)),
             points=float(s.get("points", 1.0)),
         )
         for s in raw.get("shifts", [])
