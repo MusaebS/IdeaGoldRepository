@@ -150,6 +150,35 @@ from .utils import weekend_holiday_dates
 from .weights import availability_weights
 
 
+def _make_improvement_tracker():
+    """A CP-SAT solution callback recording the wall time of the last improving
+    incumbent.
+
+    This lets the caller tell a schedule that was still improving when the time
+    limit hit (raise the limit) from one that converged long before it (more
+    time won't help). Returns ``None`` when the backend has no callback support
+    (the lightweight test stub), in which case the caller solves without one.
+    """
+    base = getattr(cp_model, "CpSolverSolutionCallback", None)
+    if base is None:
+        return None
+
+    class _ImprovementTracker(base):  # type: ignore[misc,valid-type]
+        def __init__(self) -> None:
+            super().__init__()
+            self.solution_count = 0
+            self.last_improvement_sec: float | None = None
+
+        def on_solution_callback(self) -> None:
+            self.solution_count += 1
+            try:
+                self.last_improvement_sec = float(self.WallTime())
+            except (AttributeError, TypeError, ValueError):  # pragma: no cover
+                pass
+
+    return _ImprovementTracker()
+
+
 def objective_weights(
     n_days: int, n_shifts: int, has_prefs: bool, max_slot_points_scaled: int = 1
 ) -> Tuple[int, int, int, int, int, int]:
@@ -779,8 +808,12 @@ class SchedulerSolver:
         except (AttributeError, ValueError, TypeError):
             pass
         solved_with_response = True
+        tracker = _make_improvement_tracker()
         try:
-            status = solver.Solve(self.model)
+            if tracker is not None:
+                status = solver.Solve(self.model, tracker)
+            else:
+                status = solver.Solve(self.model)
         except AttributeError:
             solved_with_response = False
             status = solver.OPTIMAL
@@ -851,15 +884,19 @@ class SchedulerSolver:
         # the stub fallback above sets variable values by hand.
         status_name = None
         wall_time = None
+        last_improvement = None
         if solved_with_response:
             try:
                 status_name = getattr(solver, "StatusName", lambda s: str(s))(status)
                 wall_time = getattr(solver, "WallTime", lambda: None)()
             except (AttributeError, TypeError, ValueError):  # pragma: no cover
                 status_name = None
+            if tracker is not None:
+                last_improvement = getattr(tracker, "last_improvement_sec", None)
         try:
             df.attrs["solver_status"] = status_name
             df.attrs["wall_time_sec"] = wall_time
+            df.attrs["last_improvement_sec"] = last_improvement
         except (AttributeError, TypeError):  # pragma: no cover - stub frames
             pass
         return df

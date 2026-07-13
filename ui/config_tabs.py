@@ -21,6 +21,7 @@ from model.config_io import (
     input_data_to_json,
     input_data_from_json,
 )
+from model.benchmark import run_host_benchmark, suggested_time_limit
 from model.coloring import DEFAULT_PALETTE
 from model.data_models import (
     InputData,
@@ -855,6 +856,55 @@ def render_application() -> None:
         render_diagnostics()
 
 
+def _render_time_suggestion(data) -> None:
+    """Advisory helper: benchmark this server once and suggest a starting time
+    limit for the current roster size.
+
+    The solver still uses whatever the time-limit box above says — this only
+    helps the user choose that number instead of guessing (their words: "try
+    400, sometimes not enough, then 500"). Size alone can't predict solve time,
+    so the estimate is explicitly rough; the post-solve verdict is the real
+    "was that enough?" signal.
+    """
+    num_people = len(data.juniors) + len(data.seniors)
+    num_days = (data.end_date - data.start_date).days + 1
+    num_shifts = len(data.shifts)
+    with st.expander("⏱️ Not sure how many seconds? Estimate for this server", expanded=False):
+        bench = st.session_state.get(Keys.HOST_BENCHMARK)
+        if st.button("Measure this server's speed", key="bench_run"):
+            with st.spinner("Timing a small reference solve on this server…"):
+                bench = run_host_benchmark()
+            st.session_state[Keys.HOST_BENCHMARK] = bench
+        ratio = getattr(bench, "speed_ratio", None)
+        if bench is not None:
+            if bench.speed_ratio >= 1:
+                speed = f"about {bench.speed_ratio:.1f}× a reference server"
+            else:
+                speed = f"about {1 / bench.speed_ratio:.1f}× slower than a reference server"
+            st.caption(f"This server is {speed} (reference solve: {bench.wall_time_sec:.1f}s).")
+        else:
+            st.caption(
+                "Server speed not measured yet — the estimate below assumes an average "
+                "server. Measure it for a number tuned to this host."
+            )
+        suggestion = suggested_time_limit(num_people, num_days, num_shifts, ratio)
+        st.markdown(
+            f"**Suggested starting limit for this roster "
+            f"(~{num_people} people × {num_days} days × {num_shifts} shifts): "
+            f"≈ {suggestion}s.**"
+        )
+        st.caption(
+            "A rough starting point only: how long a roster really needs depends on how "
+            "tightly constrained it is, not just its size. After you generate, the result "
+            "tells you whether more time would actually have helped."
+        )
+        if st.button(f"Use {suggestion}s as the time limit", key="bench_apply"):
+            pending = dict(st.session_state.get(Keys.PENDING_STATE) or {})
+            pending[Keys.TIME_LIMIT] = suggestion
+            st.session_state[Keys.PENDING_STATE] = pending
+            st.rerun()
+
+
 def render_generate_and_solve(session_config, carryover_ledger) -> None:
     """The Generate button, validation, solve, and relax-and-retry recovery."""
     st.divider()
@@ -869,6 +919,7 @@ def render_generate_and_solve(session_config, carryover_ledger) -> None:
         "the solver hit its limit and the spread looks uneven, try 300 s or "
         "more. Longer limits never make the schedule worse, only slower.",
     )
+    _render_time_suggestion(session_config)
     generate_clicked = st.button(
         "⚙️ Generate schedule", type="primary", width="stretch"
     )

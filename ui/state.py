@@ -31,6 +31,7 @@ class Keys:
     WEEKEND_LABELS = "weekend_labels"
     WEEKEND_MULTIPLIER = "weekend_multiplier"
     TIME_LIMIT = "solver_time_limit"     # seconds; 0 = auto (env/size based)
+    HOST_BENCHMARK = "host_benchmark"    # cached BenchmarkResult for this server
     LEAVES = "leaves"
     ROTATORS = "rotators"
     CAPS = "caps"
@@ -111,6 +112,7 @@ def _defaults() -> dict:
         # way to keep weekend load even); old saved configs load as 1.0.
         Keys.WEEKEND_MULTIPLIER: 2.0,
         Keys.TIME_LIMIT: 0,
+        Keys.HOST_BENCHMARK: None,
         Keys.LEAVES: [],
         Keys.ROTATORS: [],
         Keys.CAPS: {},
