@@ -88,6 +88,29 @@ def test_generate_with_empty_config_shows_validation_errors():
     assert any("Fix the configuration" in e.value for e in at.error)
 
 
+def test_chunked_solve_runs_multiple_segments_and_finalizes(monkeypatch):
+    # Force the multi-segment path (tiny chunk, tiny single-solve threshold) and
+    # a target that needs several segments; confirm it terminates with a result
+    # rather than looping or stalling.
+    import ui.config_tabs as ct
+    monkeypatch.setenv("ENV", "dev")
+    monkeypatch.setattr(ct, "_SOLVE_CHUNK_SEC", 1.0)
+    monkeypatch.setattr(ct, "_SOLVE_SINGLE_MAX", 0.5)
+    at = _at()
+    at.run()
+    at.checkbox(key="test_mode").set_value(True)
+    at.run()
+    at.number_input(key="solver_time_limit").set_value(3)  # ~3 one-second segments
+    at.run()
+    generate = [b for b in at.button if "Generate schedule" in b.label]
+    generate[0].click()
+    at.run()
+    assert not at.exception
+    assert at.session_state["result_df"] is not None
+    assert at.session_state["solve_job"] is None  # finished, not stuck mid-run
+    assert any("Schedule generated" in s.value for s in at.success)
+
+
 def test_test_mode_generate_produces_schedule(monkeypatch):
     # dev budget (10s base, size-scaled to ~30s for the 45x28x10 demo roster)
     # reliably reaches FEASIBLE; test's 1s budget hits UNKNOWN.
