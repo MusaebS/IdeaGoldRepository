@@ -106,9 +106,14 @@ def test_chunked_solve_runs_multiple_segments_and_finalizes(monkeypatch):
     generate[0].click()
     at.run()
     assert not at.exception
-    assert at.session_state["result_df"] is not None
+    res = at.session_state["result_df"]
+    assert res is not None
     assert at.session_state["solve_job"] is None  # finished, not stuck mid-run
     assert any("Schedule generated" in s.value for s in at.success)
+    # Finalize rewrites the timings to describe the WHOLE run, not the last
+    # ~1s segment, so the results-tab verdict reasons about the full budget.
+    assert res.attrs["time_limit_sec"] == 3
+    assert res.attrs["wall_time_sec"] > 0
 
 
 def test_test_mode_generate_produces_schedule(monkeypatch):

@@ -825,7 +825,10 @@ class SchedulerSolver:
         person_index = {name: i for i, name in enumerate(self.people)}
         unfilled_idx = len(self.people) - 1
         for row in records:
-            d_idx = day_index.get(row.get("Date"))
+            day = row.get("Date")
+            if hasattr(day, "date"):
+                day = day.date()  # pandas Timestamp / datetime -> plain date key
+            d_idx = day_index.get(day)
             if d_idx is None:
                 continue
             for label, s_idx in label_index.items():

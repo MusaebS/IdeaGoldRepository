@@ -32,7 +32,7 @@ from model.data_models import (
     normalized_reductions,
 )
 from model.demo_data import sample_shifts, sample_names
-from model.optimiser import build_schedule, compute_time_limit
+from model.optimiser import SolveProgress, build_schedule, compute_time_limit
 from model.validation import validate_input, config_warnings
 
 from ui.editors import (
@@ -912,6 +912,15 @@ def _render_time_suggestion(data) -> None:
 # were silently cancelling 1000s+ runs on shared hosting.
 _SOLVE_CHUNK_SEC = 25.0     # per-segment budget (short enough to survive reconnects)
 _SOLVE_SINGLE_MAX = 40.0    # at/below this total, just solve once (chunking adds overhead)
+_SOLVE_STALE_ROUNDS = 3     # consecutive no-improvement segments before stopping early
+
+
+def _attr(df, key):
+    """``df.attrs`` lookup that tolerates stub frames without ``attrs``."""
+    try:
+        return df.attrs.get(key)
+    except (AttributeError, TypeError):  # pragma: no cover - stub frames
+        return None
 
 
 def _solve_total_score(df, data) -> float:
@@ -935,9 +944,13 @@ def _begin_solve_job(*, data, env, ledger, label_carryover, target, warm_start_d
         "data": data, "env": env, "ledger": ledger,
         "label_carryover": label_carryover,
         "target": float(target) if target and target > 0 else 0.0,
-        "elapsed": 0.0,
+        "elapsed": 0.0,           # budget accounting (requested chunk seconds)
+        "chunk": _SOLVE_CHUNK_SEC,
+        "wall_total": 0.0,        # actual solver wall time across segments
+        "improvements": 0,        # better schedules found, summed over segments
         "best_df": warm_start_df,
         "best_score": None,
+        "last_improve_wall": None,
         "stale_rounds": 0,
         "cancel": False,
         "note": note,
@@ -952,6 +965,21 @@ def _finalize_solve_job(job) -> None:
     df = job.get("best_df")
     if df is None:
         return
+    # Rewrite the run timings to describe the WHOLE run rather than the last
+    # ~25s segment, so the results-tab verdict ("still improving — try Ns")
+    # reasons about the budget the user actually spent. A cancelled run stores
+    # its own elapsed time as the limit, making the verdict answer the honest
+    # question: was it still improving when the user stopped it?
+    if job.get("wall_total"):
+        try:
+            df.attrs["wall_time_sec"] = job["wall_total"]
+            df.attrs["time_limit_sec"] = (
+                job["wall_total"] if job.get("cancel")
+                else (job.get("target") or job["wall_total"])
+            )
+            df.attrs["last_improvement_sec"] = job.get("last_improve_wall")
+        except (AttributeError, TypeError):  # pragma: no cover - stub frames
+            pass
     set_result(df, job["data"], job["ledger"])
     shift_cols = [c for c in df.columns if c not in ("Date", "Day")]
     unfilled = int((df[shift_cols] == "Unfilled").sum().sum()) if shift_cols else 0
@@ -997,14 +1025,16 @@ def _advance_solve_job(job) -> None:
     remaining = (target - elapsed) if target else _SOLVE_CHUNK_SEC
     if job.get("cancel") or (target and remaining <= 0.5):
         _finalize_solve_job(job)
-        return
+        st.rerun()  # show the summary / Generate controls right away
 
     # A short total solves in one segment; a long one is chunked so the page
-    # returns often enough to survive reconnects.
+    # returns often enough to survive reconnects. ``chunk`` can grow while the
+    # run has found no schedule yet (see the UNKNOWN branch below).
+    chunk = float(job.get("chunk") or _SOLVE_CHUNK_SEC)
     if target and target <= _SOLVE_SINGLE_MAX:
         this_chunk = target
     else:
-        this_chunk = min(_SOLVE_CHUNK_SEC, remaining) if target else _SOLVE_CHUNK_SEC
+        this_chunk = min(chunk, remaining) if target else chunk
 
     if job.get("note"):
         st.info(job["note"])
@@ -1014,6 +1044,9 @@ def _advance_solve_job(job) -> None:
         if target else f"Optimising… {elapsed:.0f}s"
     )
     st.progress(bar_frac, text=label)
+    found = int(job.get("improvements") or 0)
+    if found:
+        st.caption(f"Better schedules found so far: {found}")
     st.caption(
         "This runs in short bursts and picks up where it left off, so it keeps "
         "going even if the page reloads. Leave this tab open."
@@ -1023,16 +1056,41 @@ def _advance_solve_job(job) -> None:
         st.session_state[Keys.SOLVE_JOB] = job
         st.rerun()
 
+    progress_sink = SolveProgress()
     try:
         df = build_schedule(
             data, env=job["env"], ledger=job["ledger"],
             label_carryover=job["label_carryover"],
             time_limit_sec=this_chunk, warm_start_df=job.get("best_df"),
+            progress=progress_sink,
         )
     except RuntimeError as exc:
+        if "UNKNOWN" in str(exc):
+            # The window closed before this segment produced a schedule. With a
+            # best-so-far in hand that only means "no improvement this round";
+            # without one, widen the next window instead of aborting a run that
+            # still has budget — a single long solve would simply have kept
+            # searching, and the chunked runner must not be weaker than that.
+            job["elapsed"] = elapsed + this_chunk
+            job["wall_total"] = job.get("wall_total", 0.0) + this_chunk
+            out_of_budget = bool(target) and job["elapsed"] >= target - 0.5
+            if job.get("best_df") is not None:
+                job["stale_rounds"] = job.get("stale_rounds", 0) + 1
+                if out_of_budget or job["stale_rounds"] >= _SOLVE_STALE_ROUNDS:
+                    _finalize_solve_job(job)
+                else:
+                    st.session_state[Keys.SOLVE_JOB] = job
+                st.rerun()
+            if not out_of_budget:
+                job["chunk"] = min(chunk * 2, 300.0)
+                st.session_state[Keys.SOLVE_JOB] = job
+                st.rerun()
         st.session_state[Keys.SOLVE_JOB] = None
         st.error(str(exc))
-        if data.min_gap > 0 and job.get("best_df") is None:
+        if job.get("best_df") is not None:
+            _finalize_solve_job(job)  # never discard schedules already found
+            return
+        if data.min_gap > 0:
             st.caption("No feasible schedule — relax a constraint and try again:")
             if st.button(f"Retry with min_gap {data.min_gap - 1}"):
                 st.session_state[Keys.RETRY_CONFIG] = (
@@ -1045,25 +1103,50 @@ def _advance_solve_job(job) -> None:
     except Exception as exc:  # noqa: BLE001
         st.session_state[Keys.SOLVE_JOB] = None
         st.error(str(exc))
+        if job.get("best_df") is not None:
+            _finalize_solve_job(job)  # never discard schedules already found
         return
 
-    job["best_df"] = df
+    seg_wall = _attr(df, "wall_time_sec")
+    wall_before = job.get("wall_total", 0.0)
+    job["wall_total"] = wall_before + float(seg_wall or this_chunk)
     job["elapsed"] = elapsed + this_chunk
-    # Track whether extra segments still help; stop a long run early once a few
-    # rounds bring no improvement (it has settled — more time won't help). The
-    # solver's own objective (lower = fairer, covers every fairness term) is the
-    # accurate signal; the range proxy is only a fallback for the stub solver.
-    score = df.attrs.get("objective")
+    job["improvements"] = int(job.get("improvements") or 0) + int(
+        getattr(progress_sink, "solution_count", 0) or 0
+    )
+
+    # Keep the fairest schedule seen so far, and stop a long run early once a
+    # few segments bring no improvement (it has settled — more time won't
+    # help). The solver's own objective (lower = fairer, covering every
+    # fairness tier) compares segments exactly. The first segment of a
+    # warm-started continue is judged with the fairness proxy instead — an
+    # edited starting schedule carries no trustworthy stored objective — so a
+    # segment that came back worse (possible only when the warm-start hint
+    # could not be applied) never overwrites a better schedule.
+    status_name = _attr(df, "solver_status")
+    score = _attr(df, "objective")
     if score is None:
         score = _solve_total_score(df, data)
     prev = job.get("best_score")
-    if prev is not None and score >= prev - 1e-9:
-        job["stale_rounds"] = job.get("stale_rounds", 0) + 1
+    if prev is None:
+        baseline = job.get("best_df")
+        improved = baseline is None or (
+            _solve_total_score(df, data) <= _solve_total_score(baseline, data)
+        )
+        take = improved
     else:
-        job["stale_rounds"] = 0
-    job["best_score"] = min(score, prev) if prev is not None else score
+        improved = score < prev - 1e-9
+        take = improved or (status_name == "OPTIMAL" and score <= prev + 1e-9)
+    if take:
+        job["best_df"] = df
+        job["best_score"] = score
+        within = _attr(df, "last_improvement_sec")
+        job["last_improve_wall"] = wall_before + float(
+            within if within is not None else (seg_wall or this_chunk)
+        )
+    job["stale_rounds"] = 0 if improved else job.get("stale_rounds", 0) + 1
 
-    converged = df.attrs.get("solver_status") == "OPTIMAL" or job["stale_rounds"] >= 3
+    converged = status_name == "OPTIMAL" or job["stale_rounds"] >= _SOLVE_STALE_ROUNDS
     if converged or (target and job["elapsed"] >= target - 0.5):
         _finalize_solve_job(job)
     else:
