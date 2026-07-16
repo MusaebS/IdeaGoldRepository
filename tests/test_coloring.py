@@ -89,6 +89,57 @@ def test_role_mode_distinguishes_senior_from_junior():
     assert colors[(1, "N")] == senior
 
 
+def test_role_weekend_3_uses_three_independent_colours():
+    # Saturday (weekend) and Monday (weekday), both roles filled on each.
+    shifts = [
+        ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="N", role="Senior", night_float=False, thu_weekend=False, points=1.0),
+    ]
+    data = InputData(
+        start_date=date(2023, 1, 7), end_date=date(2023, 1, 9), shifts=shifts,
+        juniors=["Alice"], seniors=["Bob"], nf_juniors=[], nf_seniors=[],
+        leaves=[], rotators=[], min_gap=0,
+    )
+    df = pd.DataFrame([
+        {"Date": date(2023, 1, 7), "Day": "Saturday", "D": "Alice", "N": "Bob"},  # weekend
+        {"Date": date(2023, 1, 9), "Day": "Monday", "D": "Alice", "N": "Bob"},    # weekday
+    ])
+    colors = schedule_cell_colors(df, data, "role_weekend_3")
+    junior_weekday = colors[(1, "D")]
+    senior_weekday = colors[(1, "N")]
+    weekend_j = colors[(0, "D")]
+    weekend_s = colors[(0, "N")]
+    assert junior_weekday != senior_weekday          # two role colours on weekdays
+    assert weekend_j == weekend_s                    # weekend colour ignores role
+    assert weekend_j not in (junior_weekday, senior_weekday)  # a distinct third colour
+    # Each of the three is a palette picker.
+    custom = schedule_cell_colors(df, data, "role_weekend_3", palette={"weekend": "#ff0000"})
+    assert custom[(0, "D")] != weekend_j             # weekend recoloured
+    assert custom[(1, "N")] == senior_weekday        # senior unchanged
+
+
+def test_holiday_shaded_like_weekend_even_when_not_weekend_flagged():
+    shifts = [
+        ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="N", role="Senior", night_float=False, thu_weekend=False, points=1.0),
+    ]
+    # A Monday holiday carrying a bonus but NOT flagged as weekend-balance.
+    data = InputData(
+        start_date=date(2023, 1, 9), end_date=date(2023, 1, 9), shifts=shifts,
+        juniors=["Alice"], seniors=["Bob"], nf_juniors=[], nf_seniors=[],
+        leaves=[], rotators=[], min_gap=0,
+        holidays=[(date(2023, 1, 9), 1.0, False)],
+    )
+    df = pd.DataFrame([{"Date": date(2023, 1, 9), "Day": "Monday", "D": "Alice", "N": "Bob"}])
+    # In weekend-only mode a plain Monday would be unshaded; the holiday is shaded.
+    colors = schedule_cell_colors(df, data, "weekend")
+    assert (0, "N") in colors and colors[(0, "N")] != "#ffcccc"
+    # And in the 3-colour mode it takes the weekend colour, not a role colour.
+    three = schedule_cell_colors(df, data, "role_weekend_3")
+    weekend_only = schedule_cell_colors(df, data, "role_weekend_3", palette={"weekend": "#123456"})
+    assert three[(0, "N")] != weekend_only[(0, "N")]  # driven by the weekend picker
+
+
 def test_role_weekend_mode_juniors_paler_and_weekends_darker():
     df, data = _sample()
     # Force one shared hue so "paleness" reflects the blend ratio alone,
