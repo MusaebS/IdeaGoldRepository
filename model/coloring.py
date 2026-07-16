@@ -21,6 +21,7 @@ __all__ = [
 
 # UI label -> internal mode. The first entry is the on-screen default.
 COLOR_MODES = {
+    "Senior / Junior / Weekend": "role_weekend_3",
     "Role + weekend": "role_weekend",
     "Weekend + points": "auto",
     "Weekend only": "weekend",
@@ -108,6 +109,9 @@ def schedule_cell_colors(
 
     records = df.to_dict("records")
     weekend_dates = weekend_holiday_dates(data)
+    # Every holiday date (not only weekend-flagged ones): holidays carry more
+    # points, so they are shaded like weekends to flag that at a glance.
+    holiday_dates = {h[0] for h in (getattr(data, "holidays", None) or [])}
     max_pts = 1.0
     for row in records:
         for shift in data.shifts:
@@ -125,9 +129,21 @@ def schedule_cell_colors(
                 continue
             if mode == "none":
                 continue
-            weekend = is_weekend(day, shift, data.weekend_days, weekend_dates)
+            weekend = (
+                is_weekend(day, shift, data.weekend_days, weekend_dates)
+                or day in holiday_dates
+            )
             ratio = effective_points(day, shift, data) / max_pts
-            if mode == "role_weekend":
+            if mode == "role_weekend_3":
+                # Three independent colours: seniors, juniors, and one for every
+                # weekend/holiday shift (regardless of role). Each is a palette
+                # picker the user can recolour.
+                if weekend:
+                    colors[(i, shift.label)] = _blend(weekend_hue, 0.5)
+                else:
+                    hue = senior_hue if shift.role == "Senior" else junior_hue
+                    colors[(i, shift.label)] = _blend(hue, 0.4)
+            elif mode == "role_weekend":
                 # Role hue chooses the colour; juniors read paler than seniors
                 # and weekend cells are a darker shade of the same role hue.
                 # The junior/senior palette pickers still drive the two hues.

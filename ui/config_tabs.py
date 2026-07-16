@@ -32,7 +32,7 @@ from model.data_models import (
     normalized_reductions,
 )
 from model.demo_data import sample_shifts, sample_names
-from model.optimiser import build_schedule
+from model.optimiser import SolveProgress, build_schedule, compute_time_limit
 from model.validation import validate_input, config_warnings
 
 from ui.editors import (
@@ -905,31 +905,303 @@ def _render_time_suggestion(data) -> None:
             st.rerun()
 
 
+# A long solve is run as a sequence of short warm-started segments instead of
+# one blocking call. Each segment continues from the previous best schedule
+# (solution hints), so quality only improves; and because the page returns
+# between segments, a long optimisation survives the websocket reconnects that
+# were silently cancelling 1000s+ runs on shared hosting.
+_SOLVE_CHUNK_SEC = 25.0     # per-segment budget (short enough to survive reconnects)
+_SOLVE_SINGLE_MAX = 40.0    # at/below this total, just solve once (chunking adds overhead)
+_SOLVE_STALE_ROUNDS = 3     # consecutive no-improvement segments before stopping early
+
+
+def _attr(df, key):
+    """``df.attrs`` lookup that tolerates stub frames without ``attrs``."""
+    try:
+        return df.attrs.get(key)
+    except (AttributeError, TypeError):  # pragma: no cover - stub frames
+        return None
+
+
+def _solve_total_score(df, data) -> float:
+    """A small fairness score (lower = fairer) used only to detect when extra
+    segments stop helping, so a long run can stop early once it has settled."""
+    try:
+        from model.fairness import calculate_points
+        pts = calculate_points(df, data)
+        totals = [v.get("total", 0.0) for v in pts.values()] or [0.0]
+        weekends = [v.get("weekend", 0.0) for v in pts.values()] or [0.0]
+        return (max(totals) - min(totals)) + 0.5 * (max(weekends) - min(weekends))
+    except Exception:  # pragma: no cover - never let scoring break a solve
+        return float("inf")
+
+
+def _begin_solve_job(*, data, env, ledger, label_carryover, target, warm_start_df, note) -> None:
+    """Queue a (possibly chunked) solve. The first segment runs on the next
+    script pass via ``_advance_solve_job``."""
+    st.session_state[Keys.SOLVE_SUMMARY] = None  # a new run supersedes the last summary
+    st.session_state[Keys.SOLVE_JOB] = {
+        "data": data, "env": env, "ledger": ledger,
+        "label_carryover": label_carryover,
+        "target": float(target) if target and target > 0 else 0.0,
+        "elapsed": 0.0,           # budget accounting (requested chunk seconds)
+        "chunk": _SOLVE_CHUNK_SEC,
+        "wall_total": 0.0,        # actual solver wall time across segments
+        "improvements": 0,        # better schedules found, summed over segments
+        "best_df": warm_start_df,
+        "best_score": None,
+        "last_improve_wall": None,
+        "stale_rounds": 0,
+        "cancel": False,
+        "note": note,
+    }
+
+
+def _finalize_solve_job(job) -> None:
+    """Store the job's best schedule as the result, record a summary for the
+    next pass to show, then clear the job. Rendering is deferred to
+    ``_render_last_solve_summary`` so the trailing rerun can't wipe it."""
+    st.session_state[Keys.SOLVE_JOB] = None
+    df = job.get("best_df")
+    if df is None:
+        return
+    # Rewrite the run timings to describe the WHOLE run rather than the last
+    # ~25s segment, so the results-tab verdict ("still improving — try Ns")
+    # reasons about the budget the user actually spent. A cancelled run stores
+    # its own elapsed time as the limit, making the verdict answer the honest
+    # question: was it still improving when the user stopped it?
+    if job.get("wall_total"):
+        try:
+            df.attrs["wall_time_sec"] = job["wall_total"]
+            df.attrs["time_limit_sec"] = (
+                job["wall_total"] if job.get("cancel")
+                else (job.get("target") or job["wall_total"])
+            )
+            df.attrs["last_improvement_sec"] = job.get("last_improve_wall")
+        except (AttributeError, TypeError):  # pragma: no cover - stub frames
+            pass
+    set_result(df, job["data"], job["ledger"])
+    shift_cols = [c for c in df.columns if c not in ("Date", "Day")]
+    unfilled = int((df[shift_cols] == "Unfilled").sum().sum()) if shift_cols else 0
+    st.session_state[Keys.SOLVE_SUMMARY] = {
+        "status": df.attrs.get("solver_status") or "done",
+        "unfilled": unfilled,
+        "canceled": bool(job.get("cancel")),
+    }
+    st.toast("Schedule ready ✅")
+
+
+def _render_last_solve_summary() -> None:
+    """Show the outcome of the most recent completed solve, plus a one-click
+    'keep optimising' button. Persists until the next solve begins."""
+    summary = st.session_state.get(Keys.SOLVE_SUMMARY)
+    if not summary:
+        return
+    status = summary.get("status", "done")
+    unfilled = summary.get("unfilled", 0)
+    detail = "all slots filled" if not unfilled else f"{unfilled} slot(s) unfilled"
+    lead = "Stopped — current schedule kept" if summary.get("canceled") else "Schedule generated"
+    st.success(
+        f"{lead} ({status}, {detail}) — open the **⑥ Results** tab to review, "
+        "edit, and export it."
+    )
+    # Offer to keep going (warm-started) while the solver hasn't proven optimality.
+    if status == "FEASIBLE":
+        st.caption(
+            "Not fully settled — you can keep optimising from this schedule "
+            "(it can only stay the same or get fairer):"
+        )
+        if st.button("▶️ Optimise 2 more minutes", key="continue_solve_btn"):
+            st.session_state[Keys.CONTINUE_SOLVE] = 120
+            st.rerun()
+
+
+def _advance_solve_job(job) -> None:
+    """Run one solve segment, show progress, then rerun for the next segment or
+    finalize. Called on every pass while a solve job is active."""
+    data = job["data"]
+    target = job["target"]
+    elapsed = job["elapsed"]
+    remaining = (target - elapsed) if target else _SOLVE_CHUNK_SEC
+    if job.get("cancel") or (target and remaining <= 0.5):
+        _finalize_solve_job(job)
+        st.rerun()  # show the summary / Generate controls right away
+
+    # A short total solves in one segment; a long one is chunked so the page
+    # returns often enough to survive reconnects. ``chunk`` can grow while the
+    # run has found no schedule yet (see the UNKNOWN branch below).
+    chunk = float(job.get("chunk") or _SOLVE_CHUNK_SEC)
+    if target and target <= _SOLVE_SINGLE_MAX:
+        this_chunk = target
+    else:
+        this_chunk = min(chunk, remaining) if target else chunk
+
+    if job.get("note"):
+        st.info(job["note"])
+    bar_frac = min(0.99, elapsed / target) if target else 0.5
+    label = (
+        f"Optimising… {elapsed:.0f}s / {target:.0f}s"
+        if target else f"Optimising… {elapsed:.0f}s"
+    )
+    st.progress(bar_frac, text=label)
+    found = int(job.get("improvements") or 0)
+    if found:
+        st.caption(f"Better schedules found so far: {found}")
+    st.caption(
+        "This runs in short bursts and picks up where it left off, so it keeps "
+        "going even if the page reloads. Leave this tab open."
+    )
+    if st.button("✖ Stop and keep the current schedule", key="cancel_solve_btn"):
+        job["cancel"] = True
+        st.session_state[Keys.SOLVE_JOB] = job
+        st.rerun()
+
+    progress_sink = SolveProgress()
+    try:
+        df = build_schedule(
+            data, env=job["env"], ledger=job["ledger"],
+            label_carryover=job["label_carryover"],
+            time_limit_sec=this_chunk, warm_start_df=job.get("best_df"),
+            progress=progress_sink,
+        )
+    except RuntimeError as exc:
+        if "UNKNOWN" in str(exc):
+            # The window closed before this segment produced a schedule. With a
+            # best-so-far in hand that only means "no improvement this round";
+            # without one, widen the next window instead of aborting a run that
+            # still has budget — a single long solve would simply have kept
+            # searching, and the chunked runner must not be weaker than that.
+            job["elapsed"] = elapsed + this_chunk
+            job["wall_total"] = job.get("wall_total", 0.0) + this_chunk
+            out_of_budget = bool(target) and job["elapsed"] >= target - 0.5
+            if job.get("best_df") is not None:
+                job["stale_rounds"] = job.get("stale_rounds", 0) + 1
+                if out_of_budget or job["stale_rounds"] >= _SOLVE_STALE_ROUNDS:
+                    _finalize_solve_job(job)
+                else:
+                    st.session_state[Keys.SOLVE_JOB] = job
+                st.rerun()
+            if not out_of_budget:
+                job["chunk"] = min(chunk * 2, 300.0)
+                st.session_state[Keys.SOLVE_JOB] = job
+                st.rerun()
+        st.session_state[Keys.SOLVE_JOB] = None
+        st.error(str(exc))
+        if job.get("best_df") is not None:
+            _finalize_solve_job(job)  # never discard schedules already found
+            return
+        if data.min_gap > 0:
+            st.caption("No feasible schedule — relax a constraint and try again:")
+            if st.button(f"Retry with min_gap {data.min_gap - 1}"):
+                st.session_state[Keys.RETRY_CONFIG] = (
+                    replace(data, min_gap=data.min_gap - 1),
+                    f"Relaxed minimum gap to {data.min_gap - 1} to find a feasible schedule.",
+                )
+                st.session_state[Keys.PENDING_STATE] = {Keys.MIN_GAP: data.min_gap - 1}
+                st.rerun()
+        return
+    except Exception as exc:  # noqa: BLE001
+        st.session_state[Keys.SOLVE_JOB] = None
+        st.error(str(exc))
+        if job.get("best_df") is not None:
+            _finalize_solve_job(job)  # never discard schedules already found
+        return
+
+    seg_wall = _attr(df, "wall_time_sec")
+    wall_before = job.get("wall_total", 0.0)
+    job["wall_total"] = wall_before + float(seg_wall or this_chunk)
+    job["elapsed"] = elapsed + this_chunk
+    job["improvements"] = int(job.get("improvements") or 0) + int(
+        getattr(progress_sink, "solution_count", 0) or 0
+    )
+
+    # Keep the fairest schedule seen so far, and stop a long run early once a
+    # few segments bring no improvement (it has settled — more time won't
+    # help). The solver's own objective (lower = fairer, covering every
+    # fairness tier) compares segments exactly. The first segment of a
+    # warm-started continue is judged with the fairness proxy instead — an
+    # edited starting schedule carries no trustworthy stored objective — so a
+    # segment that came back worse (possible only when the warm-start hint
+    # could not be applied) never overwrites a better schedule.
+    status_name = _attr(df, "solver_status")
+    score = _attr(df, "objective")
+    if score is None:
+        score = _solve_total_score(df, data)
+    prev = job.get("best_score")
+    if prev is None:
+        baseline = job.get("best_df")
+        improved = baseline is None or (
+            _solve_total_score(df, data) <= _solve_total_score(baseline, data)
+        )
+        take = improved
+    else:
+        improved = score < prev - 1e-9
+        take = improved or (status_name == "OPTIMAL" and score <= prev + 1e-9)
+    if take:
+        job["best_df"] = df
+        job["best_score"] = score
+        within = _attr(df, "last_improvement_sec")
+        job["last_improve_wall"] = wall_before + float(
+            within if within is not None else (seg_wall or this_chunk)
+        )
+    job["stale_rounds"] = 0 if improved else job.get("stale_rounds", 0) + 1
+
+    converged = status_name == "OPTIMAL" or job["stale_rounds"] >= _SOLVE_STALE_ROUNDS
+    if converged or (target and job["elapsed"] >= target - 0.5):
+        _finalize_solve_job(job)
+    else:
+        st.session_state[Keys.SOLVE_JOB] = job
+    st.rerun()
+
+
 def render_generate_and_solve(session_config, carryover_ledger) -> None:
-    """The Generate button, validation, solve, and relax-and-retry recovery."""
+    """The Generate button, validation, and the chunked, resumable solve."""
     st.divider()
+
+    # A solve already in flight: show only its progress panel and advance it.
+    # Never render a second Generate control while one is running.
+    active = st.session_state.get(Keys.SOLVE_JOB)
+    if active is not None:
+        _advance_solve_job(active)
+        return
+
     st.number_input(
         "Solver time limit (seconds, 0 = automatic)",
         min_value=0,
         max_value=3600,
         step=30,
         key=Keys.TIME_LIMIT,
-        help="How long the optimiser may search. The automatic budget is "
-        "60 s, which can be too short for large rosters — if the result says "
-        "the solver hit its limit and the spread looks uneven, try 300 s or "
-        "more. Longer limits never make the schedule worse, only slower.",
+        help="How long the optimiser may search. Long runs are split into short "
+        "bursts so they keep progress even if the page reloads. If the result "
+        "says the solver was still improving, raise this or use 'Optimise 2 more "
+        "minutes'. Longer limits never make the schedule worse, only slower.",
     )
     _render_time_suggestion(session_config)
     generate_clicked = st.button(
         "⚙️ Generate schedule", type="primary", width="stretch"
     )
+    _render_last_solve_summary()
 
-    # A relaxed-constraint retry queued by the recovery buttons takes precedence
-    # over a fresh click so the chosen relaxation is actually applied.
+    # Precedence: a "keep optimising" continue warm-starts from the current
+    # result; then a relaxed-constraint retry; then a fresh click.
     data = None
-    relaxation_note = None
-    if st.session_state.get(Keys.RETRY_CONFIG) is not None:
-        data, relaxation_note = st.session_state.pop(Keys.RETRY_CONFIG)
+    note = None
+    warm_start_df = None
+    solve_ledger = carryover_ledger
+    target = float(st.session_state.get(Keys.TIME_LIMIT) or 0)
+    continue_secs = st.session_state.get(Keys.CONTINUE_SOLVE)
+    if continue_secs:
+        st.session_state[Keys.CONTINUE_SOLVE] = None
+        data = st.session_state.get(Keys.RESULT_DATA)
+        warm_start_df = st.session_state.get(Keys.RESULT_DF)
+        solve_ledger = st.session_state.get(Keys.RESULT_PRIOR_LEDGER)
+        target = float(continue_secs)
+        note = (
+            f"Continuing optimisation for {int(continue_secs)} more seconds, "
+            "starting from the current schedule."
+        )
+    elif st.session_state.get(Keys.RETRY_CONFIG) is not None:
+        data, note = st.session_state.pop(Keys.RETRY_CONFIG)
     elif generate_clicked:
         # An uploaded config has already been imported into the editors (see
         # the History workspace), so the session config always reflects it — plus any
@@ -945,46 +1217,22 @@ def render_generate_and_solve(session_config, carryover_ledger) -> None:
             st.write(f"- {problem}")
         return
 
-    if relaxation_note:
-        st.info(relaxation_note)
     for warning in config_warnings(data):
         st.warning(warning)
     env = os.getenv("ENV", "prod")
-    if carryover_ledger:
+    if solve_ledger:
         st.info("Carryover fairness active: balancing cumulative load from the uploaded ledger.")
-    df = None
-    try:
-        with st.spinner("Optimising…"):
-            df = build_schedule(
-                data, env=env, ledger=carryover_ledger,
-                label_carryover=st.session_state.get(Keys.LEDGER_LABEL_CARRYOVER, True),
-                time_limit_sec=float(st.session_state.get(Keys.TIME_LIMIT) or 0),
-            )
-    except RuntimeError as exc:
-        st.error(str(exc))
-        if data.min_gap > 0:
-            st.caption("No feasible schedule — relax a constraint and try again:")
-            if st.button(f"Retry with min_gap {data.min_gap - 1}"):
-                st.session_state[Keys.RETRY_CONFIG] = (
-                    replace(data, min_gap=data.min_gap - 1),
-                    f"Relaxed minimum gap to {data.min_gap - 1} to find a feasible schedule.",
-                )
-                # Reflect the relaxed gap in the Setup slider (queued: the
-                # slider already rendered this run), so the UI never shows a
-                # different min_gap than the one the schedule was built with.
-                st.session_state[Keys.PENDING_STATE] = {Keys.MIN_GAP: data.min_gap - 1}
-                st.rerun()
-    except Exception as exc:
-        st.error(str(exc))
-
-    if df is not None:
-        set_result(df, data, carryover_ledger)
-        shift_cols = [c for c in df.columns if c not in ("Date", "Day")]
-        unfilled = int((df[shift_cols] == "Unfilled").sum().sum()) if shift_cols else 0
-        status = df.attrs.get("solver_status") or "done"
-        detail = "all slots filled" if unfilled == 0 else f"{unfilled} slot(s) unfilled"
-        st.toast("Schedule generated ✅")
-        st.success(
-            f"Schedule generated ({status}, {detail}) — open the **⑥ Results** tab "
-            "to review, edit, and export it."
-        )
+    # Resolve an automatic (0) budget to a concrete total so the chunked runner
+    # knows when to stop.
+    if target <= 0:
+        day_count = (data.end_date - data.start_date).days + 1
+        target = float(compute_time_limit(
+            env, (len(data.juniors) + len(data.seniors)) or 1, day_count,
+            len(data.shifts) or 1,
+        ))
+    _begin_solve_job(
+        data=data, env=env, ledger=solve_ledger,
+        label_carryover=st.session_state.get(Keys.LEDGER_LABEL_CARRYOVER, True),
+        target=target, warm_start_df=warm_start_df, note=note,
+    )
+    st.rerun()

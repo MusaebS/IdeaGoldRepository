@@ -88,6 +88,34 @@ def test_generate_with_empty_config_shows_validation_errors():
     assert any("Fix the configuration" in e.value for e in at.error)
 
 
+def test_chunked_solve_runs_multiple_segments_and_finalizes(monkeypatch):
+    # Force the multi-segment path (tiny chunk, tiny single-solve threshold) and
+    # a target that needs several segments; confirm it terminates with a result
+    # rather than looping or stalling.
+    import ui.config_tabs as ct
+    monkeypatch.setenv("ENV", "dev")
+    monkeypatch.setattr(ct, "_SOLVE_CHUNK_SEC", 1.0)
+    monkeypatch.setattr(ct, "_SOLVE_SINGLE_MAX", 0.5)
+    at = _at()
+    at.run()
+    at.checkbox(key="test_mode").set_value(True)
+    at.run()
+    at.number_input(key="solver_time_limit").set_value(3)  # ~3 one-second segments
+    at.run()
+    generate = [b for b in at.button if "Generate schedule" in b.label]
+    generate[0].click()
+    at.run()
+    assert not at.exception
+    res = at.session_state["result_df"]
+    assert res is not None
+    assert at.session_state["solve_job"] is None  # finished, not stuck mid-run
+    assert any("Schedule generated" in s.value for s in at.success)
+    # Finalize rewrites the timings to describe the WHOLE run, not the last
+    # ~1s segment, so the results-tab verdict reasons about the full budget.
+    assert res.attrs["time_limit_sec"] == 3
+    assert res.attrs["wall_time_sec"] > 0
+
+
 def test_test_mode_generate_produces_schedule(monkeypatch):
     # dev budget (10s base, size-scaled to ~30s for the 45x28x10 demo roster)
     # reliably reaches FEASIBLE; test's 1s budget hits UNKNOWN.
@@ -450,6 +478,25 @@ def test_apply_theme_shades_recolours_palette():
     assert not at.exception
     expected = theme_palette(DEFAULT_PALETTE["points"], current=DEFAULT_PALETTE)
     assert at.session_state["palette"] == expected
+
+
+def test_final_schedule_df_reorder_never_drops_schedule_columns():
+    from ui.results import final_schedule_df
+
+    base = pd.DataFrame([
+        {"Date": date(2023, 1, 2), "Day": "Mon", "AM": "Alice", "PM": "Bob"},
+    ])
+    # Mid-reorder the order may list only some columns; the shift columns must
+    # still appear (this was the "schedule disappears" bug).
+    out = final_schedule_df(base, [], {}, ["Date"])
+    assert "AM" in out.columns and "PM" in out.columns and "Day" in out.columns
+    # A genuine reorder is honoured; unlisted base columns are appended, not lost.
+    out2 = final_schedule_df(base, [], {}, ["Date", "PM", "AM"])
+    assert list(out2.columns)[:3] == ["Date", "PM", "AM"]
+    assert "Day" in out2.columns
+    # Cosmetic custom columns can still be hidden by leaving them out.
+    out3 = final_schedule_df(base, ["Note"], {"Note": {}}, ["Date", "Day", "AM", "PM"])
+    assert "Note" not in out3.columns
 
 
 def test_restore_display_state_applies_and_pops_widget_keys():

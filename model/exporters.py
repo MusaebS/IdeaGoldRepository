@@ -714,6 +714,10 @@ def legend_entries(color_mode: str, palette=None) -> List[Tuple[str | None, str]
     if color_mode == "role_weekend":
         entries.append((pal["senior"], "Senior shift (paler = weekday, darker = weekend)"))
         entries.append((pal["junior"], "Junior shift (paler than senior; darker = weekend)"))
+    if color_mode == "role_weekend_3":
+        entries.append((pal["senior"], "Senior weekday shift"))
+        entries.append((pal["junior"], "Junior weekday shift"))
+        entries.append((pal["weekend"], "Weekend / holiday shift"))
     entries.append((pal["unfilled"], "Unfilled slot (no resident)"))
     entries.append((None, "Closed = shift stood down (not demand)"))
     return entries
