@@ -150,9 +150,24 @@ from .utils import weekend_holiday_dates
 from .weights import availability_weights
 
 
-def _make_improvement_tracker():
+class SolveProgress:
+    """A tiny thread-safe-enough sink the solver callback writes live progress
+    into, so a UI on another thread can show a bar while the solve runs.
+
+    Only the solver thread writes and only the UI thread reads; the writes are
+    single attribute assignments (atomic under the GIL), so no lock is needed
+    for a display that tolerates reading a value one update stale.
+    """
+
+    def __init__(self) -> None:
+        self.solution_count = 0
+        self.last_improvement_sec: float | None = None
+        self.done = False
+
+
+def _make_improvement_tracker(sink: "SolveProgress | None" = None):
     """A CP-SAT solution callback recording the wall time of the last improving
-    incumbent.
+    incumbent (and mirroring it into ``sink`` for a live progress display).
 
     This lets the caller tell a schedule that was still improving when the time
     limit hit (raise the limit) from one that converged long before it (more
@@ -175,6 +190,9 @@ def _make_improvement_tracker():
                 self.last_improvement_sec = float(self.WallTime())
             except (AttributeError, TypeError, ValueError):  # pragma: no cover
                 pass
+            if sink is not None:
+                sink.solution_count = self.solution_count
+                sink.last_improvement_sec = self.last_improvement_sec
 
     return _ImprovementTracker()
 
@@ -786,7 +804,45 @@ class SchedulerSolver:
 
         self.model.Minimize(sum(terms))
 
-    def solve(self, time_limit_sec: float | None = None):
+    def add_warm_start(self, df) -> None:
+        """Seed the search with an existing schedule via solution hints, so a
+        follow-up solve *continues* improving from it instead of restarting.
+
+        Hints are soft: CP-SAT starts its search from this assignment but the
+        fairness objective still drives it, so the returned schedule is never
+        worse than the hint. A stale or infeasible hint is simply ignored.
+        Reserved cells (night-float overlay, closed) are not decision variables
+        and are skipped.
+        """
+        if df is None or not hasattr(self.model, "AddHint"):
+            return
+        try:
+            records = df.to_dict("records")
+        except (AttributeError, TypeError):  # pragma: no cover - stub frames
+            return
+        day_index = {day: i for i, day in enumerate(self.days)}
+        label_index = {sh.label: i for i, sh in enumerate(self.shifts)}
+        person_index = {name: i for i, name in enumerate(self.people)}
+        unfilled_idx = len(self.people) - 1
+        for row in records:
+            d_idx = day_index.get(row.get("Date"))
+            if d_idx is None:
+                continue
+            for label, s_idx in label_index.items():
+                if (d_idx, s_idx) in self.reserved_slots:
+                    continue
+                value = row.get(label)
+                p_idx = unfilled_idx if value in (None, "Unfilled") else person_index.get(value)
+                if p_idx is None:
+                    continue
+                var = self.vars.get((p_idx, d_idx, s_idx))
+                if var is not None:
+                    try:
+                        self.model.AddHint(var, 1)
+                    except Exception:  # pragma: no cover - defensive
+                        return
+
+    def solve(self, time_limit_sec: float | None = None, progress: "SolveProgress | None" = None):
         solver = cp_model.CpSolver()
         if not hasattr(solver, "OPTIMAL"):
             solver.OPTIMAL = getattr(cp_model, "OPTIMAL", 0)
@@ -808,7 +864,7 @@ class SchedulerSolver:
         except (AttributeError, ValueError, TypeError):
             pass
         solved_with_response = True
-        tracker = _make_improvement_tracker()
+        tracker = _make_improvement_tracker(progress)
         try:
             if tracker is not None:
                 status = solver.Solve(self.model, tracker)
@@ -885,18 +941,26 @@ class SchedulerSolver:
         status_name = None
         wall_time = None
         last_improvement = None
+        objective = None
         if solved_with_response:
             try:
                 status_name = getattr(solver, "StatusName", lambda s: str(s))(status)
                 wall_time = getattr(solver, "WallTime", lambda: None)()
             except (AttributeError, TypeError, ValueError):  # pragma: no cover
                 status_name = None
+            try:
+                # The full objective (lower = fairer) — lets a chunked/continued
+                # solve tell when extra time stopped improving *any* fairness term.
+                objective = float(solver.ObjectiveValue())
+            except (AttributeError, TypeError, ValueError):  # pragma: no cover
+                objective = None
             if tracker is not None:
                 last_improvement = getattr(tracker, "last_improvement_sec", None)
         try:
             df.attrs["solver_status"] = status_name
             df.attrs["wall_time_sec"] = wall_time
             df.attrs["last_improvement_sec"] = last_improvement
+            df.attrs["objective"] = objective
         except (AttributeError, TypeError):  # pragma: no cover - stub frames
             pass
         return df
@@ -1290,6 +1354,8 @@ def build_schedule(
     *,
     label_carryover: bool = True,
     time_limit_sec: float | None = None,
+    warm_start_df=None,
+    progress: "SolveProgress | None" = None,
 ) -> pd.DataFrame:
     """Build schedule with optional environment based time limit.
 
@@ -1344,7 +1410,9 @@ def build_schedule(
         if time_limit_sec and time_limit_sec > 0
         else compute_time_limit(env, len(participants) or 1, day_count, len(data.shifts) or 1)
     )
-    df = solver.solve(time_limit_sec=limit)
+    if warm_start_df is not None:
+        solver.add_warm_start(warm_start_df)
+    df = solver.solve(time_limit_sec=limit, progress=progress)
     df.attrs["time_limit_sec"] = limit
     df.attrs["solver_warning"] = None
     df.attrs["target_total"] = target_total

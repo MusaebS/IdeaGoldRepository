@@ -66,6 +66,9 @@ class Keys:
     DISPLAY_RESTORED = "display_restored_sig"
     DEMO_LOADED = "demo_loaded"
     RETRY_CONFIG = "retry_config"
+    CONTINUE_SOLVE = "continue_solve_secs"  # queued warm-start "keep optimising" seconds
+    SOLVE_JOB = "solve_job"  # in-flight chunked solve state (survives reruns)
+    SOLVE_SUMMARY = "solve_summary"  # outcome of the last completed solve (persisted note)
     # Queued cross-tab updates, applied at the top of the NEXT run before any
     # widget renders (Streamlit forbids writing a keyed widget's state after
     # the widget was instantiated in the same run).
@@ -147,6 +150,9 @@ def _defaults() -> dict:
         Keys.DISPLAY_RESTORED: None,
         Keys.PENDING_CONFIG: None,
         Keys.PENDING_STATE: None,
+        Keys.CONTINUE_SOLVE: None,
+        Keys.SOLVE_JOB: None,
+        Keys.SOLVE_SUMMARY: None,
         Keys.NORMALIZE_NAMES: False,
         Keys.BENCHMARK_RESULT: None,
         Keys.RESULT_DF: None,
