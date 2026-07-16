@@ -452,6 +452,25 @@ def test_apply_theme_shades_recolours_palette():
     assert at.session_state["palette"] == expected
 
 
+def test_final_schedule_df_reorder_never_drops_schedule_columns():
+    from ui.results import final_schedule_df
+
+    base = pd.DataFrame([
+        {"Date": date(2023, 1, 2), "Day": "Mon", "AM": "Alice", "PM": "Bob"},
+    ])
+    # Mid-reorder the order may list only some columns; the shift columns must
+    # still appear (this was the "schedule disappears" bug).
+    out = final_schedule_df(base, [], {}, ["Date"])
+    assert "AM" in out.columns and "PM" in out.columns and "Day" in out.columns
+    # A genuine reorder is honoured; unlisted base columns are appended, not lost.
+    out2 = final_schedule_df(base, [], {}, ["Date", "PM", "AM"])
+    assert list(out2.columns)[:3] == ["Date", "PM", "AM"]
+    assert "Day" in out2.columns
+    # Cosmetic custom columns can still be hidden by leaving them out.
+    out3 = final_schedule_df(base, ["Note"], {"Note": {}}, ["Date", "Day", "AM", "PM"])
+    assert "Note" not in out3.columns
+
+
 def test_restore_display_state_applies_and_pops_widget_keys():
     from model.coloring import DEFAULT_PALETTE
     from ui.state import restore_display_state

@@ -71,11 +71,16 @@ def final_schedule_df(base_df, extra_cols, extra_vals, order):
         vals = extra_vals.get(name, {})
         out[name] = [vals.get(str(d), "") for d in dates]
     if order:
-        # ``order`` is the explicit show list (from the multiselect); columns
-        # left out are hidden. Callers pass the full set when nothing is hidden.
-        keep = [c for c in order if c in out.columns]
-        if keep:
-            out = out[keep]
+        # ``order`` reorders columns. The core schedule columns (Date/Day and the
+        # shift columns) are ALWAYS kept, even if the order omits them — dropping
+        # them is what made the grid "disappear" while reordering. Any base column
+        # not explicitly placed is appended after the chosen order. Only cosmetic
+        # custom columns can be hidden (by leaving them out).
+        ordered = [c for c in order if c in out.columns]
+        for c in base_df.columns:
+            if c not in ordered:
+                ordered.append(c)
+        out = out[ordered]
     try:
         out.attrs = dict(base_df.attrs)
     except (AttributeError, TypeError):  # pragma: no cover - stub frames
@@ -484,7 +489,8 @@ def _render_schedule_workspace(df, data) -> tuple:
     all_cols = list(df.columns) + list(st.session_state[Keys.EXTRA_COLS])
     reconcile_column_order(all_cols)
     chosen = st.multiselect(
-        "Columns to show (order = display order; unselect to hide)",
+        "Column order — pick columns in the order you want them left-to-right. "
+        "The schedule columns always stay visible; only custom columns can be hidden.",
         all_cols,
         key=Keys.COL_ORDER,
     )
