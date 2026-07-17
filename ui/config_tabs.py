@@ -243,6 +243,12 @@ def _active_config_maps() -> dict:
         if a.name not in active_people:
             continue
         keep_labels = tuple(lbl for lbl in a.labels if lbl in nf_labels)
+        if a.labels and not keep_labels:
+            # Every shift this assignment named is gone. Empty labels mean
+            # "all NF shifts of the role", so keeping the entry would silently
+            # widen a narrowly-scoped assignment into blanket coverage; drop it
+            # instead (mirrors how reductions with no surviving labels drop).
+            continue
         nf_assignments.append(a._replace(labels=keep_labels))
     # Closures: keep only those naming a shift still on the roster.
     closures = [
