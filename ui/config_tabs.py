@@ -905,13 +905,20 @@ def _render_time_suggestion(data) -> None:
             st.rerun()
 
 
-# A long solve is run as a sequence of short warm-started segments instead of
-# one blocking call. Each segment continues from the previous best schedule
+# A long solve is run as a sequence of warm-started segments instead of one
+# blocking call. Each segment continues from the previous best schedule
 # (solution hints), so quality only improves; and because the page returns
 # between segments, a long optimisation survives the websocket reconnects that
 # were silently cancelling 1000s+ runs on shared hosting.
-_SOLVE_CHUNK_SEC = 25.0     # per-segment budget (short enough to survive reconnects)
-_SOLVE_SINGLE_MAX = 40.0    # at/below this total, just solve once (chunking adds overhead)
+#
+# Segment sizing matters for FAIRNESS, not just resilience: every segment
+# re-pays CP-SAT's presolve and loses its learned search state, and on large
+# rosters (10k+ cells) presolve alone can eat most of a short window. Tiny
+# segments made a 2000s run deliver worse fairness than one 300s call. Hence:
+# totals up to _SOLVE_SINGLE_MAX solve in ONE call (the range shared hosting
+# demonstrably survives), and only genuinely long runs are chunked, coarsely.
+_SOLVE_CHUNK_SEC = 150.0    # per-segment budget: amortises presolve, still reconnect-safe
+_SOLVE_SINGLE_MAX = 300.0   # at/below this total, solve once — no chunking overhead
 _SOLVE_STALE_ROUNDS = 3     # consecutive no-improvement segments before stopping early
 
 
@@ -940,16 +947,24 @@ def _begin_solve_job(*, data, env, ledger, label_carryover, target, warm_start_d
     """Queue a (possibly chunked) solve. The first segment runs on the next
     script pass via ``_advance_solve_job``."""
     st.session_state[Keys.SOLVE_SUMMARY] = None  # a new run supersedes the last summary
+    # A continue starts from a schedule whose stored objective is exact and
+    # comparable (same data/ledger -> same model) — unless the user manually
+    # edited it, which invalidates the stored value. Seeding best_score with it
+    # means a continue only ever accepts a segment that beats the real baseline.
+    baseline_score = None
+    if warm_start_df is not None and not st.session_state.get(Keys.MANUALLY_EDITED):
+        baseline_score = _attr(warm_start_df, "objective")
     st.session_state[Keys.SOLVE_JOB] = {
         "data": data, "env": env, "ledger": ledger,
         "label_carryover": label_carryover,
         "target": float(target) if target and target > 0 else 0.0,
         "elapsed": 0.0,           # budget accounting (requested chunk seconds)
         "chunk": _SOLVE_CHUNK_SEC,
+        "segment": 0,             # segments attempted (drives seed diversification)
         "wall_total": 0.0,        # actual solver wall time across segments
-        "improvements": 0,        # better schedules found, summed over segments
+        "improvements": 0,        # genuinely better schedules, summed over segments
         "best_df": warm_start_df,
-        "best_score": None,
+        "best_score": baseline_score,
         "last_improve_wall": None,
         "stale_rounds": 0,
         "cancel": False,
@@ -1057,9 +1072,17 @@ def _advance_solve_job(job) -> None:
         st.rerun()
 
     progress_sink = SolveProgress()
+    had_warm = job.get("best_df") is not None
+    seg = int(job.get("segment") or 0)
+    job["segment"] = seg + 1
+    # Later segments get a different solver seed so a stalled search explores a
+    # new neighbourhood instead of retracing the previous segment's steps. The
+    # seed only randomises the SEARCH — the model, targets, and objective are
+    # identical, so results stay comparable and fairness is unaffected.
+    seg_data = data if seg == 0 else replace(data, seed=(data.seed or 0) + seg)
     try:
         df = build_schedule(
-            data, env=job["env"], ledger=job["ledger"],
+            seg_data, env=job["env"], ledger=job["ledger"],
             label_carryover=job["label_carryover"],
             time_limit_sec=this_chunk, warm_start_df=job.get("best_df"),
             progress=progress_sink,
@@ -1111,9 +1134,13 @@ def _advance_solve_job(job) -> None:
     wall_before = job.get("wall_total", 0.0)
     job["wall_total"] = wall_before + float(seg_wall or this_chunk)
     job["elapsed"] = elapsed + this_chunk
-    job["improvements"] = int(job.get("improvements") or 0) + int(
-        getattr(progress_sink, "solution_count", 0) or 0
-    )
+    # Count genuinely better schedules: a warm-started segment's first solution
+    # is just the hint being re-completed, not an improvement — counting it made
+    # a stalled run look productive ("better schedules found" with no change).
+    seg_found = int(getattr(progress_sink, "solution_count", 0) or 0)
+    if had_warm and seg_found > 0:
+        seg_found -= 1
+    job["improvements"] = int(job.get("improvements") or 0) + seg_found
 
     # Keep the fairest schedule seen so far, and stop a long run early once a
     # few segments bring no improvement (it has settled — more time won't
