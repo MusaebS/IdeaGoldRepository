@@ -917,9 +917,22 @@ def _render_time_suggestion(data) -> None:
 # segments made a 2000s run deliver worse fairness than one 300s call. Hence:
 # totals up to _SOLVE_SINGLE_MAX solve in ONE call (the range shared hosting
 # demonstrably survives), and only genuinely long runs are chunked, coarsely.
-_SOLVE_CHUNK_SEC = 150.0    # per-segment budget: amortises presolve, still reconnect-safe
+_SOLVE_CHUNK_SEC = 150.0    # minimum per-segment budget: amortises presolve
+_SOLVE_CHUNK_MAX = 300.0    # largest segment (within demonstrated hosting tolerance)
+_SOLVE_MAX_SEGMENTS = 5.0   # aim for at most ~5 presolve payments per run
 _SOLVE_SINGLE_MAX = 300.0   # at/below this total, solve once — no chunking overhead
 _SOLVE_STALE_ROUNDS = 3     # consecutive no-improvement segments before stopping early
+
+
+def _chunk_seconds(target: float) -> float:
+    """Segment size for a chunked run: as few segments as hosting tolerates.
+
+    Every segment re-pays CP-SAT presolve, and on slow shared hosting that tax
+    is what turns a 1200s budget into mediocre fairness. Scale the segment so a
+    run needs ~5 of them, bounded to [150s, 300s] — the range the deployment
+    demonstrably survives between reconnects.
+    """
+    return min(_SOLVE_CHUNK_MAX, max(_SOLVE_CHUNK_SEC, target / _SOLVE_MAX_SEGMENTS))
 
 
 def _attr(df, key):
@@ -943,7 +956,10 @@ def _solve_total_score(df, data) -> float:
         return float("inf")
 
 
-def _begin_solve_job(*, data, env, ledger, label_carryover, target, warm_start_df, note) -> None:
+def _begin_solve_job(
+    *, data, env, ledger, label_carryover, target, warm_start_df, note,
+    seed_offset: int = 0,
+) -> None:
     """Queue a (possibly chunked) solve. The first segment runs on the next
     script pass via ``_advance_solve_job``."""
     st.session_state[Keys.SOLVE_SUMMARY] = None  # a new run supersedes the last summary
@@ -959,8 +975,9 @@ def _begin_solve_job(*, data, env, ledger, label_carryover, target, warm_start_d
         "label_carryover": label_carryover,
         "target": float(target) if target and target > 0 else 0.0,
         "elapsed": 0.0,           # budget accounting (requested chunk seconds)
-        "chunk": _SOLVE_CHUNK_SEC,
+        "chunk": _chunk_seconds(float(target)) if target and target > 0 else _SOLVE_CHUNK_SEC,
         "segment": 0,             # segments attempted (drives seed diversification)
+        "seed_offset": int(seed_offset),  # continues explore fresh ground, not the old plateau
         "wall_total": 0.0,        # actual solver wall time across segments
         "improvements": 0,        # genuinely better schedules, summed over segments
         "best_df": warm_start_df,
@@ -1075,11 +1092,15 @@ def _advance_solve_job(job) -> None:
     had_warm = job.get("best_df") is not None
     seg = int(job.get("segment") or 0)
     job["segment"] = seg + 1
-    # Later segments get a different solver seed so a stalled search explores a
-    # new neighbourhood instead of retracing the previous segment's steps. The
-    # seed only randomises the SEARCH — the model, targets, and objective are
-    # identical, so results stay comparable and fairness is unaffected.
-    seg_data = data if seg == 0 else replace(data, seed=(data.seed or 0) + seg)
+    # Later segments — and every "keep optimising" continue (via seed_offset) —
+    # get a different solver seed, so a stalled search explores a new
+    # neighbourhood instead of retracing the exact steps that led to the
+    # plateau. The seed only randomises the SEARCH — the model, targets, and
+    # objective are identical, so results stay comparable and fairness is
+    # unaffected. A fresh Generate's first segment keeps the configured seed
+    # for reproducibility.
+    shift = int(job.get("seed_offset") or 0) + seg
+    seg_data = data if shift == 0 else replace(data, seed=(data.seed or 0) + shift)
     try:
         df = build_schedule(
             seg_data, env=job["env"], ledger=job["ledger"],
@@ -1105,7 +1126,7 @@ def _advance_solve_job(job) -> None:
                     st.session_state[Keys.SOLVE_JOB] = job
                 st.rerun()
             if not out_of_budget:
-                job["chunk"] = min(chunk * 2, 300.0)
+                job["chunk"] = min(chunk * 2, _SOLVE_CHUNK_MAX)
                 st.session_state[Keys.SOLVE_JOB] = job
                 st.rerun()
         st.session_state[Keys.SOLVE_JOB] = None
@@ -1217,12 +1238,18 @@ def render_generate_and_solve(session_config, carryover_ledger) -> None:
     solve_ledger = carryover_ledger
     target = float(st.session_state.get(Keys.TIME_LIMIT) or 0)
     continue_secs = st.session_state.get(Keys.CONTINUE_SOLVE)
+    seed_offset = 0
     if continue_secs:
         st.session_state[Keys.CONTINUE_SOLVE] = None
         data = st.session_state.get(Keys.RESULT_DATA)
         warm_start_df = st.session_state.get(Keys.RESULT_DF)
         solve_ledger = st.session_state.get(Keys.RESULT_PRIOR_LEDGER)
         target = float(continue_secs)
+        # Each continue explores from a different solver seed: the original
+        # run's seed already led to this plateau, and rerunning it warm-started
+        # just retraces the same search. The result version grows with every
+        # finished solve, so every press probes new ground.
+        seed_offset = 100 * (int(st.session_state.get(Keys.RESULT_VERSION) or 0) or 1)
         note = (
             f"Continuing optimisation for {int(continue_secs)} more seconds, "
             "starting from the current schedule."
@@ -1261,5 +1288,6 @@ def render_generate_and_solve(session_config, carryover_ledger) -> None:
         data=data, env=env, ledger=solve_ledger,
         label_carryover=st.session_state.get(Keys.LEDGER_LABEL_CARRYOVER, True),
         target=target, warm_start_df=warm_start_df, note=note,
+        seed_offset=seed_offset,
     )
     st.rerun()
