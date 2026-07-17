@@ -88,19 +88,33 @@ def test_generate_with_empty_config_shows_validation_errors():
     assert any("Fix the configuration" in e.value for e in at.error)
 
 
+def test_chunk_seconds_prefers_few_large_segments():
+    # Every segment re-pays CP-SAT presolve, so long runs use as few segments
+    # as hosting tolerates: ~target/5, clamped to [150s, 300s].
+    from ui.config_tabs import _chunk_seconds
+
+    assert _chunk_seconds(400) == 150      # floor: never smaller than 150s
+    assert _chunk_seconds(1200) == 240     # ~5 segments for a 20-minute run
+    assert _chunk_seconds(2000) == 300     # ceiling: reconnect tolerance
+    assert _chunk_seconds(3600) == 300
+
+
 def test_chunked_solve_runs_multiple_segments_and_finalizes(monkeypatch):
     # Force the multi-segment path (tiny chunk, tiny single-solve threshold) and
     # a target that needs several segments; confirm it terminates with a result
     # rather than looping or stalling.
     import ui.config_tabs as ct
     monkeypatch.setenv("ENV", "dev")
-    monkeypatch.setattr(ct, "_SOLVE_CHUNK_SEC", 1.0)
+    # 2s segments: small enough to force several rounds, large enough that the
+    # demo roster reliably finds a first feasible schedule inside one window
+    # (at 1s that race is flaky on a loaded machine).
+    monkeypatch.setattr(ct, "_SOLVE_CHUNK_SEC", 2.0)
     monkeypatch.setattr(ct, "_SOLVE_SINGLE_MAX", 0.5)
     at = _at()
     at.run()
     at.checkbox(key="test_mode").set_value(True)
     at.run()
-    at.number_input(key="solver_time_limit").set_value(3)  # ~3 one-second segments
+    at.number_input(key="solver_time_limit").set_value(6)  # ~3 two-second segments
     at.run()
     generate = [b for b in at.button if "Generate schedule" in b.label]
     generate[0].click()
@@ -111,8 +125,8 @@ def test_chunked_solve_runs_multiple_segments_and_finalizes(monkeypatch):
     assert at.session_state["solve_job"] is None  # finished, not stuck mid-run
     assert any("Schedule generated" in s.value for s in at.success)
     # Finalize rewrites the timings to describe the WHOLE run, not the last
-    # ~1s segment, so the results-tab verdict reasons about the full budget.
-    assert res.attrs["time_limit_sec"] == 3
+    # segment, so the results-tab verdict reasons about the full budget.
+    assert res.attrs["time_limit_sec"] == 6
     assert res.attrs["wall_time_sec"] > 0
 
 
