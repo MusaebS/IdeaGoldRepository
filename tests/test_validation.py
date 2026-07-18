@@ -105,6 +105,28 @@ def test_duplicate_shift_label_rejected():
     assert any("Duplicate shift label" in i for i in validate_input(data))
 
 
+def test_case_insensitive_duplicate_shift_label_rejected():
+    # Saved configs reject case-colliding labels on load (config_io casefolds),
+    # so validate_input must catch them before such a config can be saved.
+    data = _data(
+        shifts=[
+            ShiftTemplate(label="Night", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+            ShiftTemplate(label="night", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ]
+    )
+    assert any("differ only by letter case" in i for i in validate_input(data))
+    # Exact duplicates still report the original message, not the case one.
+    exact = _data(
+        shifts=[
+            ShiftTemplate(label="D", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+            ShiftTemplate(label="D", role="Senior", night_float=False, thu_weekend=False, points=1.0),
+        ]
+    )
+    issues = validate_input(exact)
+    assert any("Duplicate shift label" in i for i in issues)
+    assert not any("letter case" in i for i in issues)
+
+
 def test_reserved_shift_label_rejected():
     data = _data(
         shifts=[ShiftTemplate(label="Day", role="Junior", night_float=False, thu_weekend=False)]

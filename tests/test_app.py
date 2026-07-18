@@ -88,6 +88,42 @@ def test_generate_with_empty_config_shows_validation_errors():
     assert any("Fix the configuration" in e.value for e in at.error)
 
 
+def test_deleted_nf_shift_drops_scoped_assignment_instead_of_widening_it():
+    # An NF assignment scoped to labels whose shifts were all deleted must be
+    # DROPPED: empty labels mean "all NF shifts of the role", so keeping it
+    # would silently widen a narrow assignment into blanket coverage.
+    import streamlit as st
+    from model.data_models import NightFloatAssignment
+    from ui.config_tabs import _active_config_maps
+    from ui.state import init_session_state
+
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    init_session_state()
+    st.session_state["juniors"] = ["Alice"]
+    st.session_state["shifts"] = [
+        ShiftTemplate(label="NF-B", role="Junior", night_float=True, thu_weekend=False, points=1.0),
+    ]
+    window = (date(2023, 1, 2), date(2023, 1, 6))
+    # Scoped to a shift that no longer exists -> dropped entirely.
+    st.session_state["nf_assignments"] = [
+        NightFloatAssignment("Alice", *window, ("NF-GONE",), 1)
+    ]
+    assert _active_config_maps()["nf_assignments"] is None
+    # Scoped to a live shift -> kept with its scope.
+    st.session_state["nf_assignments"] = [
+        NightFloatAssignment("Alice", *window, ("NF-B",), 1)
+    ]
+    assert _active_config_maps()["nf_assignments"][0].labels == ("NF-B",)
+    # A deliberate blanket assignment (no labels) still passes through.
+    st.session_state["nf_assignments"] = [
+        NightFloatAssignment("Alice", *window, (), 1)
+    ]
+    assert _active_config_maps()["nf_assignments"][0].labels == ()
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+
+
 def test_chunk_seconds_prefers_few_large_segments():
     # Every segment re-pays CP-SAT presolve, so long runs use as few segments
     # as hosting tolerates: ~target/5, clamped to [150s, 300s].

@@ -569,6 +569,7 @@ def validate_input(data: InputData) -> List[str]:
         issues.append("Add at least one shift template.")
 
     seen_labels = set()
+    seen_folded: dict = {}
     for sh in data.shifts:
         if sh.role not in {"Junior", "Senior"}:
             issues.append(
@@ -579,10 +580,20 @@ def validate_input(data: InputData) -> List[str]:
             issues.append(
                 f"Shift '{sh.label}' points must be a finite non-negative number."
             )
+        folded = sh.label.strip().casefold()
         if sh.label in seen_labels:
             issues.append(
                 f"Duplicate shift label '{sh.label}': labels must be unique "
                 "(two shifts sharing a label would overwrite each other)."
+            )
+        elif folded in seen_folded:
+            # Saved configs are rejected on load for labels that collide
+            # case-insensitively, so catch the collision before it can be
+            # saved into a file that refuses to reload.
+            issues.append(
+                f"Shift labels '{seen_folded[folded]}' and '{sh.label}' differ "
+                "only by letter case; rename one (saved configs cannot be "
+                "reloaded with such labels)."
             )
         if sh.label in {"Date", "Day"}:
             issues.append(
@@ -592,6 +603,7 @@ def validate_input(data: InputData) -> List[str]:
         if not sh.label.strip():
             issues.append("A shift has a blank label; give every shift a name.")
         seen_labels.add(sh.label)
+        seen_folded.setdefault(folded, sh.label)
 
     juniors = set(data.juniors)
     seniors = set(data.seniors)
