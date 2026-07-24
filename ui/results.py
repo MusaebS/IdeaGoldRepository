@@ -350,34 +350,54 @@ def _render_resident_calendars(df, data) -> None:
         ics_data_uri,
         resident_events,
         resident_ics,
+        schedule_calendars_zip,
     )
 
     st.subheader("Resident calendars")
     st.caption(
-        "One file to send the whole department: every resident's on-calls, with "
-        "an **Add all** link each so a single tap puts their shifts in their "
-        "phone calendar (individual dates are tappable too)."
+        "Two ways to hand the rota to people. The **PDF** is the one file to "
+        "post in a group chat — tapping a date adds that shift on any phone. "
+        "The **ZIP** holds one calendar file per resident: whoever opens their "
+        "own file gets every shift added at once."
     )
+    ccols = st.columns(2)
     try:
         handout = cached_export(
             "cal_handout", (st.session_state[Keys.RESULT_VERSION],),
             lambda: calendar_handout_pdf_bytes(df, data),
         )
-        st.download_button(
-            "📄 Download the calendar handout (one PDF, send this)",
+        ccols[0].download_button(
+            "📄 Calendar handout (PDF — send to the group)",
             handout,
             file_name=f"on_call_handout_{data.end_date.isoformat()}.pdf",
             mime="application/pdf",
             width="stretch",
             type="primary",
-            help="Two compact columns, everyone on a page or two. Send it in "
-            "the group chat — the links keep working wherever it is forwarded, "
-            "with no connection back to this app.",
+            help="Two compact columns, the whole department on a page or two. "
+            "Every date is a tappable link that adds that one shift — it keeps "
+            "working wherever the PDF is forwarded, with no connection back to "
+            "this app.",
         )
     except ImportError as exc:  # pragma: no cover - reportlab not installed
-        st.info(f"Handout PDF needs reportlab: {exc}")
+        ccols[0].info(f"Handout PDF needs reportlab: {exc}")
     except Exception as exc:  # noqa: BLE001 - never block the rest of the tab
-        st.error(f"Handout PDF failed: {exc}")
+        ccols[0].error(f"Handout PDF failed: {exc}")
+    try:
+        ics_zip = cached_export(
+            "ics_zip", (st.session_state[Keys.RESULT_VERSION],),
+            lambda: schedule_calendars_zip(df, data),
+        )
+        ccols[1].download_button(
+            "🗂️ All calendar files (ZIP — one per resident)",
+            ics_zip,
+            file_name=f"on_call_calendars_{data.end_date.isoformat()}.zip",
+            mime="application/zip",
+            width="stretch",
+            help="Send each person their own .ics: they tap it once and the "
+            "phone offers to add every one of their shifts together.",
+        )
+    except Exception as exc:  # noqa: BLE001
+        ccols[1].error(f"Calendar ZIP failed: {exc}")
 
     roster = list(data.juniors) + list(data.seniors)
     person = st.selectbox(

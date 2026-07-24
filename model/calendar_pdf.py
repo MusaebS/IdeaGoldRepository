@@ -110,13 +110,13 @@ def calendar_handout_pdf_bytes(df, data: InputData) -> bytes:
         canvas.drawString(margin, top - 26, f"Block {span}")
         canvas.drawString(
             margin, top - 38,
-            "Find your name → tap “Add all” to put every one of your on-calls "
-            "in your phone's calendar.",
+            "Find your name, then tap a date — that adds the shift to your "
+            "calendar. This works on any phone.",
         )
         canvas.drawString(
             margin, top - 50,
-            "If “Add all” does not open, tap a single date instead — that adds "
-            "just that shift.",
+            "“Add all” adds every shift at once, but only in readers that allow "
+            "it (usually on a computer, rarely on a phone).",
         )
         canvas.setStrokeColor(colors.HexColor(_RULE))
         canvas.setLineWidth(0.6)
@@ -160,9 +160,11 @@ def calendar_handout_pdf_bytes(df, data: InputData) -> bytes:
     else:
         story.append(Spacer(1, 8))
         story.append(Paragraph(
-            "Each date link adds that single shift. “Add all” carries the whole "
-            "calendar inside the link, so it needs no internet connection to the "
-            "scheduling app.",
+            "Each date link adds that single shift and works everywhere. "
+            "“Add all” carries the whole calendar inside the link — no internet "
+            "connection to the scheduling app — but phone PDF readers usually "
+            "block that kind of link; ask for your .ics file if you want every "
+            "shift in one go.",
             note_style,
         ))
     doc.build(story)
