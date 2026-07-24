@@ -27,7 +27,12 @@ from model.solve_report import convergence_verdict
 from model.utils import friendly_date
 from model.validation import validate_schedule
 
-from ui.charts import cumulative_chart, workload_chart
+from ui.charts import (
+    COMFORTABLE,
+    DENSITY_LABELS,
+    cumulative_chart,
+    workload_chart,
+)
 from ui.editors import custom_columns_editor
 from ui.state import Keys, apply_manual_edits, normalize_edited_schedule, revert_manual_edits
 from ui.theme import render_card, render_section_header, render_status
@@ -619,6 +624,14 @@ def _render_schedule_workspace(df, data) -> tuple:
     return final_df, color_mode, palette
 
 
+def _chart_density() -> str:
+    """The chart density chosen in the fairness workspace (session-scoped).
+
+    The radio stores its *label*; map it back to the density key.
+    """
+    return DENSITY_LABELS.get(st.session_state.get(Keys.CHART_DENSITY), COMFORTABLE)
+
+
 def _render_role_fairness(
     role: str, fair_frame, points, data, df, prior_ledger, ledger_policy
 ) -> None:
@@ -637,17 +650,22 @@ def _render_role_fairness(
     target_map = (df.attrs.get("target_total_map") or {}) if hasattr(df, "attrs") else {}
     role_targets = [target_map[p] for p in members if p in target_map]
     target = sum(role_targets) / len(role_targets) if role_targets else None
+    density = _chart_density()
     st.caption(
         f"Every {role.lower()} appears below, heaviest first. Use the ⋯ menu on "
         "a chart to save it as an image."
     )
-    st.altair_chart(workload_chart(role_frame, role, target), width="stretch")
+    st.altair_chart(
+        workload_chart(role_frame, role, target, density=density), width="stretch"
+    )
     if prior_ledger:
         cum_frame = build_cumulative_frame(
             role_points, prior_ledger, data, ledger_policy=ledger_policy
         )
         if len(cum_frame):
-            st.altair_chart(cumulative_chart(cum_frame, role), width="stretch")
+            st.altair_chart(
+                cumulative_chart(cum_frame, role, density=density), width="stretch"
+            )
 
 
 def _render_fairness_workspace(df, data, points, prior_ledger) -> None:
@@ -677,6 +695,23 @@ def _render_fairness_workspace(df, data, points, prior_ledger) -> None:
         "Fairness is balanced within each role (juniors and seniors work "
         "different shift pools). Per resident: calls and points per shift "
         "type, targets and deviations, and cumulative history with a ledger."
+    )
+    # Chart density: comfortable rows by default; compact tightens the rows and
+    # lays a long roster out in two columns so a big department fits one screen
+    # (and one screenshot). Every resident is shown either way.
+    roster_size = int(len(fair_frame))
+    st.radio(
+        "Chart layout",
+        list(DENSITY_LABELS),
+        key=Keys.CHART_DENSITY,
+        horizontal=True,
+        help="Compact keeps every resident and every name — it just tightens "
+        "the rows and splits a long roster into two side-by-side columns, "
+        "which is easier to screenshot and send."
+        + (
+            f" With {roster_size} resident(s) here, compact is worth a look."
+            if roster_size >= 24 else ""
+        ),
     )
     roles = [r for r in ("Junior", "Senior") if (fair_frame["Role"] == r).any()]
     if len(roles) == 2:

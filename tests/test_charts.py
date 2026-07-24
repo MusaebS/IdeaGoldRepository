@@ -100,6 +100,53 @@ def test_standings_chart_builds_for_a_ledger():
     assert spec["layer"][0]["encoding"]["y"]["axis"]["labelOverlap"] is False
 
 
+def test_compact_density_shrinks_height_and_keeps_everyone():
+    from ui.charts import COMFORTABLE, COMPACT
+
+    frame = _workload_frame(40)
+    roomy = workload_chart(frame, "Junior", 7.5, density=COMFORTABLE).to_dict()
+    tight = workload_chart(frame, "Junior", 7.5, density=COMPACT).to_dict()
+    # Comfortable stays one tall column; compact splits into two short ones.
+    assert "hconcat" not in roomy
+    assert len(tight["hconcat"]) == 2
+    tallest_compact_column = max(col["height"] for col in tight["hconcat"])
+    assert tallest_compact_column < roomy["height"] / 2
+    # Every resident survives the split — 40 names across the two columns.
+    names = [
+        name
+        for col in tight["hconcat"]
+        for name in col["layer"][0]["encoding"]["y"]["sort"]
+    ]
+    assert sorted(names) == sorted(frame["Resident"].tolist())
+    # Names stay visible in compact too.
+    for col in tight["hconcat"]:
+        assert col["layer"][0]["encoding"]["y"]["axis"]["labelOverlap"] is False
+    # One legend only (the second column suppresses its own).
+    legends = [
+        col["layer"][0]["encoding"]["color"].get("legend") for col in tight["hconcat"]
+    ]
+    assert legends[1] is None
+
+
+def test_compact_keeps_one_column_for_a_small_roster():
+    from ui.charts import COMPACT
+
+    spec = workload_chart(_workload_frame(8), "Senior", None, density=COMPACT).to_dict()
+    assert "hconcat" not in spec  # splitting 8 residents would be silly
+
+
+def test_compact_cumulative_shares_the_value_scale_across_columns():
+    from ui.charts import COMPACT
+
+    spec = cumulative_chart(_cumulative_frame(36), "Junior", density=COMPACT).to_dict()
+    domains = [
+        col["layer"][0]["encoding"]["x"]["scale"]["domainMax"]
+        for col in spec["hconcat"]
+    ]
+    # Both columns must share one scale or the bars are not comparable.
+    assert len(set(domains)) == 1
+
+
 def test_role_hues_are_distinct_per_role():
     from ui.charts import ROLE_HUES, WEEKEND_HUE
 

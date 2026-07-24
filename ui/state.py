@@ -97,6 +97,14 @@ class Keys:
     EXPORT_CACHE = "export_cache"
     PAL_PREFIX = "pal_"
     FLASH = "flash_message"
+    CHART_DENSITY = "chart_density"   # fairness chart layout (comfortable/compact)
+
+
+def _default_chart_density() -> str:
+    """The first (comfortable) chart-layout label — the radio stores labels."""
+    from ui.charts import DENSITY_LABELS
+
+    return next(iter(DENSITY_LABELS))
 
 
 def _defaults() -> dict:
@@ -169,6 +177,7 @@ def _defaults() -> dict:
         Keys.COL_ORDER: [],
         Keys.KNOWN_COLS: [],
         Keys.EXPORT_CACHE: {},
+        Keys.CHART_DENSITY: _default_chart_density(),
         Keys.DEMO_LOADED: False,
     }
 
