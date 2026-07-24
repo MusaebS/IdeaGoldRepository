@@ -25,6 +25,7 @@ from model.fairness import (
 )
 from model.ledger import LedgerPolicy, block_adjustments, ledger_to_json, update_ledger
 from model.solve_report import convergence_verdict
+from model.utils import friendly_date
 from model.validation import validate_schedule
 
 from ui.editors import custom_columns_editor
@@ -325,6 +326,112 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
         st.caption("Ledger policy applied: " + "; ".join(notes) + ".")
     if st.checkbox("Show Fairness Log"):
         st.text(log_text)
+    st.divider()
+    _render_resident_calendars(df, data)
+
+
+def _render_resident_calendars(df, data) -> None:
+    """Per-resident calendar delivery: pick a name → put the on-calls on a phone.
+
+    Every path here is chosen to survive hostile hosting: the personal .ics is
+    a ``data:`` link (the file rides inside the page, so it cannot 404 when a
+    serverless instance recycles), the per-date "Add to calendar" links are
+    plain Google Calendar URLs, and the handout PDF carries those same links so
+    it stays useful after being forwarded around.
+    """
+    from model.calendar_pdf import calendar_handout_pdf_bytes
+    from model.ics import (
+        google_calendar_url,
+        ics_data_uri,
+        resident_events,
+        resident_ics,
+        schedule_calendars_zip,
+    )
+
+    st.subheader("Resident calendars")
+    st.caption(
+        "Get each person's on-calls into their phone calendar: pick a name "
+        "below, or send everyone the handout PDF / their .ics file."
+    )
+    hcols = st.columns(2)
+    try:
+        handout = cached_export(
+            "cal_handout", (st.session_state[Keys.RESULT_VERSION],),
+            lambda: calendar_handout_pdf_bytes(df, data),
+        )
+        hcols[0].download_button(
+            "Download calendar handout (PDF, sendable)",
+            handout,
+            file_name=f"on_call_handout_{data.end_date.isoformat()}.pdf",
+            mime="application/pdf",
+            width="stretch",
+            help="One PDF for the whole group: every resident's on-call list, "
+            "each date with a tappable 'Add to calendar' link. Send it in the "
+            "group chat; the links keep working wherever it's forwarded.",
+        )
+    except ImportError as exc:  # pragma: no cover - reportlab not installed
+        hcols[0].info(f"Handout PDF needs reportlab: {exc}")
+    except Exception as exc:  # noqa: BLE001 - never block other downloads
+        hcols[0].error(f"Handout PDF failed: {exc}")
+    try:
+        ics_zip = cached_export(
+            "ics_zip", (st.session_state[Keys.RESULT_VERSION],),
+            lambda: schedule_calendars_zip(df, data),
+        )
+        hcols[1].download_button(
+            "Download all .ics files (ZIP)",
+            ics_zip,
+            file_name=f"on_call_calendars_{data.end_date.isoformat()}.zip",
+            mime="application/zip",
+            width="stretch",
+            help="One calendar file per resident — email each person theirs; "
+            "opening it imports every on-call at once.",
+        )
+    except Exception as exc:  # noqa: BLE001
+        hcols[1].error(f"Calendar ZIP failed: {exc}")
+
+    roster = list(data.juniors) + list(data.seniors)
+    person = st.selectbox(
+        "Add one resident's on-calls to this device",
+        roster,
+        key="resident_cal_pick",
+        help="Hand the phone over (or share your screen): pick the name, tap "
+        "the calendar link, done.",
+    )
+    events = resident_events(df, data, person) if person else []
+    if not events:
+        st.caption("No on-calls in this schedule for this resident.")
+        return
+    # The whole .ics rides inside this link (data: URI): tapping it opens the
+    # phone's calendar import — no server round-trip that could have expired.
+    href = ics_data_uri(resident_ics(df, data, person))
+    filename = f"{person}_on_calls.ics".replace(" ", "_")
+    st.markdown(
+        f'<a href="{href}" download="{filename}" '
+        'style="display:inline-block;padding:0.55em 1.1em;border-radius:0.5em;'
+        'background:#1a56b0;color:#ffffff;font-weight:600;'
+        'text-decoration:none;">'
+        f"📲 Add {len(events)} on-call(s) to this device's calendar (.ics)</a>",
+        unsafe_allow_html=True,
+    )
+    rows = [
+        {
+            "Date": friendly_date(event["day"]),
+            "Shift": event["label"],
+            "Add just this one": google_calendar_url(event["day"], event["label"], person),
+        }
+        for event in events
+    ]
+    st.dataframe(
+        pd.DataFrame(rows),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Add just this one": st.column_config.LinkColumn(
+                "Add just this one", display_text="Add to Google Calendar"
+            ),
+        },
+    )
 
 
 def _shift_cell_options(data, shift, df=None) -> list:

@@ -124,6 +124,25 @@ def test_deleted_nf_shift_drops_scoped_assignment_instead_of_widening_it():
         del st.session_state[key]
 
 
+def test_resident_calendar_section_offers_tap_to_phone_link():
+    # The Export tab's "Resident calendars" section: pick a name, get their
+    # on-call list and a self-contained data: link (no server round-trip that
+    # a recycled serverless instance could break).
+    df, data = _result_fixture()
+    at = _at()
+    at.run()
+    _seed_result(at, df, data)
+    at.run()
+    assert not at.exception
+    picker = [s for s in at.selectbox if s.key == "resident_cal_pick"]
+    assert picker, "resident picker not rendered"
+    picker[0].select("Alice")
+    at.run()
+    assert not at.exception
+    # The personal .ics rides inside the page as a data: URI link.
+    assert any("data:text/calendar" in m.value for m in at.markdown)
+
+
 def test_chunk_seconds_prefers_few_large_segments():
     # Every segment re-pays CP-SAT presolve, so long runs use as few segments
     # as hosting tolerates: ~target/5, clamped to [150s, 300s].
