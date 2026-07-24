@@ -1,7 +1,6 @@
 """Results rendering: metrics, styled grid, fairness summary, downloads."""
 from __future__ import annotations
 
-import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -28,6 +27,7 @@ from model.solve_report import convergence_verdict
 from model.utils import friendly_date
 from model.validation import validate_schedule
 
+from ui.charts import cumulative_chart, workload_chart
 from ui.editors import custom_columns_editor
 from ui.state import Keys, apply_manual_edits, normalize_edited_schedule, revert_manual_edits
 from ui.theme import render_card, render_section_header, render_status
@@ -619,73 +619,6 @@ def _render_schedule_workspace(df, data) -> tuple:
     return final_df, color_mode, palette
 
 
-_ROLE_HUES = {"Junior": "#5ab478", "Senior": "#966edc"}  # coloring.DEFAULT_PALETTE
-
-
-def _workload_chart(role_frame, role: str, target: float | None):
-    """Horizontal grouped bars (Total + Weekend) sorted by load, target rule."""
-    long = role_frame.melt(
-        id_vars=["Resident"],
-        value_vars=["Total points", "Weekend points"],
-        var_name="Kind",
-        value_name="Points",
-    )
-    order = (
-        role_frame.sort_values("Total points", ascending=False)["Resident"].tolist()
-    )
-    base_hue = _ROLE_HUES.get(role, "#5ab478")
-    chart = (
-        alt.Chart(long)
-        .mark_bar()
-        .encode(
-            y=alt.Y("Resident:N", sort=order, title=None),
-            x=alt.X("Points:Q", title="Points"),
-            yOffset="Kind:N",
-            color=alt.Color(
-                "Kind:N",
-                scale=alt.Scale(domain=["Total points", "Weekend points"],
-                                range=[base_hue, "#c9a227"]),
-                legend=alt.Legend(title=None, orient="top"),
-            ),
-            tooltip=["Resident", "Kind", "Points"],
-        )
-        .properties(height=max(120, 16 * len(role_frame)))
-    )
-    if target:
-        rule = (
-            alt.Chart(pd.DataFrame({"target": [target]}))
-            .mark_rule(color="#7A5800", strokeDash=[4, 3])
-            .encode(x="target:Q")
-        )
-        chart = chart + rule
-    return chart
-
-
-def _cumulative_chart(cum_frame, role: str):
-    """Stacked bars: prior-block standing (grey) + this block (role hue)."""
-    order = (
-        cum_frame.drop_duplicates("Resident")
-        .sort_values("Cumulative", ascending=False)["Resident"].tolist()
-    )
-    return (
-        alt.Chart(cum_frame)
-        .mark_bar()
-        .encode(
-            y=alt.Y("Resident:N", sort=order, title=None),
-            x=alt.X("sum(Points):Q", title="Cumulative points (prior + this block)"),
-            color=alt.Color(
-                "Segment:N",
-                scale=alt.Scale(domain=["Prior blocks", "This block"],
-                                range=["#b9b2a4", _ROLE_HUES.get(role, "#5ab478")]),
-                legend=alt.Legend(title=None, orient="top"),
-            ),
-            order=alt.Order("Segment:N", sort="ascending"),
-            tooltip=["Resident", "Segment", "Points", "Cumulative"],
-        )
-        .properties(height=max(120, 16 * cum_frame["Resident"].nunique()))
-    )
-
-
 def _render_role_fairness(
     role: str, fair_frame, points, data, df, prior_ledger, ledger_policy
 ) -> None:
@@ -704,21 +637,17 @@ def _render_role_fairness(
     target_map = (df.attrs.get("target_total_map") or {}) if hasattr(df, "attrs") else {}
     role_targets = [target_map[p] for p in members if p in target_map]
     target = sum(role_targets) / len(role_targets) if role_targets else None
-    st.caption("Workload by resident — dashed line marks the fair-share target.")
-    st.altair_chart(
-        _workload_chart(role_frame, role, target), use_container_width=True
+    st.caption(
+        f"Every {role.lower()} appears below, heaviest first. Use the ⋯ menu on "
+        "a chart to save it as an image."
     )
+    st.altair_chart(workload_chart(role_frame, role, target), width="stretch")
     if prior_ledger:
         cum_frame = build_cumulative_frame(
             role_points, prior_ledger, data, ledger_policy=ledger_policy
         )
         if len(cum_frame):
-            st.caption(
-                "Cumulative standing: grey = carried in from the uploaded "
-                "ledger, coloured = earned this block. Even bar ends mean the "
-                "history is levelling out."
-            )
-            st.altair_chart(_cumulative_chart(cum_frame, role), use_container_width=True)
+            st.altair_chart(cumulative_chart(cum_frame, role), width="stretch")
 
 
 def _render_fairness_workspace(df, data, points, prior_ledger) -> None:
