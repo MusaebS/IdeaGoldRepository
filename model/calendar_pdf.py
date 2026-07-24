@@ -1,116 +1,169 @@
-"""The calendar handout: a sendable PDF listing every resident's on-calls.
+"""The calendar handout: ONE compact PDF carrying the whole roster's on-calls.
 
-One document the scheduler can drop into a group chat or email: every
-resident has their own section listing their on-call dates, and each date
-carries a tappable "Add to calendar" link (a pre-filled Google Calendar URL —
-plain https, so it stays clickable wherever the PDF travels and depends on
-nothing hosted by the app).
+This is the single file a scheduler sends to the department. Every resident
+gets a small block with their dates, and two ways to get them into a phone:
 
-A PDF cannot bulk-import events by itself — tapping adds one event at a
-time. The per-resident ``.ics`` files remain the one-tap "everything at once"
-route; this handout is the zero-setup, works-anywhere companion.
+* **Add all** — one link per resident holding their entire ``.ics`` inline (a
+  ``data:`` URI), so a single tap imports every one of their shifts. Nothing is
+  fetched from the app's server, so it keeps working wherever the PDF travels.
+  Readers differ in how they treat non-``http`` links, which is why the
+  per-date links below exist too.
+* **Each date** — a plain Google Calendar link that adds that one shift. These
+  work in any reader and are the fallback when "Add all" is blocked.
+
+Laid out in two columns with tight type so a large department fits a page or
+two instead of one section per page.
 
 Requires ``reportlab`` (guarded import, like the schedule PDF).
 """
 from __future__ import annotations
 
 import io
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape, quoteattr
 
 from .data_models import InputData
-from .ics import google_calendar_url, resident_events
+from .ics import google_calendar_url, ics_data_uri, resident_ics, resident_events
 from .utils import friendly_date
 
 __all__ = ["calendar_handout_pdf_bytes"]
 
+_INK = "#2f2a24"
+_MUTED = "#6d6459"
+_LINK = "#1a56b0"
+_RULE = "#d9d3c7"
+
+
+def _short_date(day) -> str:
+    """``Sat 04 Apr`` trimmed to ``Sat 04`` when the month repeats is overkill —
+    keep the full short form, it is only 10 characters."""
+    return friendly_date(day)
+
 
 def calendar_handout_pdf_bytes(df, data: InputData) -> bytes:
-    """Render the per-resident on-call handout to PDF bytes."""
+    """Render the compact per-resident on-call handout to PDF bytes."""
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import cm
     from reportlab.platypus import (
+        BaseDocTemplate,
+        Frame,
         KeepTogether,
+        PageTemplate,
         Paragraph,
-        SimpleDocTemplate,
         Spacer,
-        Table,
-        TableStyle,
     )
 
     styles = getSampleStyleSheet()
-    title = styles["Title"]
     name_style = ParagraphStyle(
-        "ResidentName", parent=styles["Heading2"], spaceBefore=10, spaceAfter=2
+        "Name", parent=styles["Normal"], fontName="Helvetica-Bold",
+        fontSize=8.6, leading=10.4, textColor=colors.HexColor(_INK),
+        spaceBefore=5, spaceAfter=1,
     )
-    cell = ParagraphStyle("Cell", parent=styles["Normal"], fontSize=9, leading=12)
-    note = ParagraphStyle(
-        "Note", parent=styles["Normal"], fontSize=8, leading=10,
-        textColor=colors.HexColor("#555555"),
+    row_style = ParagraphStyle(
+        "Row", parent=styles["Normal"], fontSize=7.6, leading=9.4,
+        textColor=colors.HexColor(_INK), leftIndent=5,
+    )
+    head_style = ParagraphStyle(
+        "Head", parent=styles["Normal"], fontName="Helvetica-Bold",
+        fontSize=14, leading=17, textColor=colors.HexColor(_INK),
+    )
+    note_style = ParagraphStyle(
+        "Note", parent=styles["Normal"], fontSize=7.8, leading=10,
+        textColor=colors.HexColor(_MUTED),
     )
 
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
+    margin = 1.1 * cm
+    doc = BaseDocTemplate(
         buffer, pagesize=A4,
-        leftMargin=1.6 * cm, rightMargin=1.6 * cm,
-        topMargin=1.4 * cm, bottomMargin=1.4 * cm,
+        leftMargin=margin, rightMargin=margin,
+        topMargin=margin, bottomMargin=margin,
         title="On-call calendar handout",
     )
-    span = f"{friendly_date(data.start_date)} – {friendly_date(data.end_date)}"
-    story = [
-        Paragraph("On-call calendar handout", title),
-        Paragraph(
-            escape(f"Block {span}. Find your name; tap “Add to calendar” on a "
-                   "date to put that on-call into your phone's calendar."),
-            note,
-        ),
-        Spacer(1, 8),
+    usable_w = doc.width
+    gutter = 0.7 * cm
+    col_w = (usable_w - gutter) / 2
+    # The masthead only exists on page 1; both templates share the two columns.
+    head_h = 2.5 * cm
+    first_frames = [
+        Frame(margin, margin, col_w, doc.height - head_h, id="c1", showBoundary=0),
+        Frame(margin + col_w + gutter, margin, col_w, doc.height - head_h,
+              id="c2", showBoundary=0),
+    ]
+    rest_frames = [
+        Frame(margin, margin, col_w, doc.height, id="r1", showBoundary=0),
+        Frame(margin + col_w + gutter, margin, col_w, doc.height, id="r2",
+              showBoundary=0),
     ]
 
-    grid_style = TableStyle([
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("ROWBACKGROUNDS", (0, 0), (-1, -1),
-         [colors.white, colors.HexColor("#f4f1e8")]),
-        ("LINEBELOW", (0, -1), (-1, -1), 0.4, colors.HexColor("#cccccc")),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    span = f"{friendly_date(data.start_date)} – {friendly_date(data.end_date)}"
+
+    def _masthead(canvas, _doc):
+        canvas.saveState()
+        top = A4[1] - margin
+        canvas.setFillColor(colors.HexColor(_INK))
+        canvas.setFont("Helvetica-Bold", 14)
+        canvas.drawString(margin, top - 12, "On-call calendar handout")
+        canvas.setFillColor(colors.HexColor(_MUTED))
+        canvas.setFont("Helvetica", 8)
+        canvas.drawString(margin, top - 26, f"Block {span}")
+        canvas.drawString(
+            margin, top - 38,
+            "Find your name → tap “Add all” to put every one of your on-calls "
+            "in your phone's calendar.",
+        )
+        canvas.drawString(
+            margin, top - 50,
+            "If “Add all” does not open, tap a single date instead — that adds "
+            "just that shift.",
+        )
+        canvas.setStrokeColor(colors.HexColor(_RULE))
+        canvas.setLineWidth(0.6)
+        canvas.line(margin, top - 58, A4[0] - margin, top - 58)
+        canvas.restoreState()
+
+    doc.addPageTemplates([
+        PageTemplate(id="first", frames=first_frames, onPage=_masthead),
+        PageTemplate(id="rest", frames=rest_frames),
     ])
 
+    story = []
     listed = 0
     for person in list(data.juniors) + list(data.seniors):
         events = resident_events(df, data, person)
         if not events:
             continue
         listed += 1
-        rows = []
-        for event in events:
-            url = google_calendar_url(event["day"], event["label"], person)
-            rows.append([
-                Paragraph(escape(friendly_date(event["day"])), cell),
-                Paragraph(escape(event["label"]), cell),
-                Paragraph(
-                    f'<link href="{escape(url, {chr(34): "&quot;"})}">'
-                    "<u><font color='#1a56b0'>Add to calendar</font></u></link>",
-                    cell,
-                ),
-            ])
-        table = Table(rows, colWidths=[4.2 * cm, 9.2 * cm, 4.0 * cm])
-        table.setStyle(grid_style)
+        add_all = quoteattr(ics_data_uri(resident_ics(df, data, person)))
         block = [
-            Paragraph(escape(person), name_style),
-            Paragraph(escape(f"{len(events)} on-call(s)"), note),
-            table,
+            Paragraph(
+                f"{escape(person)}"
+                f"<font size=7 color='{_MUTED}'>  {len(events)} on-call(s)</font>"
+                f"  <link href={add_all}>"
+                f"<font color='{_LINK}'><u>Add all</u></font></link>",
+                name_style,
+            )
         ]
-        # Keep short sections on one page; long ones may flow.
-        story.append(KeepTogether(block) if len(rows) <= 12 else block[0])
-        if len(rows) > 12:
-            story.extend(block[1:])
+        for event in events:
+            url = quoteattr(google_calendar_url(event["day"], event["label"], person))
+            block.append(Paragraph(
+                f"<link href={url}><font color='{_LINK}'>"
+                f"{escape(_short_date(event['day']))}</font></link>"
+                f"  <font color='{_MUTED}'>{escape(event['label'])}</font>",
+                row_style,
+            ))
+        story.append(KeepTogether(block))
 
     if not listed:
-        story.append(Paragraph("No assignments in this schedule.", cell))
+        story.append(Paragraph("No assignments in this schedule.", head_style))
+    else:
+        story.append(Spacer(1, 8))
+        story.append(Paragraph(
+            "Each date link adds that single shift. “Add all” carries the whole "
+            "calendar inside the link, so it needs no internet connection to the "
+            "scheduling app.",
+            note_style,
+        ))
     doc.build(story)
     return buffer.getvalue()

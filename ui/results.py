@@ -350,54 +350,38 @@ def _render_resident_calendars(df, data) -> None:
         ics_data_uri,
         resident_events,
         resident_ics,
-        schedule_calendars_zip,
     )
 
     st.subheader("Resident calendars")
     st.caption(
-        "Get each person's on-calls into their phone calendar: pick a name "
-        "below, or send everyone the handout PDF / their .ics file."
+        "One file to send the whole department: every resident's on-calls, with "
+        "an **Add all** link each so a single tap puts their shifts in their "
+        "phone calendar (individual dates are tappable too)."
     )
-    hcols = st.columns(2)
     try:
         handout = cached_export(
             "cal_handout", (st.session_state[Keys.RESULT_VERSION],),
             lambda: calendar_handout_pdf_bytes(df, data),
         )
-        hcols[0].download_button(
-            "Download calendar handout (PDF, sendable)",
+        st.download_button(
+            "📄 Download the calendar handout (one PDF, send this)",
             handout,
             file_name=f"on_call_handout_{data.end_date.isoformat()}.pdf",
             mime="application/pdf",
             width="stretch",
-            help="One PDF for the whole group: every resident's on-call list, "
-            "each date with a tappable 'Add to calendar' link. Send it in the "
-            "group chat; the links keep working wherever it's forwarded.",
+            type="primary",
+            help="Two compact columns, everyone on a page or two. Send it in "
+            "the group chat — the links keep working wherever it is forwarded, "
+            "with no connection back to this app.",
         )
     except ImportError as exc:  # pragma: no cover - reportlab not installed
-        hcols[0].info(f"Handout PDF needs reportlab: {exc}")
-    except Exception as exc:  # noqa: BLE001 - never block other downloads
-        hcols[0].error(f"Handout PDF failed: {exc}")
-    try:
-        ics_zip = cached_export(
-            "ics_zip", (st.session_state[Keys.RESULT_VERSION],),
-            lambda: schedule_calendars_zip(df, data),
-        )
-        hcols[1].download_button(
-            "Download all .ics files (ZIP)",
-            ics_zip,
-            file_name=f"on_call_calendars_{data.end_date.isoformat()}.zip",
-            mime="application/zip",
-            width="stretch",
-            help="One calendar file per resident — email each person theirs; "
-            "opening it imports every on-call at once.",
-        )
-    except Exception as exc:  # noqa: BLE001
-        hcols[1].error(f"Calendar ZIP failed: {exc}")
+        st.info(f"Handout PDF needs reportlab: {exc}")
+    except Exception as exc:  # noqa: BLE001 - never block the rest of the tab
+        st.error(f"Handout PDF failed: {exc}")
 
     roster = list(data.juniors) + list(data.seniors)
     person = st.selectbox(
-        "Add one resident's on-calls to this device",
+        "Or add one resident's on-calls to this device now",
         roster,
         key="resident_cal_pick",
         help="Hand the phone over (or share your screen): pick the name, tap "

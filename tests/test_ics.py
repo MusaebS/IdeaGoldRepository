@@ -110,3 +110,46 @@ def test_calendar_handout_pdf_lists_residents_with_links():
     assert blob.startswith(b"%PDF")
     # The per-date add-to-calendar links are real URI annotations in the PDF.
     assert b"calendar.google.com" in blob
+    # …and each resident carries an "Add all" link with their whole calendar
+    # embedded, so one tap imports every shift without touching the server.
+    assert b"data:text/calendar" in blob
+
+
+def test_calendar_handout_is_compact_and_has_one_add_all_per_resident():
+    pytest.importorskip("reportlab")
+    fitz = pytest.importorskip("fitz")  # pymupdf, for reading the built PDF
+    from model.calendar_pdf import calendar_handout_pdf_bytes
+
+    # 24 residents, several shifts each: the old one-section-per-resident
+    # layout ran to many pages; the compact two-column layout must not.
+    from datetime import timedelta
+
+    shifts = [
+        ShiftTemplate(label="AM", role="Junior", night_float=False, thu_weekend=False, points=1.0),
+        ShiftTemplate(label="PM", role="Senior", night_float=False, thu_weekend=False, points=1.0),
+    ]
+    juniors = [f"Junior {i:02d}" for i in range(12)]
+    seniors = [f"Senior {i:02d}" for i in range(12)]
+    days = [date(2026, 3, 2) + timedelta(days=i) for i in range(12)]
+    data = InputData(
+        start_date=days[0], end_date=days[-1], shifts=shifts,
+        juniors=juniors, seniors=seniors, nf_juniors=[], nf_seniors=[],
+        leaves=[], rotators=[], min_gap=0,
+    )
+    df = pd.DataFrame([
+        {"Date": d, "Day": d.strftime("%a"),
+         "AM": juniors[i % len(juniors)], "PM": seniors[i % len(seniors)]}
+        for i, d in enumerate(days)
+    ])
+    blob = calendar_handout_pdf_bytes(df, data)
+    doc = fitz.open(stream=blob, filetype="pdf")
+    links = [link for page in doc for link in page.get_links()]
+    add_all = [
+        link for link in links
+        if str(link.get("uri", "")).startswith("data:text/calendar")
+    ]
+    scheduled = {p for p in juniors + seniors if resident_events(df, data, p)}
+    # Exactly one "Add all" per resident who actually has shifts.
+    assert len(add_all) == len(scheduled)
+    # Compact: 24 residents fit a page, not one section each.
+    assert doc.page_count <= 2
