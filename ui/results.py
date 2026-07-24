@@ -1,7 +1,6 @@
 """Results rendering: metrics, styled grid, fairness summary, downloads."""
 from __future__ import annotations
 
-import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -25,8 +24,15 @@ from model.fairness import (
 )
 from model.ledger import LedgerPolicy, block_adjustments, ledger_to_json, update_ledger
 from model.solve_report import convergence_verdict
+from model.utils import friendly_date
 from model.validation import validate_schedule
 
+from ui.charts import (
+    COMFORTABLE,
+    DENSITY_LABELS,
+    cumulative_chart,
+    workload_chart,
+)
 from ui.editors import custom_columns_editor
 from ui.state import Keys, apply_manual_edits, normalize_edited_schedule, revert_manual_edits
 from ui.theme import render_card, render_section_header, render_status
@@ -325,6 +331,116 @@ def _render_downloads(final_df, df, data, points, color_mode, palette, prior_led
         st.caption("Ledger policy applied: " + "; ".join(notes) + ".")
     if st.checkbox("Show Fairness Log"):
         st.text(log_text)
+    st.divider()
+    _render_resident_calendars(df, data)
+
+
+def _render_resident_calendars(df, data) -> None:
+    """Per-resident calendar delivery: pick a name → put the on-calls on a phone.
+
+    Every path here is chosen to survive hostile hosting: the personal .ics is
+    a ``data:`` link (the file rides inside the page, so it cannot 404 when a
+    serverless instance recycles), the per-date "Add to calendar" links are
+    plain Google Calendar URLs, and the handout PDF carries those same links so
+    it stays useful after being forwarded around.
+    """
+    from model.calendar_pdf import calendar_handout_pdf_bytes
+    from model.ics import (
+        google_calendar_url,
+        ics_data_uri,
+        resident_events,
+        resident_ics,
+        schedule_calendars_zip,
+    )
+
+    st.subheader("Resident calendars")
+    st.caption(
+        "Two ways to hand the rota to people. The **PDF** is the one file to "
+        "post in a group chat — tapping a date adds that shift on any phone. "
+        "The **ZIP** holds one calendar file per resident: whoever opens their "
+        "own file gets every shift added at once."
+    )
+    ccols = st.columns(2)
+    try:
+        handout = cached_export(
+            "cal_handout", (st.session_state[Keys.RESULT_VERSION],),
+            lambda: calendar_handout_pdf_bytes(df, data),
+        )
+        ccols[0].download_button(
+            "📄 Calendar handout (PDF — send to the group)",
+            handout,
+            file_name=f"on_call_handout_{data.end_date.isoformat()}.pdf",
+            mime="application/pdf",
+            width="stretch",
+            type="primary",
+            help="Two compact columns, the whole department on a page or two. "
+            "Every date is a tappable link that adds that one shift — it keeps "
+            "working wherever the PDF is forwarded, with no connection back to "
+            "this app.",
+        )
+    except ImportError as exc:  # pragma: no cover - reportlab not installed
+        ccols[0].info(f"Handout PDF needs reportlab: {exc}")
+    except Exception as exc:  # noqa: BLE001 - never block the rest of the tab
+        ccols[0].error(f"Handout PDF failed: {exc}")
+    try:
+        ics_zip = cached_export(
+            "ics_zip", (st.session_state[Keys.RESULT_VERSION],),
+            lambda: schedule_calendars_zip(df, data),
+        )
+        ccols[1].download_button(
+            "🗂️ All calendar files (ZIP — one per resident)",
+            ics_zip,
+            file_name=f"on_call_calendars_{data.end_date.isoformat()}.zip",
+            mime="application/zip",
+            width="stretch",
+            help="Send each person their own .ics: they tap it once and the "
+            "phone offers to add every one of their shifts together.",
+        )
+    except Exception as exc:  # noqa: BLE001
+        ccols[1].error(f"Calendar ZIP failed: {exc}")
+
+    roster = list(data.juniors) + list(data.seniors)
+    person = st.selectbox(
+        "Or add one resident's on-calls to this device now",
+        roster,
+        key="resident_cal_pick",
+        help="Hand the phone over (or share your screen): pick the name, tap "
+        "the calendar link, done.",
+    )
+    events = resident_events(df, data, person) if person else []
+    if not events:
+        st.caption("No on-calls in this schedule for this resident.")
+        return
+    # The whole .ics rides inside this link (data: URI): tapping it opens the
+    # phone's calendar import — no server round-trip that could have expired.
+    href = ics_data_uri(resident_ics(df, data, person))
+    filename = f"{person}_on_calls.ics".replace(" ", "_")
+    st.markdown(
+        f'<a href="{href}" download="{filename}" '
+        'style="display:inline-block;padding:0.55em 1.1em;border-radius:0.5em;'
+        'background:#1a56b0;color:#ffffff;font-weight:600;'
+        'text-decoration:none;">'
+        f"📲 Add {len(events)} on-call(s) to this device's calendar (.ics)</a>",
+        unsafe_allow_html=True,
+    )
+    rows = [
+        {
+            "Date": friendly_date(event["day"]),
+            "Shift": event["label"],
+            "Add just this one": google_calendar_url(event["day"], event["label"], person),
+        }
+        for event in events
+    ]
+    st.dataframe(
+        pd.DataFrame(rows),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Add just this one": st.column_config.LinkColumn(
+                "Add just this one", display_text="Add to Google Calendar"
+            ),
+        },
+    )
 
 
 def _shift_cell_options(data, shift, df=None) -> list:
@@ -512,71 +628,12 @@ def _render_schedule_workspace(df, data) -> tuple:
     return final_df, color_mode, palette
 
 
-_ROLE_HUES = {"Junior": "#5ab478", "Senior": "#966edc"}  # coloring.DEFAULT_PALETTE
+def _chart_density() -> str:
+    """The chart density chosen in the fairness workspace (session-scoped).
 
-
-def _workload_chart(role_frame, role: str, target: float | None):
-    """Horizontal grouped bars (Total + Weekend) sorted by load, target rule."""
-    long = role_frame.melt(
-        id_vars=["Resident"],
-        value_vars=["Total points", "Weekend points"],
-        var_name="Kind",
-        value_name="Points",
-    )
-    order = (
-        role_frame.sort_values("Total points", ascending=False)["Resident"].tolist()
-    )
-    base_hue = _ROLE_HUES.get(role, "#5ab478")
-    chart = (
-        alt.Chart(long)
-        .mark_bar()
-        .encode(
-            y=alt.Y("Resident:N", sort=order, title=None),
-            x=alt.X("Points:Q", title="Points"),
-            yOffset="Kind:N",
-            color=alt.Color(
-                "Kind:N",
-                scale=alt.Scale(domain=["Total points", "Weekend points"],
-                                range=[base_hue, "#c9a227"]),
-                legend=alt.Legend(title=None, orient="top"),
-            ),
-            tooltip=["Resident", "Kind", "Points"],
-        )
-        .properties(height=max(120, 16 * len(role_frame)))
-    )
-    if target:
-        rule = (
-            alt.Chart(pd.DataFrame({"target": [target]}))
-            .mark_rule(color="#7A5800", strokeDash=[4, 3])
-            .encode(x="target:Q")
-        )
-        chart = chart + rule
-    return chart
-
-
-def _cumulative_chart(cum_frame, role: str):
-    """Stacked bars: prior-block standing (grey) + this block (role hue)."""
-    order = (
-        cum_frame.drop_duplicates("Resident")
-        .sort_values("Cumulative", ascending=False)["Resident"].tolist()
-    )
-    return (
-        alt.Chart(cum_frame)
-        .mark_bar()
-        .encode(
-            y=alt.Y("Resident:N", sort=order, title=None),
-            x=alt.X("sum(Points):Q", title="Cumulative points (prior + this block)"),
-            color=alt.Color(
-                "Segment:N",
-                scale=alt.Scale(domain=["Prior blocks", "This block"],
-                                range=["#b9b2a4", _ROLE_HUES.get(role, "#5ab478")]),
-                legend=alt.Legend(title=None, orient="top"),
-            ),
-            order=alt.Order("Segment:N", sort="ascending"),
-            tooltip=["Resident", "Segment", "Points", "Cumulative"],
-        )
-        .properties(height=max(120, 16 * cum_frame["Resident"].nunique()))
-    )
+    The radio stores its *label*; map it back to the density key.
+    """
+    return DENSITY_LABELS.get(st.session_state.get(Keys.CHART_DENSITY), COMFORTABLE)
 
 
 def _render_role_fairness(
@@ -597,21 +654,22 @@ def _render_role_fairness(
     target_map = (df.attrs.get("target_total_map") or {}) if hasattr(df, "attrs") else {}
     role_targets = [target_map[p] for p in members if p in target_map]
     target = sum(role_targets) / len(role_targets) if role_targets else None
-    st.caption("Workload by resident — dashed line marks the fair-share target.")
+    density = _chart_density()
+    st.caption(
+        f"Every {role.lower()} appears below, heaviest first. Use the ⋯ menu on "
+        "a chart to save it as an image."
+    )
     st.altair_chart(
-        _workload_chart(role_frame, role, target), use_container_width=True
+        workload_chart(role_frame, role, target, density=density), width="stretch"
     )
     if prior_ledger:
         cum_frame = build_cumulative_frame(
             role_points, prior_ledger, data, ledger_policy=ledger_policy
         )
         if len(cum_frame):
-            st.caption(
-                "Cumulative standing: grey = carried in from the uploaded "
-                "ledger, coloured = earned this block. Even bar ends mean the "
-                "history is levelling out."
+            st.altair_chart(
+                cumulative_chart(cum_frame, role, density=density), width="stretch"
             )
-            st.altair_chart(_cumulative_chart(cum_frame, role), use_container_width=True)
 
 
 def _render_fairness_workspace(df, data, points, prior_ledger) -> None:
@@ -641,6 +699,23 @@ def _render_fairness_workspace(df, data, points, prior_ledger) -> None:
         "Fairness is balanced within each role (juniors and seniors work "
         "different shift pools). Per resident: calls and points per shift "
         "type, targets and deviations, and cumulative history with a ledger."
+    )
+    # Chart density: comfortable rows by default; compact tightens the rows and
+    # lays a long roster out in two columns so a big department fits one screen
+    # (and one screenshot). Every resident is shown either way.
+    roster_size = int(len(fair_frame))
+    st.radio(
+        "Chart layout",
+        list(DENSITY_LABELS),
+        key=Keys.CHART_DENSITY,
+        horizontal=True,
+        help="Compact keeps every resident and every name — it just tightens "
+        "the rows and splits a long roster into two side-by-side columns, "
+        "which is easier to screenshot and send."
+        + (
+            f" With {roster_size} resident(s) here, compact is worth a look."
+            if roster_size >= 24 else ""
+        ),
     )
     roles = [r for r in ("Junior", "Senior") if (fair_frame["Role"] == r).any()]
     if len(roles) == 2:
