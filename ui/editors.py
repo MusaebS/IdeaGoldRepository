@@ -6,7 +6,7 @@ original single-file app so saved links / tests keep working.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 import hashlib
 
 import pandas as pd
@@ -26,6 +26,7 @@ from model.data_models import (
     normalized_reductions,
 )
 from model.names import canonical_name, dedupe_names
+from model.utils import friendly_date
 from ui.patterns import FILL_MODES, expand_pattern, parse_fill_names
 from ui.state import Keys
 
@@ -389,45 +390,120 @@ def _group_or_adhoc_selector(people: list, key_prefix: str) -> tuple:
     return who, members
 
 
+_BO_PERIOD = "A period (start → end)"
+_BO_DATES = "Specific dates"
+
+
+def _block_date_options(start: date | None, end: date | None) -> list:
+    """Every date in the configured block, for the specific-dates picker."""
+    if start is None or end is None or end < start:
+        return []
+    span = (end - start).days + 1
+    # Guard against an absurd range making a multiselect with thousands of
+    # options; a block is normally a few weeks.
+    return [start + timedelta(days=i) for i in range(min(span, 400))]
+
+
 def blackouts_editor(
     people: list,
     default_start: date | None = None,
     default_end: date | None = None,
 ) -> None:
     """Group blackout periods: nobody covered is on call during the window."""
-    st.markdown("**Blackouts — a whole group is off call for a period**")
+    st.markdown("**Blackouts — a whole group is off call**")
     st.caption(
-        "Everyone covered is blocked for the window, and (by default) from the "
-        "night calls of the day before it — night call meaning the shifts "
-        "flagged 'Thu counts as weekend' — so nobody is post-call on their "
-        "first off day. Night-float duty is never affected. Not a leave: with "
-        "Compensated on, each member keeps their full fair share — missed load "
-        "is made up on other days, or carried in the fairness ledger as debt "
-        "to repay next block."
+        "Everyone covered is blocked for the dates chosen, and (by default) "
+        "from the night calls of the day before each of them — night call "
+        "meaning the shifts flagged 'Thu counts as weekend' — so nobody is "
+        "post-call on their first off day. Night-float duty is never affected. "
+        "Not a leave: with Compensated on, each member keeps their full fair "
+        "share — missed load is made up on other days, or carried in the "
+        "fairness ledger as debt to repay next block."
     )
     if not people:
         st.caption("Add participants first to configure blackouts.")
         return
-    c = st.columns([3, 2, 2, 2, 2, 1], vertical_alignment="bottom")
-    with c[0]:
-        group, members = _group_or_adhoc_selector(people, "bo")
-    with c[1]:
-        start = st.date_input("Start", default_start or date.today(), key="bo_start")
-    with c[2]:
-        end = st.date_input("End", default_end or default_start or date.today(), key="bo_end")
-    with c[3]:
-        night_before = st.checkbox("Block night call before", value=True, key="bo_nightbefore")
-    with c[4]:
-        compensated = st.checkbox("Compensated", value=True, key="bo_comp")
-    with c[-1]:
-        if _add_button("bo_add"):
+    mode = st.radio(
+        "Which dates?",
+        [_BO_PERIOD, _BO_DATES],
+        key="bo_mode",
+        horizontal=True,
+        help="A period covers every day between two dates (a course, annual "
+        "leave). Specific dates lets you tick several separate days at once — "
+        "one entry is added per date, so a team that is off seven scattered "
+        "days is seven ticks instead of seven trips through this form.",
+    )
+    if mode == _BO_DATES:
+        c = st.columns([3, 2, 2, 1], vertical_alignment="bottom")
+        with c[0]:
+            group, members = _group_or_adhoc_selector(people, "bo")
+        with c[1]:
+            night_before = st.checkbox(
+                "Block night call before", value=True, key="bo_nightbefore"
+            )
+        with c[2]:
+            compensated = st.checkbox("Compensated", value=True, key="bo_comp")
+        with c[-1]:
+            clicked = _add_button("bo_add")
+        options = _block_date_options(default_start, default_end)
+        if not options:
+            st.caption("Set the schedule dates first to pick specific days.")
+            return
+        picked = st.multiselect(
+            "Dates off call",
+            options,
+            format_func=friendly_date,
+            key="bo_dates",
+            help="Tick every day this group is off. Dates outside the schedule "
+            "block are not listed because they would have no effect.",
+        )
+        if clicked:
             if group is None and not members:
                 st.warning("Pick a group or at least one resident.")
+            elif not picked:
+                st.warning("Pick at least one date.")
             else:
-                st.session_state[Keys.BLACKOUTS].append(
-                    Blackout(group, members, start, end, night_before, compensated)
-                )
-                st.toast("Added blackout window.")
+                existing = {
+                    (b.group, b.members, b.start)
+                    for b in normalized_blackouts(st.session_state[Keys.BLACKOUTS])
+                    if b.start == b.end
+                }
+                added = 0
+                for day in sorted(picked):
+                    if (group, tuple(members), day) in existing:
+                        continue  # already blacked out for this group
+                    st.session_state[Keys.BLACKOUTS].append(
+                        Blackout(group, members, day, day, night_before, compensated)
+                    )
+                    added += 1
+                skipped = len(picked) - added
+                note = f" ({skipped} already set)" if skipped else ""
+                st.toast(f"Added {added} blackout date(s){note}.")
+    else:
+        c = st.columns([3, 2, 2, 2, 2, 1], vertical_alignment="bottom")
+        with c[0]:
+            group, members = _group_or_adhoc_selector(people, "bo")
+        with c[1]:
+            start = st.date_input("Start", default_start or date.today(), key="bo_start")
+        with c[2]:
+            end = st.date_input(
+                "End", default_end or default_start or date.today(), key="bo_end"
+            )
+        with c[3]:
+            night_before = st.checkbox(
+                "Block night call before", value=True, key="bo_nightbefore"
+            )
+        with c[4]:
+            compensated = st.checkbox("Compensated", value=True, key="bo_comp")
+        with c[-1]:
+            if _add_button("bo_add"):
+                if group is None and not members:
+                    st.warning("Pick a group or at least one resident.")
+                else:
+                    st.session_state[Keys.BLACKOUTS].append(
+                        Blackout(group, members, start, end, night_before, compensated)
+                    )
+                    st.toast("Added blackout window.")
     entries = list(normalized_blackouts(st.session_state[Keys.BLACKOUTS]))
     if entries:
         groups = st.session_state[Keys.NAMED_GROUPS]
@@ -437,22 +513,58 @@ def blackouts_editor(
             table_rows.append({
                 "Group": b.group or "(ad-hoc)",
                 "Members": ", ".join(covered) or "—",
-                "Start": b.start,
-                "End": b.end,
+                # Single dates read as one day, not a start/end pair repeated.
+                "Dates": (
+                    friendly_date(b.start) if b.start == b.end
+                    else f"{friendly_date(b.start)} → {friendly_date(b.end)}"
+                ),
                 "Night call before": b.night_before,
                 "Compensated": b.compensated,
             })
         _summary_table(pd.DataFrame(table_rows))
+        # Picking specific dates adds one entry per day, so a few teams quickly
+        # fill the table; this line is the at-a-glance check that each group
+        # got the number of days intended.
+        per_group: dict = {}
+        for b in entries:
+            per_group[b.group or "(ad-hoc)"] = per_group.get(b.group or "(ad-hoc)", 0) + 1
+        if len(entries) > len(per_group):
+            st.caption(
+                "Entries per group: "
+                + ", ".join(f"{name} {count}" for name, count in sorted(per_group.items()))
+            )
         removed = _remove_control(
             list(range(len(entries))),
             "Remove blackout",
             "bo_rm",
             format_func=lambda i: (
-                f"{entries[i].group or 'ad-hoc'}: {entries[i].start} → {entries[i].end}"
+                f"{entries[i].group or 'ad-hoc'}: {friendly_date(entries[i].start)}"
+                + (
+                    ""
+                    if entries[i].start == entries[i].end
+                    else f" → {friendly_date(entries[i].end)}"
+                )
             ),
         )
         if removed is not None:
             st.session_state[Keys.BLACKOUTS].pop(removed)
+        # Clearing a group's dates one at a time is the reverse of the problem
+        # the multi-date picker solves, so offer a bulk remove too.
+        clearable = sorted({b.group for b in entries if b.group is not None})
+        if clearable:
+            cleared = _remove_control(
+                clearable,
+                "Clear every blackout for a group",
+                "bo_clear",
+                format_func=lambda name: f"{name} ({per_group.get(name, 0)} entries)",
+            )
+            if cleared is not None:
+                st.session_state[Keys.BLACKOUTS] = [
+                    entry
+                    for entry, norm in zip(st.session_state[Keys.BLACKOUTS], entries)
+                    if norm.group != cleared
+                ]
+                st.toast(f"Cleared blackouts for “{cleared}”.")
 
 
 def perks_editor(

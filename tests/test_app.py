@@ -633,6 +633,94 @@ def test_blackouts_editor_stores_to_session():
     assert not at.exception
 
 
+def test_blackouts_editor_specific_dates_adds_one_entry_per_date():
+    # The scattered-dates case: ticking several days must add them in one go
+    # instead of one trip through the form per date.
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob"]
+    at.session_state["named_groups"] = {"Team A": ["Alice", "Bob"]}
+    at.session_state["start_date"] = date(2026, 4, 1)
+    at.session_state["end_date"] = date(2026, 4, 30)
+    at.run()
+    at.radio(key="bo_mode").set_value("Specific dates")
+    at.run()
+    picked = [date(2026, 4, 7), date(2026, 4, 14), date(2026, 4, 21)]
+    at.multiselect(key="bo_dates").set_value(picked)
+    [b for b in at.button if b.key == "bo_add"][0].click()
+    at.run()
+    assert not at.exception
+    blackouts = at.session_state["blackouts"]
+    assert len(blackouts) == 3
+    # Each is a single-day window, so the existing night-before rule (which
+    # keys off the window start) protects the evening before every one.
+    assert [b.start for b in blackouts] == picked
+    assert all(b.start == b.end for b in blackouts)
+    assert all(b.group == "Team A" for b in blackouts)
+
+
+def test_blackouts_editor_specific_dates_skips_duplicates():
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice"]
+    at.session_state["named_groups"] = {"Team A": ["Alice"]}
+    at.session_state["start_date"] = date(2026, 4, 1)
+    at.session_state["end_date"] = date(2026, 4, 30)
+    at.run()
+    at.radio(key="bo_mode").set_value("Specific dates")
+    at.run()
+    at.multiselect(key="bo_dates").set_value([date(2026, 4, 7)])
+    [b for b in at.button if b.key == "bo_add"][0].click()
+    at.run()
+    # Adding an overlapping selection again must not pile up duplicates.
+    at.multiselect(key="bo_dates").set_value([date(2026, 4, 7), date(2026, 4, 8)])
+    [b for b in at.button if b.key == "bo_add"][0].click()
+    at.run()
+    assert not at.exception
+    starts = [b.start for b in at.session_state["blackouts"]]
+    assert starts == [date(2026, 4, 7), date(2026, 4, 8)]
+
+
+def test_blackouts_editor_period_mode_still_available():
+    # The range option must survive: a course or annual leave is still one
+    # entry, not a tick per day.
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice"]
+    at.session_state["named_groups"] = {"Team A": ["Alice"]}
+    at.run()
+    assert at.radio(key="bo_mode").value == "A period (start → end)"
+    at.date_input(key="bo_start").set_value(date(2026, 4, 6))
+    at.date_input(key="bo_end").set_value(date(2026, 4, 10))
+    [b for b in at.button if b.key == "bo_add"][0].click()
+    at.run()
+    assert not at.exception
+    blackouts = at.session_state["blackouts"]
+    assert len(blackouts) == 1
+    assert blackouts[0].start == date(2026, 4, 6)
+    assert blackouts[0].end == date(2026, 4, 10)
+
+
+def test_blackouts_editor_clear_group_removes_all_its_dates():
+    from model.data_models import Blackout
+
+    at = _at()
+    at.run()
+    at.session_state["juniors"] = ["Alice", "Bob"]
+    at.session_state["named_groups"] = {"Team A": ["Alice"], "Team B": ["Bob"]}
+    at.session_state["blackouts"] = [
+        Blackout("Team A", (), date(2026, 4, d), date(2026, 4, d), True, True)
+        for d in (7, 14, 21)
+    ] + [Blackout("Team B", (), date(2026, 4, 9), date(2026, 4, 9), True, True)]
+    at.run()
+    at.selectbox(key="bo_clear_idx").set_value("Team A")
+    [b for b in at.button if b.key == "bo_clear_btn"][0].click()
+    at.run()
+    assert not at.exception
+    remaining = at.session_state["blackouts"]
+    assert len(remaining) == 1 and remaining[0].group == "Team B"
+
+
 def test_blackouts_editor_adhoc_names():
     at = _at()
     at.run()
