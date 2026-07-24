@@ -15,7 +15,10 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install ruff
-        run: pip install ruff
+        # Pinned: an unpinned linter means a new release can fail CI on code
+        # that has not changed (0.16.0 widened the default rule set and did
+        # exactly that). Bump deliberately.
+        run: pip install ruff==0.16.0
       - name: Run ruff
         run: ruff check .
 
